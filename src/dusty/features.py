@@ -19,9 +19,11 @@ class FeatureBar:
     """A completed OHLC bar stamped at the instant its full contents are knowable.
 
     ``source_open_at`` preserves the original MT5 bar-open timestamp when available. ``at`` is the
-    observation/availability timestamp used by all point-in-time features and decisions. For an MT5
-    completed-bar record, ``execution_price`` is the contemporaneous next-bar open: the first price
-    Dusty can defensibly use after the completed bar has become observable.
+    observation/availability timestamp used by all point-in-time features and decisions. ``spread_points``
+    belongs to the completed source bar and is therefore a historical feature only. For MT5-derived rows,
+    ``execution_price`` is the following bar's open and ``decision_spread_proxy_points`` is the following
+    bar's MqlRates spread. The latter is an availability-time *proxy*, not an exact executable Ask-Bid
+    quote; native ticks/tester fills remain authoritative for execution certification.
     """
 
     at: datetime
@@ -33,6 +35,7 @@ class FeatureBar:
     tick_volume: float = 0.0
     source_open_at: datetime | None = None
     execution_price: float | None = None
+    decision_spread_proxy_points: float | None = None
 
     def __post_init__(self) -> None:
         if self.at.tzinfo is None or self.at.utcoffset() is None:
@@ -48,6 +51,11 @@ class FeatureBar:
             not math.isfinite(self.execution_price) or self.execution_price <= 0
         ):
             raise ValueError("feature execution price must be finite and positive")
+        if self.decision_spread_proxy_points is not None and (
+            not math.isfinite(self.decision_spread_proxy_points)
+            or self.decision_spread_proxy_points < 0
+        ):
+            raise ValueError("decision spread proxy must be finite and nonnegative")
         if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close, self.high):
             raise ValueError("feature OHLC geometry is invalid")
         if not math.isfinite(self.spread_points) or self.spread_points < 0:
@@ -65,6 +73,17 @@ class FeatureBar:
         """
         return self.close if self.execution_price is None else self.execution_price
 
+    @property
+    def spread_points_for_guardian(self) -> float:
+        """Best bar-level spread observation available at the decision clock.
+
+        MT5-derived rows use the following bar's spread proxy. Synthetic/manual rows fall back to their
+        explicitly supplied spread assumption. This property must never be described as a native quote.
+        """
+        if self.decision_spread_proxy_points is not None:
+            return self.decision_spread_proxy_points
+        return self.spread_points
+
     @classmethod
     def from_mt5(
         cls,
@@ -72,11 +91,12 @@ class FeatureBar:
         *,
         available_at: datetime,
         execution_price: float,
+        decision_spread_proxy_points: float,
     ) -> "FeatureBar":
         """Convert an MT5 bar-open record only when a later bar proves completion.
 
-        ``execution_price`` must come from the later bar that establishes availability, not from the
-        just-completed bar's close.
+        Execution price and spread proxy must come from the later bar that establishes availability,
+        never from the just-completed source bar.
         """
         if available_at.tzinfo is None or available_at.utcoffset() is None:
             raise ValueError("MT5 bar availability timestamp must be timezone-aware")
@@ -84,6 +104,8 @@ class FeatureBar:
             raise ValueError("MT5 completed bar must become available after its open timestamp")
         if not math.isfinite(execution_price) or execution_price <= 0:
             raise ValueError("MT5 execution reference price must be finite and positive")
+        if not math.isfinite(decision_spread_proxy_points) or decision_spread_proxy_points < 0:
+            raise ValueError("MT5 decision spread proxy must be finite and nonnegative")
         return cls(
             available_at,
             bar.open,
@@ -94,6 +116,7 @@ class FeatureBar:
             float(bar.tick_volume),
             source_open_at=bar.at,
             execution_price=float(execution_price),
+            decision_spread_proxy_points=float(decision_spread_proxy_points),
         )
 
 
@@ -102,8 +125,9 @@ def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar,
 
     MT5's Python bar ``time`` is the bar opening time. A historical OHLC row is treated as knowable only
     when the next bar has actually opened. Its first executable reference is that following bar's open.
-    The final raw bar is dropped because this bounded history slice contains no later observation proving
-    it completed. This is intentionally conservative across weekend/session gaps.
+    The source bar's spread remains historical; the following bar's spread is carried only as an
+    availability-time proxy. The final raw bar is dropped because this bounded slice contains no later
+    observation proving completion. This is intentionally conservative across weekend/session gaps.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
@@ -117,6 +141,7 @@ def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar,
             current,
             available_at=following.at,
             execution_price=following.open,
+            decision_spread_proxy_points=float(following.spread),
         )
         for current, following in zip(rows, rows[1:])
     )
