@@ -154,7 +154,12 @@ def _coherence(vector: FeatureVector, required: Sequence[str], *, max_items: int
         )
         for key, value in vector.values
     )
-    return check_coherence(EvidenceSnapshot.of(f"features:{vector.at.isoformat()}", items), at=vector.at, required_keys=required, max_items=max_items)
+    return check_coherence(
+        EvidenceSnapshot.of(f"features:{vector.at.isoformat()}", items),
+        at=vector.at,
+        required_keys=required,
+        max_items=max_items,
+    )
 
 
 def _baseline_risk(equity: float, risk_fraction: float, constitution: RiskConstitution) -> RiskAssessment:
@@ -223,6 +228,14 @@ def _manifest_support(strategy: CompiledStrategy) -> tuple[bool, tuple[str, ...]
     return not reasons, tuple(reasons)
 
 
+def _market_marks(bars: Sequence[FeatureBar], symbol: str) -> tuple[PriceMark, ...]:
+    """Mark equity only with a price observable at the decision timestamp."""
+    return tuple(
+        PriceMark(bar.at, symbol, bar.market_price_at_availability)
+        for bar in bars
+    )
+
+
 def _growth_stage(
     trades: Sequence[RuntimeTrade],
     bars: Sequence[FeatureBar],
@@ -253,7 +266,20 @@ def _growth_stage(
             week_key = current_week
             week_start = equity
         if equity <= 0:
-            traces.append(GrowthSizingTrace(trade_id, equity, _baseline_risk(max(config.growth_starting_equity, 1.0), config.growth_risk_fraction, config.risk_constitution), None, False, ("equity_depleted",)))
+            traces.append(
+                GrowthSizingTrace(
+                    trade_id,
+                    equity,
+                    _baseline_risk(
+                        max(config.growth_starting_equity, 1.0),
+                        config.growth_risk_fraction,
+                        config.risk_constitution,
+                    ),
+                    None,
+                    False,
+                    ("equity_depleted",),
+                )
+            )
             continue
 
         snapshot = AccountRiskSnapshot(equity, equity, high_water, day_start, week_start, 0.0, 0.0, 0.0)
@@ -270,7 +296,16 @@ def _growth_stage(
         )
         effective_request_risk = config.growth_risk_fraction * preliminary.risk_multiplier
         if not preliminary.allowed or effective_request_risk <= 0:
-            traces.append(GrowthSizingTrace(trade_id, equity, preliminary, None, False, preliminary.reasons or ("risk_multiplier_zero",)))
+            traces.append(
+                GrowthSizingTrace(
+                    trade_id,
+                    equity,
+                    preliminary,
+                    None,
+                    False,
+                    preliminary.reasons or ("risk_multiplier_zero",),
+                )
+            )
             continue
 
         sizing_request = PositionSizingRequest(
@@ -304,15 +339,25 @@ def _growth_stage(
             traces.append(GrowthSizingTrace(trade_id, equity, final_risk, sizing, False, final_risk.reasons))
             continue
 
-        simulated = _simulated_trade(trade_id, runtime, symbol=symbol, volume=sizing.approved_volume, cost_per_lot=cost_per_lot)
+        simulated = _simulated_trade(
+            trade_id,
+            runtime,
+            symbol=symbol,
+            volume=sizing.approved_volume,
+            cost_per_lot=cost_per_lot,
+        )
         approved_trades.append(simulated)
         manifest.append(_manifest_row(trade_id, runtime, sizing.approved_volume))
         traces.append(GrowthSizingTrace(trade_id, equity, final_risk, sizing, True, ()))
         equity += trade_net_pnl(simulated, economics)
         high_water = max(high_water, equity)
 
-    marks = tuple(PriceMark(bar.at, symbol, bar.close) for bar in bars)
-    result = simulate_portfolio(approved_trades, marks, {symbol: economics}, starting_equity=config.growth_starting_equity)
+    result = simulate_portfolio(
+        approved_trades,
+        _market_marks(bars, symbol),
+        {symbol: economics},
+        starting_equity=config.growth_starting_equity,
+    )
     return result, tuple(traces), render_research_manifest(manifest)
 
 
@@ -341,7 +386,11 @@ def run_laboratory_from_bars(
         raise ValueError("laboratory requires symbol and completed bars")
     features = compute_standard_features(feature_bars, config.feature_config)
     required = _required_feature_keys(strategy)
-    baseline_risk = _baseline_risk(config.growth_starting_equity, config.growth_risk_fraction, config.risk_constitution)
+    baseline_risk = _baseline_risk(
+        config.growth_starting_equity,
+        config.growth_risk_fraction,
+        config.risk_constitution,
+    )
     forecast_map = forecasts_by_time or {}
     decisions: dict[datetime, Decision] = {}
     traces: list[CognitionTrace] = []
@@ -362,31 +411,68 @@ def run_laboratory_from_bars(
                 event_blocked=event_blocked,
                 spread_points=bar.spread_points,
                 forecasts=tuple(forecast_map.get(bar.at, ())),
+                reasoning_at=vector.at,
             ),
             config.cognition_policy,
         )
-        decision = Person("lab", symbol.upper(), strategy.spec.strategy_id).reason(assessment.cognition, coherence)
+        decision = Person("lab", symbol.upper(), strategy.spec.strategy_id).reason(
+            assessment.cognition,
+            coherence,
+        )
         decisions[bar.at] = decision
         traces.append(CognitionTrace(bar.at, coherence, assessment, decision))
-        runtime_bars.append(RuntimeBar.of(bar.at, open=bar.open, high=bar.high, low=bar.low, close=bar.close, features=vector.feature_map(), session=session, event_blocked=event_blocked))
+        runtime_bars.append(
+            RuntimeBar.of(
+                bar.at,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                features=vector.feature_map(),
+                session=session,
+                event_blocked=event_blocked,
+                execution_price=bar.market_price_at_availability,
+            )
+        )
 
     expected_entry = Decision.ENTRY_LONG if strategy.spec.direction.value == "long" else Decision.ENTRY_SHORT
-    potential = generate_runtime_trades(strategy, runtime_bars, entry_authorizer=lambda row, _: decisions.get(row.at) is expected_entry)
+    potential = generate_runtime_trades(
+        strategy,
+        runtime_bars,
+        entry_authorizer=lambda row, _: decisions.get(row.at) is expected_entry,
+    )
     frequency = assess_observed_entry_frequency(trade.entry_at for trade in potential)
     if not frequency.promotable:
         raise ValueError(f"observed_entry_frequency_not_eligible:{','.join(frequency.reasons)}")
 
     cost_per_lot = _friction_cost_per_lot(config, economics)
     minimum_simulated = tuple(
-        _simulated_trade(f"minimum-{index:06d}", trade, symbol=symbol, volume=economics.volume_min, cost_per_lot=cost_per_lot)
+        _simulated_trade(
+            f"minimum-{index:06d}",
+            trade,
+            symbol=symbol,
+            volume=economics.volume_min,
+            cost_per_lot=cost_per_lot,
+        )
         for index, trade in enumerate(potential)
     )
-    marks = tuple(PriceMark(bar.at, symbol, bar.close) for bar in feature_bars)
-    minimum_result = simulate_portfolio(minimum_simulated, marks, {symbol: economics}, starting_equity=config.strategy_test_equity)
-    minimum_manifest = render_research_manifest(
-        _manifest_row(f"minimum-{index:06d}", trade, economics.volume_min) for index, trade in enumerate(potential)
+    minimum_result = simulate_portfolio(
+        minimum_simulated,
+        _market_marks(feature_bars, symbol),
+        {symbol: economics},
+        starting_equity=config.strategy_test_equity,
     )
-    growth_result, growth_sizing, growth_manifest = _growth_stage(potential, feature_bars, symbol=symbol, economics=economics, config=config)
+    minimum_manifest = render_research_manifest(
+        _manifest_row(f"minimum-{index:06d}", trade, economics.volume_min)
+        for index, trade in enumerate(potential)
+    )
+    growth_result, growth_sizing, growth_manifest = _growth_stage(
+        potential,
+        feature_bars,
+        symbol=symbol,
+        economics=economics,
+        config=config,
+    )
     manifest_supported, manifest_reasons = _manifest_support(strategy)
     if not manifest_supported:
         minimum_manifest = ""
