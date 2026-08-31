@@ -41,21 +41,25 @@ int OnInit()
    Out=FileOpen(InpOutputFile,FILE_WRITE|FILE_CSV|FILE_ANSI,',');
    if(Out==INVALID_HANDLE)
       return INIT_FAILED;
-   FileWrite(Out,"time","sma","ema","atr","rsi");
+   // source_open_time is the completed bar's own opening time (shift 1).
+   // available_time is the newly opened current bar (shift 0), the first deterministic point
+   // at which this probe treats the previous bar's final OHLC/indicator values as observable.
+   FileWrite(Out,"source_open_time","available_time","sma","ema","atr","rsi");
    return INIT_SUCCEEDED;
   }
 
 void OnTick()
   {
-   const datetime closed=iTime(_Symbol,_Period,1);
-   if(closed<=0 || closed==LastClosedBar)
+   const datetime closed_open=iTime(_Symbol,_Period,1);
+   const datetime available=iTime(_Symbol,_Period,0);
+   if(closed_open<=0 || available<=closed_open || closed_open==LastClosedBar)
       return;
    double sma=0.0,ema=0.0,atr=0.0,rsi=0.0;
    if(!ReadOne(HSMA,1,sma) || !ReadOne(HEMA,1,ema) || !ReadOne(HATR,1,atr) || !ReadOne(HRSI,1,rsi))
       return;
-   FileWrite(Out,(long)closed,sma,ema,atr,rsi);
+   FileWrite(Out,(long)closed_open,(long)available,sma,ema,atr,rsi);
    FileFlush(Out);
-   LastClosedBar=closed;
+   LastClosedBar=closed_open;
   }
 
 void OnDeinit(const int reason)
