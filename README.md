@@ -1,484 +1,175 @@
-# Dusty Dragon — AI Trading Reasoning Core
+# Dusty Dragon — Reasoning Core
 
-> Status: **Reasoning Core v1.0 design frozen — implementation starts at M0**
+Dusty Dragon is being rebuilt as a **native Windows-first autonomous quantitative research system**. This repository currently contains only the provider-neutral **human-based reasoning core**. It deliberately contains no trading strategy, position sizing, MT5 order placement, portfolio allocation, or live-money authority.
 
-Dusty Dragon is being rebuilt from a clean slate as an external AI trading-research system. This repository begins with the **reasoning core only**: the cognitive operating system that will later consume strategy rules, market evidence, forecasting models, and execution adapters.
+## Engineering law
 
-The first implementation deliberately contains **no trading strategy rules, no broker execution, no position sizing, and no live-money logic**.
+**Minimum code surface, maximum behavioral coverage.**
 
-## Core design principle
+Complexity must earn its way into the repository. The core prefers immutable data, enums, protocols, pure functions, transition tables, and standard-library components over frameworks or speculative abstractions. There are currently **zero third-party runtime dependencies**.
 
-The base cognitive unit is intentionally narrow:
+## The Person
 
-- **One synthetic person**
-- **One symbol**
-- **One strategy**
-- **One repeating reasoning lifecycle**
+One synthetic Person reasons about **one symbol + one strategy** through four cognitive functions:
 
-The Person contains four parallel cognitive functions:
+- **Analyst — construct:** what does the evidence support?
+- **Skeptic — attack:** why might the interpretation be wrong?
+- **Patience — time:** is action justified now?
+- **Guardian — govern:** is the reasoning process trustworthy?
 
-1. **Analyst — construct**
-   - What does the evidence currently support?
-   - Produces directional/thesis interpretation.
+They are functions of one Person, not four trading agents.
 
-2. **Skeptic — attack**
-   - Why might the current interpretation be wrong?
-   - Searches for contradictions, broken assumptions, and invalidation.
+Initial categorical state:
 
-3. **Patience — time**
-   - Is action justified now?
-   - Prevents premature entry, premature exit, and unnecessary interference with a valid position.
+| Function | States |
+|---|---|
+| Analyst | `LONG`, `SHORT`, `NEUTRAL`, `UNCLEAR` |
+| Skeptic | `CLEAR`, `CONCERN`, `INVALID`, `UNKNOWN` |
+| Patience | `WAIT`, `READY`, `COMPLETE` |
+| Guardian | `NORMAL`, `CAUTION`, `STOP` |
 
-4. **Guardian — govern**
-   - Can the reasoning process itself be trusted?
-   - Watches coherence, readiness, exceptions, process integrity, and stand-down conditions.
+Entry requires the relevant four-way permission. Holding continues while the thesis remains defensible. Exit is asymmetric: a material invalidation channel may independently establish an exit case. Exiting never authorizes an automatic reversal.
 
-These are **not four independent trading agents**. They are four cognitive functions of one Person.
+## Deterministic lifecycle
 
-## Initial categorical Person state
-
-Reasoning Core v1 begins with intentionally simple categorical outputs rather than fabricated precision.
-
-### Analyst
-
-- `LONG`
-- `SHORT`
-- `NEUTRAL`
-- `UNCLEAR`
-
-### Skeptic
-
-- `CLEAR`
-- `CONCERN`
-- `INVALID`
-- `UNKNOWN`
-
-### Patience
-
-- `WAIT`
-- `READY`
-- `COMPLETE`
-
-### Guardian
-
-- `NORMAL`
-- `CAUTION`
-- `STOP`
-
-Continuous probabilities may be introduced later only if measured evidence shows they improve the system.
-
-## Frozen human reasoning lifecycle
-
-The Person follows a deterministic lifecycle rather than jumping arbitrarily between decisions.
+The lifecycle is encoded as a compact `state + event -> next_state` transition table rather than a class per phase.
 
 ```text
-PURPOSE / READINESS
-        ↓
-PERCEIVE
-        ↓
-FILTER / ATTENTION
-        ↓
-INFORMATION COHERENCE
-        ↓
-STRATEGY ELIGIBILITY
-        ↓
-BUILD SCENARIOS
-        ↓
-HYPOTHESIS
-        ↓
-MEMORY / ANALOGY
-        ↓
-CONTRADICTION CHECK
-        ↓
-UNCERTAINTY
-        ↓
-FALSIFY
-        ↓
-CONFIDENCE CALIBRATION
-        ↓
-OPPORTUNITY VALUE
-        ↓
-PREPARE
-        ↓
-WAIT / WATCH
-        ↓
-SCENARIO MATCH
-        ↓
-SURPRISE CHECK
-        ↓
-FINAL VALIDATION
-        ↓
-ENTRY QUALIFIED / NO ACTION
-        ↓
-POSITION SUPERVISION
-        ↓
-HOLD / CONTINUE / EXIT QUALIFIED
-        ↓
-REVIEW
-        ↓
-ATTRIBUTE
-        ↓
-LEARN
-        ↓
-UPDATE MEMORY
-        ↓
-PERCEIVE
+ORIENTING
+  -> PERCEIVING
+  -> FILTERING
+  -> COHERENCE
+  -> HYPOTHESIS
+  -> FALSIFYING
+  -> WAITING
+  -> VALIDATING
+  -> ENTRY_QUALIFIED
+  -> SUPERVISING
+  -> EXIT_QUALIFIED
+  -> REVIEWING
+  -> LEARNING
+  -> PERCEIVING ...
 ```
 
-A future strategy layer will define what constitutes a scenario, entry eligibility, invalidation, expected lifecycle, and completion. The reasoning core itself remains strategy-agnostic.
+`STAND_DOWN` can interrupt the normal loop and requires explicit recovery.
 
-## Repeating loop behavior
+## M0–M11 implementation
 
-### No position — Opportunity Loop
+| Milestone | Implementation | Gate |
+|---|---|---|
+| **M0** Specification freeze | Canonical enums, dataclasses, protocols, runtime boundaries | one name/meaning per concept |
+| **M1** Deterministic state machine | explicit transition table + illegal-transition rejection | complete table contract tests |
+| **M2** Four-state Person | `Cognition` + `Person` | identical input is reproducible |
+| **M3** Decision synthesis | entry/hold/exit/observe/abort/stand-down | asymmetric semantics tested |
+| **M4** Coherence engine | relevance, freshness, redundancy, missing inputs, conflicts, overload | synthetic coherence cases pass |
+| **M5** Exception engine | E1 reconsider, E2 abort, E3 stand-down + recovery | interrupt/recovery invariants pass |
+| **M6** Position reasoning | semantic open/hold/exit state only; no P&L rules | winner continuation + invalidation tested |
+| **M7** Journal + replay | append-only SQLite semantic journal | replay validates original transitions/decisions |
+| **M8** Learner shell | explicit offline attribution + summaries | synthetic failures attributable |
+| **M9** Evidence SDK | provider-neutral `EvidenceItem` / `EvidenceSnapshot` / protocols | core has no provider dependency |
+| **M10** Adapter prototypes | one callable adapter shape + Kronos/Chronos/Moirai/Vibe factories | provider loss is isolated |
+| **M11** Synthetic cognitive lab | scenario matrix for clear/conflicting/stale/overloaded/timing/position cases | reproducible expected decisions |
+
+## Coherence and exceptions
+
+Evidence is classified as:
+
+`COHERENT` · `RESOLVABLE` · `OVERLOADED` · `INCOHERENT` · `INSUFFICIENT`
+
+Exceptions are orthogonal to the normal loop:
+
+- **E1 RECONSIDER** — return to observation/reassessment.
+- **E2 ABORT** — discard the current hypothesis; if a position exists, qualify an exit.
+- **E3 STAND_DOWN** — stop participation; if a position exists, qualify an exit first.
+
+## Journal and learning
+
+Every durable decision can be written to SQLite as a compact semantic record containing cognitive state, evidence snapshot ID, exception/coherence state, transition, decision, and reason codes. Replay re-applies the recorded state-machine events and fails loudly on discontinuity or transition mismatch.
+
+Learning remains outside the live Person:
 
 ```text
-WATCH → RECOGNIZE → VALIDATE → ENTRY QUALIFIED or NO ACTION → REPEAT
+PERSON -> DECISION -> JOURNAL -> OFFLINE REVIEW -> ATTRIBUTION -> VALIDATED CHANGE
 ```
 
-### Position open — Position Management Loop
+The learner is not a fifth cognitive state and does not rewrite production cognition while it is operating.
+
+## Provider boundary
+
+External models and research systems are evidence sources, not the brain:
 
 ```text
-SUPERVISE → CONTINUE? → WAIT → NEW INFORMATION → SUPERVISE AGAIN
+Kronos / Chronos / Moirai / Vibe / future source
+                -> provider adapter
+                -> EvidenceSnapshot
+                -> coherence gate
+                -> Person
 ```
 
-The continuation question is based on the forward justification for remaining in the position, not simply current P&L.
+The M10 adapters intentionally do **not** import those projects yet. A single callable adapter contract lets each engine be integrated lazily without making its dependency tree part of Reasoning Core v1.
 
-### After completion — Learning Loop
+## Ten-repository design audit — retained genetics only
+
+| Reference | Retained idea | Deliberately rejected for M0–M11 |
+|---|---|---|
+| shiyu-coder/Kronos | clean forecast-provider boundary | model internals in cognition |
+| amazon-science/chronos-forecasting | probabilistic/multivariate evidence | runtime dependency |
+| SalesforceAIResearch/uni2ts | alternate forecast/evaluation evidence | runtime dependency |
+| HKUDS/Vibe-Trading | finance/provider abstractions and later MT5 lessons | importing its broad application stack |
+| microsoft/qlib | research/data/model/evaluation separation | live reasoning dependency |
+| microsoft/RD-Agent | research -> develop -> evaluate -> learn pattern | autonomous code mutation in live core |
+| TauricResearch/TradingAgents | constructive/adversarial separation, checkpoint lessons | LangGraph/LLM graph dependency |
+| virattt/ai-hedge-fund | one pipeline, hard risk boundary, persistent ledger concept | LLM trade authority |
+| Conway-Research/automaton | SQLite durability, integrity, loop/policy ideas | Node runtime and self-modification |
+| microsoft/agent-framework | workflow/checkpoint/resume concepts | framework adoption before demonstrated need |
+
+The result is intentionally smaller than any of the reference systems.
+
+## Windows-first runtime boundary
+
+Reasoning Core v1 is independent of ChatGPT, Codex, Ollama, MT5, or any external model. Later, Dusty will run as a local Windows application/service with replaceable adapters. `ports.py` freezes narrow contracts for future reasoning, evidence/model providers, journals, MT5/research workers, operator API, LLM providers, and health state without implementing those systems prematurely.
+
+## Repository shape
 
 ```text
-REVIEW → ATTRIBUTE → LEARN → UPDATE MEMORY → RESTART
+src/dusty/
+  core.py       # M0–M6: vocabulary, lifecycle, Person, coherence, exceptions
+  journal.py    # M7: SQLite persistence + deterministic replay
+  learning.py   # M8: offline attribution shell
+  ports.py      # M0/M9: replaceable runtime boundaries
+  providers.py  # M9/M10: provider isolation + model adapter prototypes
+
+tests/
+  test_core.py
+  test_journal_learning.py
+  test_providers_scenarios.py  # includes M11 laboratory
 ```
 
-## Entry / hold / exit semantics
+No duplicate strategy implementation exists because **strategy rules do not exist yet**.
 
-The core produces **semantic reasoning outcomes**, never broker commands.
+## QC
 
-Examples:
-
-- `OBSERVE`
-- `WAIT`
-- `READY`
-- `ENTRY_LONG`
-- `ENTRY_SHORT`
-- `HOLD`
-- `EXIT`
-- `ABORT`
-- `STAND_DOWN`
-
-`ENTRY_LONG` means the Person has cognitively qualified a long entry. It does **not** call MT5 or place an order.
-
-### Entry
-
-Entry requires the relevant cognitive permissions to agree:
-
-- Analyst supports the thesis/direction.
-- Skeptic finds no material invalidation.
-- Patience determines the situation is ready.
-- Guardian considers the reasoning process trustworthy.
-
-### Hold
-
-Hold/continue remains the default while:
-
-- the thesis remains valid,
-- no material contradiction appears,
-- the opportunity remains alive,
-- timing does not justify completion,
-- and no Guardian exception applies.
-
-### Exit
-
-Exit is intentionally asymmetric with entry. A materially valid invalidation channel may establish an exit case without requiring unanimous opposite-direction agreement.
-
-Exiting a long position does **not** automatically authorize a short position, and vice versa. Reversal requires a new independently qualified reasoning cycle.
-
-## Information Coherence Gate
-
-The core explicitly distinguishes:
-
-- **Uncertainty** — insufficient knowledge.
-- **Contradiction** — important evidence disagrees.
-- **Information overload** — too much information to reason efficiently.
-- **Incoherence** — available evidence cannot form a sufficiently usable decision picture.
-
-Initial coherence states:
-
-- `COHERENT`
-- `RESOLVABLE`
-- `OVERLOADED`
-- `INCOHERENT`
-- `INSUFFICIENT`
-
-The coherence layer is responsible for relevance, freshness, redundancy, missing critical inputs, contradictions, and overload. Guardian consumes its result but does not own the mechanism.
-
-## Exception / Reset system
-
-An exception is different from ordinary falsification.
-
-- **Falsification:** this particular hypothesis is wrong.
-- **Exception:** the current reasoning process, evidence environment, or decision state is no longer trustworthy enough to continue normally.
-
-Exception severities:
-
-- **E1 — RECONSIDER**: return to perception/reassessment.
-- **E2 — ABORT**: destroy the active thesis and restart.
-- **E3 — STAND_DOWN**: stop active participation until readiness is restored.
-
-The exception monitor is orthogonal to the normal lifecycle and may interrupt any reasoning phase.
-
-## Decision journal
-
-Every meaningful cognitive transition must be observable and replayable.
-
-Initial journal fields include:
-
-- timestamp
-- person ID
-- symbol
-- strategy ID
-- reasoning phase
-- evidence snapshot ID
-- Analyst state
-- Skeptic state
-- Patience state
-- Guardian state
-- coherence state
-- exception state
-- hypothesis ID
-- semantic decision
-- reason codes
-- previous state
-- new state
-
-Later records add observed outcome, review result, and attribution.
-
-A central invariant is:
+CI runs on both **Windows and Linux** using Python 3.11 and performs:
 
 ```text
-original semantic run == replayed semantic run
+python -m compileall -q src tests
+python -m unittest discover -s tests -v
 ```
 
-## External learning — outside the Person
+No network, model download, API key, broker credential, or MT5 terminal is required to certify M0–M11.
 
-The Person reasons about the present. A separate offline learner studies many past Person decisions.
+## Explicitly out of scope
 
-```text
-PERSON
-  ↓
-DECISION
-  ↓
-JOURNAL
-  ↓
-OFFLINE REVIEW / ATTRIBUTION / LEARNING
-  ↓
-PROPOSED IMPROVEMENT
-  ↓
-VALIDATED CHANGE
-  ↓
-PERSON
-```
-
-The learner is **not a fifth cognitive state**.
-
-A new cognitive component may not be added merely because it sounds useful. Repeated measurable failure must first show that the deficiency cannot be absorbed by Analyst, Skeptic, Patience, or Guardian.
-
-## Evidence architecture
-
-External systems do not reach directly into the Person. They sit behind replaceable adapters.
-
-```text
-SOURCE / MODEL
-      ↓
-EVIDENCE PROVIDER
-      ↓
-NORMALIZATION + PROVENANCE
-      ↓
-EVIDENCE SNAPSHOT
-      ↓
-COHERENCE GATE
-      ↓
-PERSON
-```
-
-Every evidence item will eventually carry source, timestamp, freshness, category, provenance, and supplied quality/confidence metadata where applicable.
-
-## Ten primary repository references
-
-These projects are **reference architectures and optional engines**, not a monolithic dependency stack.
-
-1. **shiyu-coder/Kronos** — financial time-series forecasting engine.
-2. **amazon-science/chronos-forecasting** — probabilistic/multivariate forecasting evidence.
-3. **SalesforceAIResearch/uni2ts (Moirai)** — probabilistic forecasting and evaluation.
-4. **HKUDS/Vibe-Trading** — finance abstractions, factors, research tooling, journaling and MT5 concepts.
-5. **microsoft/qlib** — dataset, feature, model and evaluation separation.
-6. **microsoft/RD-Agent / RD-Agent-Quant** — autonomous research → develop → evaluate → learn cycle.
-7. **TauricResearch/TradingAgents** — constructive versus adversarial research patterns and persistent decision logs.
-8. **virattt/ai-hedge-fund** — clean analysis/risk/execution/ledger separation.
-9. **Conway-Research/automaton** — durable state, heartbeat, memory, policy, loop protection and audit concepts.
-10. **Microsoft Agent Framework** — workflow graphs, checkpoints, observability and human-in-the-loop patterns.
-
-### Repository integration law
-
-Dusty Dragon remains a **small independent core**. External repositories are accessed through clean interfaces where useful. We do not merge their codebases into one giant system.
-
-## Research/source firewall for later phases
-
-External internet material will be treated according to its evidentiary role rather than as ground truth.
-
-- **Tier 0 — Tradable truth:** broker/MT5 data and our own demo/live execution records.
-- **Tier 1 — Structured context:** economic-calendar/event data such as Forex Factory Calendar.
-- **Tier 2 — Independent validation:** independent datasets such as QuantConnect/OANDA-derived data.
-- **Tier 3 — Research priors:** Quantpedia and QuantConnect Research.
-- **Tier 4 — Feature genetics:** reviewed indicator concepts, Stonehill, and appropriately licensed/recreated concepts.
-- **Tier 5 — Crowd intelligence:** sources such as Forex Factory Trades.
-- **Tier 6 — Case studies:** Myfxbook, public trader histories, Trader.dev and similar material.
-- **Tier 7 — Narrative/domain knowledge:** FOREX.com, Investopedia and similar education/context sources.
-- **Tier 8 — Quarantine/anti-patterns:** martingale, extreme drawdown, unbounded grids, suspicious short-sample systems and other failure examples.
-
-TradingView concepts may be manually researched and independently recreated where licensing permits; TradingView market data is not to be scraped into Dusty's automated live decision path.
-
-## Reasoning Core v1 roadmap
-
-### M0 — Specification freeze
-
-Create canonical enums, contracts, invariants and schemas for:
-
-- Person
-- four cognitive states
-- reasoning phases
-- semantic decisions
-- exceptions
-- coherence states
-- hypotheses
-- position state
-- journal records
-
-**Pass:** every frozen concept has exactly one machine-readable name and definition.
-
-### M1 — Deterministic lifecycle state machine
-
-Implement legal and illegal state transitions using synthetic events only.
-
-**Pass:** complete transition coverage and deterministic behavior.
-
-### M2 — Four-state Person
-
-Implement Analyst, Skeptic, Patience and Guardian contracts with deterministic test doubles.
-
-**Pass:** identical input produces identical Person output.
-
-### M3 — Decision synthesis
-
-Implement semantic direction, entry, hold, exit, no-action, abort and stand-down behavior.
-
-**Pass:** entry/hold/exit asymmetry matches the frozen specification.
-
-### M4 — Coherence engine
-
-Implement relevance, freshness, redundancy, missing-input, conflict and overload representations.
-
-**Pass:** synthetic evidence produces the expected coherence result.
-
-### M5 — Exception engine
-
-Implement E1 Reconsider, E2 Abort, E3 Stand Down and recovery semantics.
-
-**Pass:** exceptions cannot leave the Person in an impossible lifecycle state.
-
-### M6 — Position-management loop
-
-Implement semantic position supervision and repeating hold/continue/exit reasoning without P&L rules.
-
-**Pass:** position continuation and exit arise only from reasoning-state changes.
-
-### M7 — Journal + deterministic replay
-
-Persist every cognitive transition and reconstruct complete Person state from the journal.
-
-**Pass:** replay reproduces the original semantic decisions exactly.
-
-### M8 — Attribution + learner shell
-
-Implement review, expected-vs-actual comparison, attribution and simple cognitive performance summaries.
-
-**Pass:** synthetic failures can be attributed to Analyst, Skeptic, Patience, Guardian, process, randomness/unknown categories as appropriate.
-
-### M9 — Evidence Provider SDK
-
-Define provider, evidence-item, snapshot, provenance and freshness interfaces.
-
-**Pass:** the Person can operate entirely on provider-neutral evidence snapshots.
-
-### M10 — Read-only model/research adapters
-
-Prototype adapters for Kronos, Chronos, Moirai and Vibe-Trading as evidence providers.
-
-Qlib/RD-Agent remain outside the live reasoning path.
-
-**Pass:** removing any individual provider does not break the Person.
-
-### M11 — Synthetic-market cognitive test laboratory
-
-Exercise scenarios including:
-
-- clear directional evidence
-- contradictory evidence
-- high uncertainty
-- stale information
-- information overload
-- unresolved incoherence
-- timing not ready
-- timing ready
-- thesis deterioration
-- major surprise
-- exception/reset conditions
-- winner-running continuation
-
-**Pass:** reasoning is reproducible, explainable and compliant with all invariants.
-
-## Definition of Reasoning Core v1 complete
-
-Reasoning Core v1 is complete when M0–M11 pass without introducing actual trading rules.
-
-Only then do we begin the next layer:
-
-```text
-STRATEGY RULES
-      ↓
-PERSON
-      ↓
-QUALIFIED SEMANTIC DECISION
-      ↓
-HARD RISK / EXECUTION LAYERS (later)
-```
-
-## Explicitly out of scope for Reasoning Core v1
-
-- MT5 order placement
-- real-money credentials
-- live capital
+- strategy rules or indicators
+- MT5 orders
+- broker credentials
 - position sizing
-- strategy optimization
 - portfolio allocation
-- specific indicators or indicator thresholds
-- broker-specific trading rules
+- optimization/backtesting orchestration
+- live capital
 - self-modifying production code
 - direct LLM broker-write authority
-- automatic reversal after exit
-- adding more cognitive states without measured evidence
+- automatic reversal
+- a fifth cognitive state without measured evidence
 
-## Development language
-
-**Python first.**
-
-Most of the planned forecasting, quantitative-research and finance components are Python-native or Python-friendly. Node-based concepts from Automaton should be selectively reimplemented rather than making Node a mandatory dependency of the cognitive kernel.
-
-## Safety and research philosophy
-
-Dusty Dragon is a research system intended to discover and validate robust decision processes. No architecture can guarantee profitability.
-
-The objective is not to maximize headline backtest profit. The eventual research system should minimize the time required to establish **statistically credible, robust out-of-sample expectancy** while preserving strict risk and validation constraints.
-
----
-
-**Current next step:** `M0 — Specification Freeze`
+Reasoning Core v1 is a **decision architecture**, not a profitability claim. Trading intelligence and validation are subsequent layers.
