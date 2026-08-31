@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -43,7 +44,7 @@ class RiskConstitution:
     margin_hard: float = 0.30
 
     def __post_init__(self) -> None:
-        values = tuple(self.__dict__.values()) if hasattr(self, "__dict__") else (
+        values = (
             self.normal_trade_risk,
             self.champion_soft_max_trade_risk,
             self.hard_max_trade_risk,
@@ -61,8 +62,8 @@ class RiskConstitution:
             self.margin_soft,
             self.margin_hard,
         )
-        if any(not 0.0 < value < 1.0 for value in values):
-            raise ValueError("risk constitution fractions must be in (0,1)")
+        if any(not math.isfinite(value) or not 0.0 < value < 1.0 for value in values):
+            raise ValueError("risk constitution fractions must be finite and in (0,1)")
         if not (
             self.normal_trade_risk
             <= self.champion_soft_max_trade_risk
@@ -94,10 +95,26 @@ class AccountRiskSnapshot:
     same_symbol_heat: float = 0.0
 
     def __post_init__(self) -> None:
-        if min(self.equity, self.balance, self.high_water_mark, self.day_start_equity, self.week_start_equity) <= 0:
-            raise ValueError("account equity references must be positive")
+        values = (
+            self.equity,
+            self.balance,
+            self.high_water_mark,
+            self.day_start_equity,
+            self.week_start_equity,
+            self.margin_used,
+            self.portfolio_heat,
+            self.same_symbol_heat,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("account risk values must be finite")
+        if self.equity < 0 or self.balance < 0:
+            raise ValueError("account equity and balance cannot be negative")
+        if min(self.high_water_mark, self.day_start_equity, self.week_start_equity) <= 0:
+            raise ValueError("account reference equities must be positive")
         if self.margin_used < 0 or self.portfolio_heat < 0 or self.same_symbol_heat < 0:
             raise ValueError("margin and risk heat cannot be negative")
+        if self.high_water_mark + 1e-12 < self.equity:
+            raise ValueError("high-water mark cannot be below equity")
 
     @property
     def drawdown(self) -> float:
@@ -113,6 +130,8 @@ class AccountRiskSnapshot:
 
     @property
     def margin_fraction(self) -> float:
+        if self.equity == 0:
+            return math.inf if self.margin_used > 0 else 0.0
         return self.margin_used / self.equity
 
 
@@ -129,6 +148,18 @@ class TradeRiskRequest:
     unbounded_averaging: bool = False
     complete_risk_data: bool = True
 
+    def __post_init__(self) -> None:
+        values = (
+            self.proposed_risk,
+            self.post_trade_portfolio_heat,
+            self.post_trade_same_symbol_heat,
+            self.post_trade_margin_used,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("trade risk request values must be finite")
+        if any(value < 0 for value in values):
+            raise ValueError("trade risk request values cannot be negative")
+
 
 @dataclass(frozen=True, slots=True)
 class RiskAssessment:
@@ -142,7 +173,7 @@ def risk_state(
     snapshot: AccountRiskSnapshot,
     constitution: RiskConstitution = RiskConstitution(),
 ) -> RiskState:
-    if snapshot.drawdown >= constitution.drawdown_fail:
+    if snapshot.equity == 0 or snapshot.drawdown >= constitution.drawdown_fail:
         return RiskState.FAILED
     if (
         snapshot.drawdown >= constitution.drawdown_research_only
@@ -173,6 +204,8 @@ def risk_multiplier(state: RiskState) -> float:
 
 def stop_change_allowed(side: TradeSide, current_stop: float, proposed_stop: float) -> bool:
     """Protective stops may tighten or stay unchanged; never widen risk after entry."""
+    if any(not math.isfinite(value) for value in (current_stop, proposed_stop)):
+        raise ValueError("stop prices must be finite")
     if current_stop <= 0 or proposed_stop <= 0:
         raise ValueError("stop prices must be positive")
     if side is TradeSide.LONG:
@@ -195,7 +228,11 @@ def assess_trade_risk(
         reasons.append("portfolio_heat_ceiling")
     if request.post_trade_same_symbol_heat > constitution.same_symbol_hard_risk:
         reasons.append("same_symbol_heat_ceiling")
-    margin_fraction = request.post_trade_margin_used / snapshot.equity
+    margin_fraction = (
+        math.inf
+        if snapshot.equity == 0 and request.post_trade_margin_used > 0
+        else (request.post_trade_margin_used / snapshot.equity if snapshot.equity > 0 else 0.0)
+    )
     if margin_fraction > constitution.margin_hard:
         reasons.append("margin_ceiling")
     if not request.has_initial_stop:
@@ -215,6 +252,8 @@ def assess_trade_risk(
 
 def classify_outcome(*, pnl: float, rules_followed: bool) -> OutcomeQuality:
     """Profit never retroactively legitimizes an invalid decision."""
+    if not math.isfinite(pnl):
+        raise ValueError("pnl must be finite")
     if pnl > 0:
         return OutcomeQuality.GOOD_WIN if rules_followed else OutcomeQuality.BAD_WIN
     if pnl < 0:
