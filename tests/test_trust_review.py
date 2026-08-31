@@ -57,7 +57,7 @@ class TrustReviewTests(unittest.TestCase):
             f"5000,{symbol},PERIOD_M15,{source},{available},1.1,1.11,0.01,55\n"
         )
 
-    def tester_expected(self) -> tuple[ExpectedExecutionEnvelope, ...]:
+    def tester_expected(self, *, expected_net_pnl: float | None = 1.0) -> tuple[ExpectedExecutionEnvelope, ...]:
         entry = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
         exit_at = entry + timedelta(minutes=15)
         return (
@@ -74,10 +74,11 @@ class TrustReviewTests(unittest.TestCase):
                 exit_reference_price=1.21,
                 initial_sl=1.19,
                 initial_tp=0.0,
+                expected_net_pnl=expected_net_pnl,
             ),
         )
 
-    def tester_csv(self) -> str:
+    def tester_csv(self, *, profit: float = 1.0) -> str:
         entry = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
         exit_at = entry + timedelta(minutes=15)
         entry_msc = int(entry.timestamp() * 1000)
@@ -94,7 +95,7 @@ class TrustReviewTests(unittest.TestCase):
         )
         exit_row = (
             f"5000,EURUSD,PERIOD_M15,{strategy},10,21,{exit_msc},1,sell,1,out,0.01,1.21,"
-            "0,0,1,0,3,expert,1.19,0,DDT:t1\n"
+            f"0,0,{profit},0,3,expert,1.19,0,DDT:t1\n"
         )
         return header + entry_row + exit_row
 
@@ -170,7 +171,7 @@ class TrustReviewTests(unittest.TestCase):
         self.assertFalse(wrong.passed)
         self.assertIn("native_symbol_mismatch", wrong.reasons)
 
-    def test_native_tester_proof_binds_deals_to_environment_and_semantics(self) -> None:
+    def test_native_tester_proof_binds_deals_environment_semantics_and_cash(self) -> None:
         proof = qualify_native_tester(
             self.tester_expected(),
             self.tester_csv(),
@@ -180,10 +181,38 @@ class TrustReviewTests(unittest.TestCase):
             max_entry_delay_seconds=0.0,
             max_entry_price_gap=0.0,
             max_exit_price_gap=0.0,
+            max_net_pnl_gap=0.0,
         )
         self.assertTrue(proof.passed)
         self.assertEqual(proof.parity.matched, 1)
         self.assertEqual(len(proof.input_sha256), 64)
+
+    def test_native_tester_trust_rejects_missing_or_drifted_cash_expectation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "expected net PnL"):
+            qualify_native_tester(
+                self.tester_expected(expected_net_pnl=None),
+                self.tester_csv(),
+                expected_symbol="EURUSD",
+                expected_period="PERIOD_M15",
+                observed_at=NOW,
+                max_entry_delay_seconds=0.0,
+                max_entry_price_gap=0.0,
+                max_exit_price_gap=0.0,
+                max_net_pnl_gap=0.0,
+            )
+        drifted = qualify_native_tester(
+            self.tester_expected(),
+            self.tester_csv(profit=1.5),
+            expected_symbol="EURUSD",
+            expected_period="PERIOD_M15",
+            observed_at=NOW,
+            max_entry_delay_seconds=0.0,
+            max_entry_price_gap=0.0,
+            max_exit_price_gap=0.0,
+            max_net_pnl_gap=0.1,
+        )
+        self.assertFalse(drifted.passed)
+        self.assertIn("trade:t1:net_pnl_gap", drifted.reasons)
 
     def test_full_operational_trust_requires_live_data_and_both_native_mt5_artifacts(self) -> None:
         config = FeatureConfig(ma_period=2, atr_period=2, rsi_period=2)
@@ -205,6 +234,7 @@ class TrustReviewTests(unittest.TestCase):
             max_entry_delay_seconds=0.0,
             max_entry_price_gap=0.0,
             max_exit_price_gap=0.0,
+            max_net_pnl_gap=0.0,
         )
         report = build_m75_trust_report(
             commit_sha="a" * 40,
