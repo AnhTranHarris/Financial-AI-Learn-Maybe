@@ -218,9 +218,10 @@ void ExportDeals()
       PrintFormat("DustyResearchEA cannot open deal export %s. Error=%d",InpDealsFile,GetLastError());
       return;
      }
-   FileWrite(handle,"strategy_hash","position_id","deal_id","time_msc","deal_type","deal_type_name",
-             "entry_type","entry_type_name","volume","price","commission","swap","profit","fee",
-             "reason","reason_name","sl","tp","comment");
+   FileWrite(handle,
+             "terminal_build","symbol","period","strategy_hash","position_id","deal_id","time_msc",
+             "deal_type","deal_type_name","entry_type","entry_type_name","volume","price","commission",
+             "swap","profit","fee","reason","reason_name","sl","tp","comment");
    for(int i=0;i<HistoryDealsTotal();i++)
      {
       const ulong deal=HistoryDealGetTicket(i);
@@ -234,6 +235,9 @@ void ExportDeals()
       const long entry_type=HistoryDealGetInteger(deal,DEAL_ENTRY);
       const long reason=HistoryDealGetInteger(deal,DEAL_REASON);
       FileWrite(handle,
+                TerminalInfoInteger(TERMINAL_BUILD),
+                _Symbol,
+                EnumToString((ENUM_TIMEFRAMES)_Period),
                 InpStrategyHash,
                 HistoryDealGetInteger(deal,DEAL_POSITION_ID),
                 deal,
