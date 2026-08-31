@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, TypeVar
 
 from .experience import TradeSide
 from .markets import InstrumentEconomics
+
+
+T = TypeVar("T")
 
 
 class BacktestMode(StrEnum):
@@ -168,12 +171,11 @@ def simulate_portfolio(
         for mark in sorted(marks_at.get(at, ()), key=lambda item: item.symbol):
             last_price[mark.symbol] = mark.price
 
-        # Close before opening at the same instant: released risk/capital is available first.
         for trade in sorted(exits_at.get(at, ()), key=lambda item: item.trade_id):
             if trade.trade_id not in open_trades:
                 raise ValueError(f"closing unknown trade: {trade.trade_id}")
             economics = economics_by_symbol[trade.symbol]
-            pnl = trade_net_pnl(trade, economics)
+            pnl = trade_net_pnl(open_trades[trade.trade_id], economics)
             balance += pnl
             realized_total += pnl
             last_price[trade.symbol] = trade.exit_price
@@ -184,7 +186,6 @@ def simulate_portfolio(
                 raise ValueError(f"duplicate open trade: {trade.trade_id}")
             balance -= trade.entry_cost
             realized_total -= trade.entry_cost
-            # trade_net_pnl includes entry cost, so avoid charging it again on close.
             open_trades[trade.trade_id] = SimulatedTrade(
                 trade.trade_id,
                 trade.symbol,
@@ -255,12 +256,7 @@ def purged_walk_forward_ranges(
     embargo_rows: int = 0,
     max_folds: int = 64,
 ) -> tuple[FoldRange, ...]:
-    """Build bounded chronological folds with explicit train/test separation.
-
-    `purge_rows` removes observations immediately before each test block. `embargo_rows`
-    advances the next test block after the previous test, preventing immediate reuse of its
-    boundary neighborhood.
-    """
+    """Build bounded chronological folds with explicit train/test separation."""
     if min(total_rows, train_rows, test_rows, max_folds) < 1:
         raise ValueError("row counts and max_folds must be positive")
     if purge_rows < 0 or embargo_rows < 0:
@@ -283,7 +279,7 @@ def purged_walk_forward_ranges(
     return tuple(folds)
 
 
-def evaluation_slice[T](rows: tuple[T, ...], *, warmup_rows: int) -> tuple[T, ...]:
+def evaluation_slice(rows: tuple[T, ...], *, warmup_rows: int) -> tuple[T, ...]:
     """Warm-up primes indicators but is never scored as evaluation performance."""
     if warmup_rows < 0 or warmup_rows > len(rows):
         raise ValueError("invalid warmup row count")
