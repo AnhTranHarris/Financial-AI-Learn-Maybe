@@ -17,5 +17,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m compileall -q src tests
-      - run: python -m unittest discover -s tests -v
+      - name: Compile Python
+        run: python -m compileall -q src tests
+      - name: Feature engine gate
+        run: python -m unittest discover -s tests -p "test_features.py" -v
+      - name: Strategy IR gate
+        run: python -m unittest discover -s tests -p "test_integrity_strategy_ir.py" -v
+      - name: Investment laboratory gate
+        run: python -m unittest discover -s tests -p "test_investment_lab.py" -v
+      - name: Investment review proofs
+        run: python -m unittest discover -s tests -p "test_investment_review_proofs.py" -v
+      - name: Full unittest suite
+        run: python -m unittest discover -s tests -v
