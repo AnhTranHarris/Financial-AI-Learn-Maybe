@@ -1,30 +1,43 @@
-# Dusty Dragon — Reasoning, Learning & Event-Intelligence Core
+# Dusty Dragon — Autonomous Quantitative Research Core
 
-Dusty Dragon is being rebuilt as a **Windows-first autonomous quantitative research system** for MetaTrader 5. The current development lineage contains the deterministic Reasoning Core (M0–M11), experience/research learning (M12–M23), resource-aware curriculum and MT5 validation (M24–M35), symbol-conditioned self-development (M36–M45), and macro/event intelligence (M46–M55).
+Dusty Dragon is being rebuilt as a **Windows-first autonomous quantitative research system for MetaTrader 5**.
 
-It still has **no broker-write authority, no broker credentials, no position sizing, no live-money path, and no direct LLM/model execution authority**.
+The current development lineage now covers:
+
+- **M0–M11** — deterministic reasoning core;
+- **M12–M23** — experience, strategy research and learning;
+- **M24–M35** — resource discipline, research memory, robustness and MT5 laboratory validation;
+- **M36–M45** — exact-symbol public curriculum and bounded self-development;
+- **M46–M55** — cross-asset, news/event and scenario intelligence;
+- **M56–M65** — semantic integrity, broker economics, Strategy IR v2, realistic backtesting, statistical reality, capital/risk/portfolio governance and evidence-backed pre-demo certification.
+
+Dusty still has **no broker-write authority, no live-money path, no direct LLM/model/news execution authority and no automatic demo-to-live promotion**.
 
 ## Engineering laws
 
+- **Learn → reason → test → falsify → remember → improve.**
 - **Minimum code surface, maximum behavioral coverage.**
 - **Disk holds knowledge; RAM holds only the current thought.**
 - **The internet supplies hypotheses, not truth.**
 - **External performance is a claim until Dusty independently reproduces it.**
-- **Raw MT5 market history is not duplicated merely because Dusty can duplicate it.**
-- **Compute is budgeted like capital: core safety outranks background research.**
-- **Dusty must consume its curriculum before expanding it.**
-- **Popularity determines what deserves investigation, not what Dusty believes.**
+- **Popularity determines what Dusty investigates first; performance and independent testing determine what Dusty believes.**
 - **Research universe may be broader than execution universe.**
 - **Economic underlier is not trading instrument.**
-- **Automatic news acquisition is free-only and symbol-conditioned.**
-- **News updates scenarios; markets validate scenarios.**
+- **MT5 owns raw broker history; Dusty owns knowledge about markets.**
+- **Acquisition must answer a research question or fill a measured gap.**
+- **Automatic news acquisition is free-only, legitimate and symbol-conditioned.**
+- **News updates scenarios; markets determine whether scenarios are being priced.**
 - **Source repetition is not independent evidence.**
 - **Every scenario must be falsifiable.**
-- **Free does not mean useful; incremental value must be demonstrated.**
+- **Free does not mean relevant. Relevant does not mean useful. Useful must be demonstrated.**
+- **Dusty never autonomously pays for data.**
+- **No model, LLM, article or external strategy has broker-write authority.**
+- **A profitable rule violation is a governance failure. A rule-following loss is valid research evidence.**
+- **Loss increases investigation priority, not position size.**
 
-Complexity must earn its way into the repository. Immutable data, enums, protocols, pure functions, transition tables, append-only SQLite records, bounded iteration, streaming aggregation, and standard-library components are preferred over frameworks or speculative abstractions.
+Complexity must earn its place. Immutable data, enums, pure functions, protocols, transition tables, append-only SQLite records, bounded loops and standard-library components are preferred over framework-heavy runtimes.
 
-## Frozen Person
+## Frozen Person reasoning model
 
 One synthetic Person reasons about one symbol + one strategy through four cognitive functions:
 
@@ -33,152 +46,260 @@ One synthetic Person reasons about one symbol + one strategy through four cognit
 - **Patience — time**
 - **Guardian — govern**
 
-They remain functions of one Person, not independent trading agents. Reasoning decisions are semantic only and **never mutate execution truth**.
+These are functions of one Person, not independent agents voting on trades. Semantic reasoning never mutates broker or position truth.
 
 ## Milestone map
 
 | Phase | Capability | Hard boundary |
 |---|---|---|
-| **M0–M11** | Deterministic Person, coherence, phase transitions, journal/replay, evidence/provider boundaries | Reasoning cannot mutate position/execution truth |
-| **M12–M23** | Exhaustive reasoning certification, PIT experience learning, Strategy IR, experiments, graveyard, forecast tournament | Human/public/model evidence remains read-only research evidence |
-| **M24–M35** | Resource governor, disk-first library, external quarantine/lineage, independent reproduction, streaming research, bounded refinement, walk-forward, MT5 tester contract/reconciliation | MT5 boundary is laboratory-only; no broker writes |
-| **M36–M45** | Exact-symbol curriculum cohorts, duplicate/family compression, reasoning bridge, bounded hypothesis composition, adaptive acquisition, regime learning, real read-only MT5 worker and fidelity ladder | Dusty must consume curriculum before more acquisition; M45 only allows continued demo-execution development |
-| **M46–M55** | Cross-asset market identity, free symbol-news registry, Event Capsules, unscheduled clustering, source independence, scenario forecasting, session/reaction research, strategy-event interactions, event reasoning bridge, source value gate | News never maps directly to trade authority; M55 still keeps `broker_write_authorized=False` |
+| **M0–M11** | Deterministic Person, coherence, phase transitions, journal/replay, evidence/provider boundaries | Reasoning cannot mutate execution truth |
+| **M12–M23** | PIT experience learning, Strategy IR v1, experiments, graveyard, forecast tournament | Human/public/model evidence remains research evidence |
+| **M24–M35** | Resource governor, disk-first library, quarantine/lineage, independent reproduction, walk-forward, MT5 laboratory/reconciliation | MT5 remains research-only |
+| **M36–M45** | Exact-symbol curriculum, duplicate/family compression, bounded hypothesis composition, adaptive acquisition/regime learning | Curriculum must be consumed before uncontrolled acquisition |
+| **M46–M55** | Market identity, free symbol-news policy, Event Capsules, scenario forecasting, reaction/session research, source-value gate | News never maps directly to trade authority |
+| **M56–M65** | PIT hardening, instrument economics, Strategy IR v2, realistic ledger, multiple-testing defenses, Money/Risk/Quant/Growth managers, pre-demo evidence bundle | Passing M65 authorizes only Demo Desk engineering; broker writes remain false |
 
-Detailed event-intelligence semantics are documented in `docs/m46-m55.md`.
+Detailed phase semantics:
 
-## Symbol-conditioned curriculum
+- `docs/m36-m45.md`
+- `docs/m46-m55.md`
+- `docs/m56-m65.md`
 
-Forex Factory, Myfxbook, TradingView, Quantpedia, QuantConnect, GitHub, papers, and future authorized sources are curriculum rather than authority.
+## Research and curriculum
 
-For a target symbol Dusty can retain bounded cohorts such as:
+Forex Factory, Myfxbook, TradingView, Quantpedia, QuantConnect, GitHub, papers and future authorized sources are **curriculum**, not authority.
 
-- raw top-gain exemplars;
+For a target symbol Dusty can maintain bounded cohorts such as:
+
+- raw high-gain exemplars;
 - research-quality exemplars;
 - failure/control exemplars;
-- TradingView popularity exemplars;
-- related-symbol and transfer-learning material kept explicitly separate from exact-symbol evidence.
+- popularity-ranked discovery exemplars;
+- related-symbol/transfer material kept separate from exact-symbol evidence.
 
-Exact strategy hashes identify concrete rules. Structural family hashes prevent copied or retuned strategies from masquerading as independent ideas. `known_at` prevents future leaderboard success from leaking into historical reconstructions.
+Exact strategy hashes identify concrete rules. Structural family identity prevents copied or lightly retuned strategies from masquerading as independent ideas. Point-in-time timestamps prevent later leaderboard success from leaking into earlier reconstructions.
 
-## Event and macro intelligence
+## Event and scenario intelligence
 
-Dusty treats news as a possible update to future market states, not as a direct signal.
+Dusty treats news as an update to possible world states, not a direct signal.
 
 ```text
 free symbol-relevant sources
-            |
-            v
-   normalized PIT news/events
-            |
-            v
- scheduled capsule / unscheduled cluster
-            |
- dedupe + publisher independence
-            |
-            v
- conditional scenario hypotheses
- continuation / escalation / de-escalation / etc.
-            |
- transmission + confirmation + invalidation
-            |
-            v
- cross-market + session reaction research
-            |
- strategy × event interaction memory
-            |
-            v
- Analyst + Skeptic + Patience + Guardian
-            |
-            v
- testable strategy hypothesis
+        -> normalized PIT news/events
+        -> scheduled capsule / unscheduled cluster
+        -> dedupe + publisher independence
+        -> falsifiable scenarios
+        -> transmission + confirmation + invalidation
+        -> cross-market/session reaction research
+        -> strategy × event interaction memory
+        -> Analyst + Skeptic + Patience + Guardian
+        -> testable hypothesis
 ```
 
-The core does not infer simplistic causal rules such as `war -> oil up`. Scenario creation requires an explicit premise, economic transmission channels, confirmation criteria, and invalidation criteria. Low-liquidity movement followed by London/New York participation is measured as a research relationship, not hard-coded as a pre-positioning rule.
+The system does not hard-code simplistic causal rules such as `war -> oil up`. Scenarios require an explicit premise, transmission path, confirmation criteria and invalidation criteria.
 
-## Cross-asset identity
+## M56-M60: research reality
 
-Dusty separates economic underlier from instrument identity. For example, XAUUSD CFD and a COMEX gold future may share `economic_underlier=GOLD` while retaining separate symbols, venues, contracts, expiries, costs, and histories.
+### Semantic integrity
 
-The research universe can therefore include FX, metals, energy, crypto, futures, indices, and selectively equities without implying that every researched market is eligible for execution.
+The deterministic core now rejects evidence observed after the reasoning instant. Trade episodes use quantity-aware cash-flow PnL for scale-in/scale-out. Event-reaction research can reject overlapping intervals instead of accidentally double-counting cumulative market moves.
 
-## Resource discipline
+### Broker/instrument economics
 
-Dusty stores compact knowledge and conclusions rather than a second giant raw market warehouse. MT5 remains the primary broker-history/tester cache. External curriculum and news acquisition are bounded.
+`InstrumentEconomics` models contract size, tick size/value, broker volume constraints, margin, commission, swaps and stop/freeze distances. Values must be finite. Broker volume normalization rounds downward only.
 
-M54 additionally measures **incremental research utility** by source. A source that is free and relevant can still be paused if it repeatedly fails to improve the caller-defined research utility relative to a baseline.
+The read-only MT5 worker can capture broker symbol/account specifications without exposing an order surface.
+
+### Strategy IR v2
+
+The versioned declarative strategy representation supports grouped entries, mandatory stops, targets, trailing/breakeven, maximum hold, sessions, event exclusions, cooldown and bounded scaling.
+
+Deployment promotion is constitutionally prohibited for scalping, HFT, latency-critical strategies, martingale, loss-recovery sizing, unbounded averaging, sub-M5 decisions and sub-15-minute intended horizons. High execution sensitivity is research-only by default.
+
+### Realistic simulator
+
+The original cheap experiment remains a screening engine. A separate realistic account ledger supports overlapping positions, realized/unrealized PnL, explicit costs, margin, equity and true high-water drawdown.
+
+Warm-up is not scored. Dusty constructs purge/embargo walk-forward ranges so immediate test-boundary information is not silently recycled into subsequent training.
+
+### Statistical reality
+
+Dusty records **all trials**, including failures, in append-only research history. M60 adds deterministic bootstrap intervals, family-wise multiple-testing adjustment, profit concentration, parameter-neighborhood stability and a bounded PBO-style overfit proxy.
+
+Search breadth increases the burden of evidence. Zero-variance positive return streams are suspicious rather than magically perfect.
+
+## M61-M64: capital authority chain
+
+The capital chain is deliberately decomposed:
+
+```text
+frozen eligible strategy
+        |
+        v
+Money Manager
+  stop -> expected loss -> volume
+        |
+        v
+Quant Portfolio Manager
+  allocate supplied risk budget
+        |
+        v
+Portfolio Growth Manager
+  deploy / de-risk / research-only
+        |
+        v
+Risk Constitution + Guardian
+  final veto
+```
+
+### Money Manager
+
+Two sizing concepts are separate:
+
+- `MINIMUM_LOT_STRATEGY_TEST` — research-only broker-feasibility sizing;
+- `GROWTH_RISK` — percentage-risk sizing inside an approved capital envelope.
+
+If the broker minimum lot does not fit the allowed risk, Dusty chooses **zero volume**. It never rounds upward to manufacture a trade.
+
+### Risk Constitution
+
+Default limits currently encode conservative research assumptions including 0.25% normal trade risk, 0.50% Champion soft maximum and a 1.00% absolute per-trade ceiling, plus symbol/portfolio heat, daily/weekly loss, drawdown and margin gates.
+
+Initial stops are mandatory. Stop widening, martingale, loss-recovery sizing and unbounded averaging are prohibited.
+
+Zero equity is a deterministic FAILED state, not an exception.
+
+### Quant Portfolio Manager
+
+The Quant PM allocates only a supplied risk budget using equal-risk, inverse-volatility or quality/volatility/correlation methods. Per-symbol and signed factor heat are bounded. Unused risk is a valid result.
+
+The Quant PM cannot create risk merely because capital is available.
+
+### Portfolio Growth Manager
+
+Capital health states are THRIVING, HEALTHY, CAUTION, DEFENSIVE, CRITICAL and CAPITAL_INSUFFICIENT.
+
+Even THRIVING has a maximum deployment multiplier of `1.0`: growth may expand the opportunity set but may not enlarge constitutional percentage-risk limits. Drawdown compresses deployment. Critical/insufficient states become research-only.
+
+External deposits are separated from trading PnL. Capital-compression research is earned cycle by cycle; failures repeat the same starting capital. At micro-capital, zero eligible strategies is considered a safe, valid conclusion.
+
+## M65 pre-demo certification
+
+`pre_demo_certification.py` binds M56-M64 evidence to one commit using:
+
+- artifact hash;
+- data fingerprint;
+- configuration fingerprint;
+- test fingerprint;
+- commit SHA;
+- pass/fail state.
+
+Missing, duplicate, failed or commit-mismatched evidence blocks readiness. The final bundle has a deterministic SHA-256 identity and stable checkpoint payload.
+
+Even a complete passing certification has:
+
+```text
+broker_write_authorized = False
+```
+
+and may only set:
+
+```text
+ready_for_demo_execution_engineering = True
+```
+
+That distinction is permanent: certification of research/governance is not authorization to trade.
+
+## Adversarial closure testing
+
+The M56-M65 closure suite includes deterministic invariant tests beyond example cases:
+
+- future-evidence rejection;
+- scaled-trade cash-flow accounting;
+- overlapping event-return rejection;
+- Strategy IR canonicalization and execution-style prohibitions;
+- realistic equity/margin/drawdown accounting;
+- purge/embargo boundaries;
+- search-adjusted statistical rejection;
+- zero-equity fail-closed states;
+- rejection of `NaN`/infinite financial inputs;
+- growth sizing across grids of equity, risk and stop distance;
+- proof that volume never rounds upward and expected loss stays inside budget;
+- all portfolio allocation methods across multiple budgets;
+- proof that portfolio/symbol/factor heat stays bounded;
+- monotone capital compression.
+
+CI compiles and runs the full unittest suite on both `windows-latest` and `ubuntu-latest` using Python 3.11.
 
 ## MT5 boundary
 
-The MT5 architecture uses an explicit terminal executable and a read-only historical/tester boundary. Coarse testing modes screen candidates before expensive high-fidelity work:
+Dusty's current MT5 boundary remains laboratory/read-only. Coarse modes screen candidates before expensive high-fidelity validation:
 
 ```text
 Dusty cheap experiment
-        -> walk-forward
+        -> leakage/statistical gates
+        -> realistic account ledger
         -> MT5 Open Prices
         -> MT5 1-Minute OHLC
         -> MT5 Every Tick
         -> MT5 Real Ticks
 ```
 
-Material disagreement with MT5 is a rejection/research signal, not something an AI may explain away. No `order_send` surface exists in the current research core.
+Material disagreement with MT5 is rejection/research evidence, not something an AI may explain away. No `order_send` surface exists in M56-M65.
 
 ## Reference-repository genetics
 
 Dusty borrows engineering ideas rather than dependency trees:
 
-- **Kronos** — specialized financial K-line forecast evidence boundary
-- **Chronos** — probabilistic/quantile and covariate-aware forecast evidence
-- **Uni2TS/Moirai** — rolling evaluation and universal time-series benchmarking
-- **Vibe-Trading** — PIT research, provider/instrument provenance, shadow validation, fail-closed execution lessons
-- **Qlib** — dataset/model/backtest/evaluation separation and disk-reloadable research state
-- **RD-Agent** — hypothesis → quantitative validation → feedback → refinement
-- **TradingAgents** — constructive/adversarial research, PIT news lessons, durable decision memory/checkpoint concepts without importing LangGraph
-- **ai-hedge-fund** — mandate/alpha-model separation and backtestable research components
-- **Automaton** — budgeted memory/retrieval, durable SQLite state and policy concepts; self-modification/replication are rejected
-- **Microsoft Agent Framework** — checkpoint/resume after completed workflow steps; framework runtime remains unnecessary while Dusty's primitives suffice
+- **Kronos** — specialist financial K-line forecast evidence;
+- **Chronos** — probabilistic/quantile/covariate forecast evidence;
+- **Uni2TS/Moirai** — rolling probabilistic evaluation;
+- **Vibe-Trading** — PIT, symbol/unit correctness, warm-up, purged-CV, minimum-lot and fail-closed lessons;
+- **Qlib** — loose-coupled data/model/backtest/research separation;
+- **RD-Agent** — hypothesis → implementation → quantitative validation → feedback;
+- **TradingAgents** — PIT and durable memory/checkpoint lessons without importing LangGraph;
+- **ai-hedge-fund** — persistent mandate and backtestable alpha separation;
+- **Automaton** — durable state/resource-tier/immutable-law ideas only; autonomous funding, replication and runtime self-modification are rejected;
+- **Microsoft Agent Framework** — restart/checkpoint patterns without importing the framework runtime.
 
 ## Current repository shape
 
 ```text
 src/dusty/
-  core.py                    # frozen deterministic reasoning
-  experience.py              # PIT human/market episodes
-  research.py                # Strategy IR + streaming experiments + graveyard
-  forecasting.py             # forecast evidence tournament
-  resource.py                # host resource governor
-  library.py                 # disk-first curriculum memory
-  acquisition.py             # external quarantine/translation/lineage
-  reproduction.py            # independent claim reproduction
-  validation.py              # bounded refinement + walk-forward
-  mt5lab.py / mt5worker.py   # tester contract + read-only Windows worker
-  operations.py / fidelity.py# reconciliation, scheduling, fidelity ladder
-  curriculum.py              # exact-symbol cohorts + knowledge compression
-  reasoning_bridge.py        # bounded curriculum evidence bridge
-  hypothesis.py              # bounded strategy composition
-  adaptive.py                # acquisition/regime budgets
-  development.py             # self-development tournament
-  markets.py                 # underlier/instrument identity
-  news.py                    # free-only symbol-conditioned news policy
-  events.py                  # scheduled Event Capsules
-  scenario.py                # unscheduled clusters + falsifiable scenarios
-  event_research.py          # reaction/session + strategy-event research
-  event_reasoning.py         # bounded scenario evidence bridge
-  information_value.py       # source incremental-value gate
-  event_certification.py     # M55 event-intelligence gate
+  core.py                     # deterministic Person + PIT coherence
+  experience.py               # quantity-aware PIT episodes
+  research.py                 # cheap Strategy IR v1 screen + strategy memory
+  strategy_ir.py              # Strategy IR v2 + eligibility constitution
+  backtest.py                 # realistic account ledger + purge/embargo folds
+  statistical.py              # trial registry + multiple-testing/overfit diagnostics
+  markets.py                  # instrument identity + broker economics
+  capital.py                  # Money Manager / stop-first sizing
+  risk.py                     # Risk Constitution + outcome quality
+  portfolio.py                # Quant Portfolio Manager
+  growth.py                   # capital-health / growth / compression policy
+  pre_demo_certification.py   # evidence-backed M65 gate
+  mt5lab.py / mt5worker.py    # research-only MT5 boundary
+  curriculum.py               # exact-symbol curriculum
+  news.py / events.py         # free PIT event inputs
+  scenario.py                 # falsifiable scenario hypotheses
+  event_research.py           # event/session reaction research
+  information_value.py        # source incremental-value gate
+  library.py                  # disk-first knowledge
+  resource.py                 # host resource governor
 ```
 
-## Explicitly still out of scope
+## Explicitly still out of scope at M65
 
-- MT5 demo/live order placement
-- broker credentials
-- position sizing and portfolio allocation
-- live capital
-- self-modifying production code
-- direct LLM/model/news broker-write authority
-- automatic reversal
-- blind execution of downloaded strategy code
-- paid/restricted automatic news feeds
-- wholesale imports of large agent frameworks
+- MT5 demo order placement;
+- MT5 live order placement;
+- broker credentials in the research core;
+- automatic demo → live escalation;
+- live capital;
+- self-modifying production code;
+- direct LLM/model/news broker-write authority;
+- automatic reversal;
+- blind execution of downloaded strategy code;
+- paid/restricted automatic news acquisition;
+- wholesale import of large agent frameworks.
 
-**M55 is still a pre-execution research milestone.** Passing it means Dusty has a certified symbol-conditioned curriculum and macro/event research layer suitable for the next controlled demo-execution engineering phase. It is not a profitability claim and it does not authorize a broker write.
+**M65 is the end of pre-demo research and capital-governance engineering.** Passing it is not a profitability claim. The next phase may design the Controlled Demo Desk, but that phase must earn its own execution authority through new environment, session, order-intent, reconciliation and multi-desk certification gates.
