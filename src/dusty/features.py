@@ -11,12 +11,17 @@ from .mt5worker import MT5Bar
 from .research import Scalar
 
 
+_EXECUTION_PRICE_KEY = "__execution_price__"
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureBar:
     """A completed OHLC bar stamped at the instant its full contents are knowable.
 
     ``source_open_at`` preserves the original MT5 bar-open timestamp when available. ``at`` is the
-    observation/availability timestamp used by all point-in-time features and decisions.
+    observation/availability timestamp used by all point-in-time features and decisions. For an MT5
+    completed-bar record, ``execution_price`` is the contemporaneous next-bar open: the first price
+    Dusty can defensibly use after the completed bar has become observable.
     """
 
     at: datetime
@@ -27,6 +32,7 @@ class FeatureBar:
     spread_points: float = 0.0
     tick_volume: float = 0.0
     source_open_at: datetime | None = None
+    execution_price: float | None = None
 
     def __post_init__(self) -> None:
         if self.at.tzinfo is None or self.at.utcoffset() is None:
@@ -38,6 +44,10 @@ class FeatureBar:
                 raise ValueError("completed MT5 bar cannot be available at or before its open time")
         if any(not math.isfinite(v) or v <= 0 for v in (self.open, self.high, self.low, self.close)):
             raise ValueError("feature OHLC prices must be finite and positive")
+        if self.execution_price is not None and (
+            not math.isfinite(self.execution_price) or self.execution_price <= 0
+        ):
+            raise ValueError("feature execution price must be finite and positive")
         if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close, self.high):
             raise ValueError("feature OHLC geometry is invalid")
         if not math.isfinite(self.spread_points) or self.spread_points < 0:
@@ -45,13 +55,35 @@ class FeatureBar:
         if not math.isfinite(self.tick_volume) or self.tick_volume < 0:
             raise ValueError("tick volume must be finite and nonnegative")
 
+    @property
+    def market_price_at_availability(self) -> float:
+        """First defensible execution reference at ``at``.
+
+        Synthetic/manual completed bars may omit a separate execution quote and then explicitly fall
+        back to their close. MT5-derived bars always provide the next-bar open and therefore do not use
+        this fallback in the trusted MT5 laboratory path.
+        """
+        return self.close if self.execution_price is None else self.execution_price
+
     @classmethod
-    def from_mt5(cls, bar: MT5Bar, *, available_at: datetime) -> "FeatureBar":
-        """Convert an MT5 bar-open record only when a later timestamp proves the bar completed."""
+    def from_mt5(
+        cls,
+        bar: MT5Bar,
+        *,
+        available_at: datetime,
+        execution_price: float,
+    ) -> "FeatureBar":
+        """Convert an MT5 bar-open record only when a later bar proves completion.
+
+        ``execution_price`` must come from the later bar that establishes availability, not from the
+        just-completed bar's close.
+        """
         if available_at.tzinfo is None or available_at.utcoffset() is None:
             raise ValueError("MT5 bar availability timestamp must be timezone-aware")
         if available_at <= bar.at:
             raise ValueError("MT5 completed bar must become available after its open timestamp")
+        if not math.isfinite(execution_price) or execution_price <= 0:
+            raise ValueError("MT5 execution reference price must be finite and positive")
         return cls(
             available_at,
             bar.open,
@@ -61,6 +93,7 @@ class FeatureBar:
             float(bar.spread),
             float(bar.tick_volume),
             source_open_at=bar.at,
+            execution_price=float(execution_price),
         )
 
 
@@ -68,9 +101,9 @@ def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar,
     """Convert MT5 bar-open records into completed observations without lookahead.
 
     MT5's Python bar ``time`` is the bar opening time. A historical OHLC row is treated as knowable only
-    when the next bar has actually opened. The final raw bar is therefore dropped because this bounded
-    history slice contains no later observation proving it completed. This is intentionally conservative
-    across weekend/session gaps and avoids assuming a bar's final high/low/close were known at its open.
+    when the next bar has actually opened. Its first executable reference is that following bar's open.
+    The final raw bar is dropped because this bounded history slice contains no later observation proving
+    it completed. This is intentionally conservative across weekend/session gaps.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
@@ -80,7 +113,11 @@ def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar,
     if len(rows) < 2:
         return ()
     return tuple(
-        FeatureBar.from_mt5(current, available_at=following.at)
+        FeatureBar.from_mt5(
+            current,
+            available_at=following.at,
+            execution_price=following.open,
+        )
         for current, following in zip(rows, rows[1:])
     )
 
@@ -184,10 +221,12 @@ def true_range(bars: Sequence[FeatureBar]) -> tuple[float, ...]:
 
 
 def atr(bars: Sequence[FeatureBar], period: int) -> tuple[float | None, ...]:
-    """MetaTrader built-in iATR-compatible target: simple moving average of True Range.
+    """MetaTrader built-in iATR parity target: moving average of True Range.
 
-    Wilder/SMMA ATR remains a distinct concept and must not be silently substituted for MT5's built-in
-    iATR semantics. Native parity is still verified by DustyIndicatorParity.mq5 on the user's terminal.
+    MetaQuotes' published ATR description defines ATR as a moving average of True Range, and its CodeBase
+    material describes the built-in MT5 ATR family as the simple-average variant. Native terminal parity
+    remains authoritative: DustyIndicatorParity.mq5 must still prove the exact terminal values before an
+    indicator configuration is operationally certified.
     """
     return sma(true_range(bars), period)
 
@@ -251,6 +290,7 @@ def compute_standard_features(
             "close": bar.close,
             "spread_points": bar.spread_points,
             "tick_volume": bar.tick_volume,
+            _EXECUTION_PRICE_KEY: bar.market_price_at_availability,
         }
         if index:
             values["return_1"] = bar.close / rows[index - 1].close - 1.0
