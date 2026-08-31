@@ -107,8 +107,14 @@ def compile_strategy(spec: StrategySpecV2) -> CompiledStrategy:
     """Compile StrategySpecV2 into the only executable Dusty strategy semantics.
 
     Free-form exit strings remain representable for research provenance, but they are not executable.
-    Promotion to runtime requires the small typed DSL enforced here.
+    Promotion to runtime requires the small typed DSL enforced here. StrategySpecV2 can represent
+    future scaling semantics, but the current single-position runtime refuses those fields rather than
+    silently ignoring them.
     """
+    if spec.scale_in_limit:
+        raise ValueError("runtime_scaling_not_supported:scale_in_limit")
+    if spec.scale_out_fractions:
+        raise ValueError("runtime_scaling_not_supported:scale_out_fractions")
     stop = _rule(spec.exit_plan.stop_rule, allow_off=False, allow_rr=False)
     if stop.kind is PriceRuleKind.RR:
         raise ValueError("initial stop cannot be an RR rule")
@@ -242,7 +248,9 @@ def generate_runtime_trades(
     ``stop_price`` on RuntimeTrade is always the immutable initial protective stop used for sizing and
     MT5 manifest parity. ``exit_stop_price`` records the final tightened stop for audit. If stop and
     target are both touched inside one bar, stop wins. An optional entry_authorizer can only veto a
-    rule-matched entry; it cannot create an entry when strategy rules fail.
+    rule-matched entry; it cannot create an entry when strategy rules fail. Cooldown is enforced after
+    each completed trade. Scaling remains an explicit compile-time rejection until quantity-aware runtime
+    semantics exist.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
@@ -252,11 +260,15 @@ def generate_runtime_trades(
     entry_price = stop_price = initial_stop_price = 0.0
     target_price: float | None = None
     held_steps = 0
+    cooldown_remaining = 0
     for bar in rows:
         features = bar.feature_map()
         if entry_bar is None:
+            if cooldown_remaining > 0:
+                cooldown_remaining -= 1
+                continue
             matches = compiled.entry_matches(features, session=bar.session, event_blocked=bar.event_blocked)
-            authorized = entry_authorizer is None or entry_authorizer(bar, compiled)
+            authorized = entry_authorizer is None or (matches and entry_authorizer(bar, compiled))
             if matches and authorized:
                 entry_bar = bar
                 entry_price = bar.close
@@ -298,6 +310,7 @@ def generate_runtime_trades(
             entry_bar = None
             target_price = None
             held_steps = 0
+            cooldown_remaining = compiled.spec.cooldown_steps
             continue
         stop_price = compiled.tightened_stop(
             entry_price=entry_price,
