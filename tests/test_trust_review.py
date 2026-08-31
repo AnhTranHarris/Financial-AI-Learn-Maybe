@@ -128,6 +128,21 @@ class TrustReviewTests(unittest.TestCase):
         )
         self.assertFalse(report.operationally_trusted)
 
+    def test_stale_ci_commit_cannot_certify_newer_code(self) -> None:
+        report = build_m75_trust_report(
+            commit_sha="b" * 40,
+            software=self.software(),
+            data_probes=self.probes(),
+        )
+        self.assertFalse(report.operationally_trusted)
+        self.assertTrue(
+            all(
+                assessment.level is ProofLevel.FAILED
+                and assessment.reasons == ("software_proof_commit_mismatch",)
+                for assessment in report.assessments
+            )
+        )
+
     def test_native_indicator_proof_requires_matching_environment_metadata(self) -> None:
         config = FeatureConfig(ma_period=2, atr_period=2, rsi_period=2)
         good = qualify_native_indicators(
@@ -141,6 +156,7 @@ class TrustReviewTests(unittest.TestCase):
         )
         self.assertTrue(good.passed)
         self.assertEqual(good.environment.terminal_build, 5000)
+        self.assertEqual(len(good.input_sha256), 64)
 
         wrong = qualify_native_indicators(
             self.indicator_features(),
@@ -167,6 +183,7 @@ class TrustReviewTests(unittest.TestCase):
         )
         self.assertTrue(proof.passed)
         self.assertEqual(proof.parity.matched, 1)
+        self.assertEqual(len(proof.input_sha256), 64)
 
     def test_full_operational_trust_requires_live_data_and_both_native_mt5_artifacts(self) -> None:
         config = FeatureConfig(ma_period=2, atr_period=2, rsi_period=2)
