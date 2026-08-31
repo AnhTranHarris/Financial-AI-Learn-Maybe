@@ -41,10 +41,12 @@ int OnInit()
    Out=FileOpen(InpOutputFile,FILE_WRITE|FILE_CSV|FILE_ANSI,',');
    if(Out==INVALID_HANDLE)
       return INIT_FAILED;
+   // Bind every row to the native terminal environment that produced it. This prevents a parity CSV
+   // from one symbol/timeframe/build from being accidentally certified against another laboratory run.
    // source_open_time is the completed bar's own opening time (shift 1).
    // available_time is the newly opened current bar (shift 0), the first deterministic point
    // at which this probe treats the previous bar's final OHLC/indicator values as observable.
-   FileWrite(Out,"source_open_time","available_time","sma","ema","atr","rsi");
+   FileWrite(Out,"terminal_build","symbol","period","source_open_time","available_time","sma","ema","atr","rsi");
    return INIT_SUCCEEDED;
   }
 
@@ -57,7 +59,13 @@ void OnTick()
    double sma=0.0,ema=0.0,atr=0.0,rsi=0.0;
    if(!ReadOne(HSMA,1,sma) || !ReadOne(HEMA,1,ema) || !ReadOne(HATR,1,atr) || !ReadOne(HRSI,1,rsi))
       return;
-   FileWrite(Out,(long)closed_open,(long)available,sma,ema,atr,rsi);
+   FileWrite(Out,
+             TerminalInfoInteger(TERMINAL_BUILD),
+             _Symbol,
+             EnumToString((ENUM_TIMEFRAMES)_Period),
+             (long)closed_open,
+             (long)available,
+             sma,ema,atr,rsi);
    FileFlush(Out);
    LastClosedBar=closed_open;
   }
@@ -68,6 +76,6 @@ void OnDeinit(const int reason)
       FileClose(Out);
    if(HSMA!=INVALID_HANDLE) IndicatorRelease(HSMA);
    if(HEMA!=INVALID_HANDLE) IndicatorRelease(HEMA);
-   if(HATR!=INVALID_HANDLE) IndicatorRelease(HATR);
+   if(HATR!=INVALID_HANDLE) IndicatorRelease(HACTER);
    if(HRSI!=INVALID_HANDLE) IndicatorRelease(HRSI);
   }
