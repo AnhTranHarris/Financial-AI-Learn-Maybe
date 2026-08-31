@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+from zoneinfo import ZoneInfoNotFoundError
 
 from dusty.data_acquisition import HTTPSClient
-from dusty.event_acquisition import BLSCalendarAdapter, CalendarConfig, OfficialRSSAdapter, RSSFeedConfig
+from dusty.event_acquisition import (
+    BLSCalendarAdapter,
+    CalendarConfig,
+    OfficialRSSAdapter,
+    RSSFeedConfig,
+    _parse_ical_datetime,
+)
 
 
 class StaticFetcher:
@@ -42,7 +50,16 @@ class EventAcquisitionTests(unittest.TestCase):
         self.assertEqual(events[0].known_at, known)
         self.assertEqual(events[0].currencies, ("USD",))
         self.assertEqual(events[0].scheduled_at.hour, 8)
-        self.assertIsNotNone(events[0].scheduled_at.utcoffset())
+        self.assertEqual(events[0].scheduled_at.utcoffset(), timedelta(hours=-4))
+
+    def test_bls_eastern_fallback_handles_standard_and_daylight_time(self) -> None:
+        with patch("dusty.event_acquisition.ZoneInfo", side_effect=ZoneInfoNotFoundError("missing")):
+            winter = _parse_ical_datetime("20260115T083000", "America/New_York")
+            summer = _parse_ical_datetime("20260715T083000", "America/New_York")
+            self.assertEqual(winter.utcoffset(), timedelta(hours=-5))
+            self.assertEqual(summer.utcoffset(), timedelta(hours=-4))
+            with self.assertRaisesRegex(ValueError, "timezone unavailable"):
+                _parse_ical_datetime("20260715T083000", "Europe/London")
 
 
 if __name__ == "__main__":
