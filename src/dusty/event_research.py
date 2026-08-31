@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Iterable
 
@@ -21,6 +22,12 @@ class LiquidityState(StrEnum):
     UNKNOWN = "unknown"
 
 
+def _aware(value: datetime, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class MarketReaction:
     event_key: str
@@ -31,12 +38,30 @@ class MarketReaction:
     volume_proxy: float
     session: TradingSession
     liquidity: LiquidityState
+    interval_start_minute: int | None = None
+    event_at: datetime | None = None
+    observed_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.event_key.strip() or not self.symbol.strip():
             raise ValueError("market reaction requires event and symbol")
+        if self.minutes_from_event < 0:
+            raise ValueError("market reaction cannot precede its event")
         if self.spread_bps < 0 or self.volume_proxy < 0:
             raise ValueError("spread and volume proxy cannot be negative")
+        if self.interval_start_minute is not None:
+            if self.interval_start_minute < 0 or self.interval_start_minute > self.minutes_from_event:
+                raise ValueError("invalid reaction interval")
+        if (self.event_at is None) != (self.observed_at is None):
+            raise ValueError("event_at and observed_at must be supplied together")
+        if self.event_at is not None and self.observed_at is not None:
+            event_at = _aware(self.event_at, "event_at")
+            observed_at = _aware(self.observed_at, "observed_at")
+            if observed_at < event_at:
+                raise ValueError("reaction observation cannot precede event")
+            elapsed = int((observed_at - event_at).total_seconds() // 60)
+            if elapsed != self.minutes_from_event:
+                raise ValueError("minutes_from_event disagrees with timestamps")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +117,37 @@ class SessionRepricingAssessment:
     reasons: tuple[str, ...] = ()
 
 
+def _reaction_return(rows: list[MarketReaction]) -> float:
+    """Aggregate explicit non-overlapping intervals, otherwise use mean point/cumulative estimate.
+
+    Older M51 observations did not encode interval starts, so summing them could double count
+    cumulative horizons. New observations can carry interval_start_minute and are then safely
+    additive only when intervals do not overlap.
+    """
+    if not rows:
+        return 0.0
+    if not all(item.interval_start_minute is not None for item in rows):
+        return sum(item.return_value for item in rows) / len(rows)
+    ordered = sorted(rows, key=lambda item: (int(item.interval_start_minute), item.minutes_from_event))
+    previous_end = -1
+    total = 0.0
+    for item in ordered:
+        start = int(item.interval_start_minute)
+        if start < previous_end:
+            raise ValueError("reaction intervals overlap and would double-count return")
+        previous_end = item.minutes_from_event
+        total += item.return_value
+    return total
+
+
 def assess_session_repricing(observations: Iterable[MarketReaction]) -> SessionRepricingAssessment:
     """Research whether thin-session movement persisted or reversed when higher liquidity returned."""
     rows = tuple(observations)
+    if rows:
+        keys = {item.event_key for item in rows}
+        symbols = {item.symbol for item in rows}
+        if len(keys) != 1 or len(symbols) != 1:
+            raise ValueError("session repricing must refer to one event and symbol")
     low = [item for item in rows if item.liquidity is LiquidityState.LOW]
     high = [item for item in rows if item.liquidity is LiquidityState.HIGH]
     reasons = []
@@ -104,8 +157,8 @@ def assess_session_repricing(observations: Iterable[MarketReaction]) -> SessionR
         reasons.append("no_high_liquidity_observation")
     if reasons:
         return SessionRepricingAssessment(False, 0.0, 0.0, False, False, tuple(reasons))
-    low_return = sum(item.return_value for item in low)
-    high_return = sum(item.return_value for item in high)
+    low_return = _reaction_return(low)
+    high_return = _reaction_return(high)
     continuation = low_return != 0.0 and high_return != 0.0 and (low_return > 0) == (high_return > 0)
     reversal = low_return != 0.0 and high_return != 0.0 and (low_return > 0) != (high_return > 0)
     return SessionRepricingAssessment(True, low_return, high_return, continuation, reversal)
@@ -156,7 +209,18 @@ def summarize_strategy_event_interactions(
         state[1] = float(state[1]) + item.return_value
         state[2] = int(state[2]) + int(item.return_value > 0)
     result = []
-    for (event_class, scenario_state, session), state in sorted(totals.items(), key=lambda item: (item[0][0], item[0][1].value, item[0][2].value)):
+    for (event_class, scenario_state, session), state in sorted(
+        totals.items(), key=lambda item: (item[0][0], item[0][1].value, item[0][2].value)
+    ):
         count = int(state[0])
-        result.append(StrategyEventStats(event_class, scenario_state, session, count, float(state[1]) / count, int(state[2]) / count))
+        result.append(
+            StrategyEventStats(
+                event_class,
+                scenario_state,
+                session,
+                count,
+                float(state[1]) / count,
+                int(state[2]) / count,
+            )
+        )
     return tuple(result)
