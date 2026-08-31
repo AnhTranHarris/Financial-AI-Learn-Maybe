@@ -76,6 +76,6 @@ void OnDeinit(const int reason)
       FileClose(Out);
    if(HSMA!=INVALID_HANDLE) IndicatorRelease(HSMA);
    if(HEMA!=INVALID_HANDLE) IndicatorRelease(HEMA);
-   if(HATR!=INVALID_HANDLE) IndicatorRelease(HACTER);
+   if(HATR!=INVALID_HANDLE) IndicatorRelease(HATR);
    if(HRSI!=INVALID_HANDLE) IndicatorRelease(HRSI);
   }
