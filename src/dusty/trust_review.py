@@ -219,12 +219,14 @@ def _parse_environment(
 
 
 def _features_hash(features: Sequence[FeatureVector]) -> str:
-    payload = tuple(
-        (item.at.isoformat(), item.values)
-        for item in features
-    )
+    payload = tuple((item.at.isoformat(), item.values) for item in features)
     return sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -243,6 +245,7 @@ def _expected_hash(expected: Sequence[ExpectedExecutionEnvelope]) -> str:
             item.exit_reference_price,
             item.initial_sl,
             item.initial_tp,
+            item.expected_net_pnl,
         )
         for item in expected
     )
@@ -303,10 +306,21 @@ def qualify_native_tester(
     max_entry_delay_seconds: float,
     max_entry_price_gap: float,
     max_exit_price_gap: float,
+    max_net_pnl_gap: float,
     max_volume_gap: float = 1e-9,
     max_time_exit_delay_seconds: float = 60.0,
 ) -> NativeTesterProof:
+    """Qualify native MT5 tester evidence including cash economics.
+
+    Operational M75 trust requires every expected envelope to carry an ex-ante Python net-PnL
+    expectation and requires ``max_net_pnl_gap`` to be declared before reconciliation. Native PnL is
+    computed from exported MT5 profit + commission + swap + fee; price-path parity alone is insufficient.
+    """
     expected_rows = tuple(expected)
+    if not expected_rows:
+        raise ValueError("native tester qualification requires expected trades")
+    if any(item.expected_net_pnl is None for item in expected_rows):
+        raise ValueError("native tester trust requires expected net PnL for every trade")
     artifact = ArtifactFingerprint.from_text(
         "mt5_tester_deals_csv",
         deals_csv,
@@ -328,6 +342,7 @@ def qualify_native_tester(
         max_exit_price_gap=max_exit_price_gap,
         max_volume_gap=max_volume_gap,
         max_time_exit_delay_seconds=max_time_exit_delay_seconds,
+        max_net_pnl_gap=max_net_pnl_gap,
     )
     reasons = tuple(environment_reasons) + tuple(parity.reasons)
     return NativeTesterProof(
@@ -444,10 +459,14 @@ def _lab_assessment(
     elif not tester.passed:
         reasons.extend(tester.reasons or ("native_tester_parity_failed",))
     if reasons:
-        level = ProofLevel.FAILED if (
-            (indicator is not None and not indicator.passed)
-            or (tester is not None and not tester.passed)
-        ) else ProofLevel.OPERATIONAL_EVIDENCE_REQUIRED
+        level = (
+            ProofLevel.FAILED
+            if (
+                (indicator is not None and not indicator.passed)
+                or (tester is not None and not tester.passed)
+            )
+            else ProofLevel.OPERATIONAL_EVIDENCE_REQUIRED
+        )
         return CapabilityAssessment(
             Capability.MT5_LABORATORY,
             level,
@@ -493,8 +512,14 @@ def build_m75_trust_report(
             commit,
             software.commit_sha if software else "no-software-proof",
             software.run_id if software else "",
-            *(f"{item.capability.value}:{item.level.value}:{','.join(item.reasons)}" for item in assessments),
-            *(f"probe:{probe.kind.value}:{probe.source_id}:{probe.artifact.sha256}" for probe in probes),
+            *(
+                f"{item.capability.value}:{item.level.value}:{','.join(item.reasons)}"
+                for item in assessments
+            ),
+            *(
+                f"probe:{probe.kind.value}:{probe.source_id}:{probe.artifact.sha256}"
+                for probe in probes
+            ),
             (
                 f"indicator:{indicator_proof.input_sha256}:{indicator_proof.artifact.sha256}"
                 if indicator_proof
