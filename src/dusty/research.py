@@ -7,8 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from statistics import fmean
-from typing import Iterable, Mapping
+from typing import Iterable, Iterator, Mapping
 
 from .experience import TradeSide
 
@@ -155,29 +154,31 @@ class MemoryEntry:
 
 
 def run_experiment(spec: StrategySpec, rows: Iterable[FeatureRow]) -> ExperimentResult:
-    """Run a deterministic, execution-free historical hypothesis screen."""
+    """One-pass deterministic historical screen with constant aggregate state."""
     signed_direction = 1.0 if spec.direction is TradeSide.LONG else -1.0
     cost = spec.cost_bps / 10_000.0
-    selected: list[tuple[str, float]] = []
+    sample_count = 0
+    total_return = 0.0
+    hit_count = 0
+    max_loss = 0.0
+    digest = sha256(spec.strategy_hash.encode("utf-8"))
+
     for row in rows:
         features = row.feature_map()
-        if all(clause.evaluate(features) for clause in spec.clauses):
-            selected.append((row.at.isoformat(), signed_direction * row.forward_return - cost))
+        if not all(clause.evaluate(features) for clause in spec.clauses):
+            continue
+        value = signed_direction * row.forward_return - cost
+        sample_count += 1
+        total_return += value
+        hit_count += value > 0
+        max_loss = min(max_loss, value)
+        digest.update(f"{row.at.isoformat()}|{value:.17g}".encode("utf-8"))
 
-    returns = [value for _, value in selected]
-    mean_return = fmean(returns) if returns else 0.0
-    total_return = sum(returns)
-    hit_rate = sum(value > 0 for value in returns) / len(returns) if returns else 0.0
-    max_loss = min(returns, default=0.0)
-    if max_loss > 0:
-        max_loss = 0.0
-
-    digest = sha256(spec.strategy_hash.encode("utf-8"))
-    for timestamp, value in selected:
-        digest.update(f"{timestamp}|{value:.17g}".encode("utf-8"))
+    mean_return = total_return / sample_count if sample_count else 0.0
+    hit_rate = hit_count / sample_count if sample_count else 0.0
     return ExperimentResult(
         strategy_hash=spec.strategy_hash,
-        sample_count=len(returns),
+        sample_count=sample_count,
         mean_return=mean_return,
         total_return=total_return,
         hit_rate=hit_rate,
@@ -239,15 +240,13 @@ class SQLiteStrategyMemory:
         )
         with self._db:
             self._db.execute(
-                "INSERT INTO research_memory(strategy_hash,strategy_id,status,payload) "
-                "VALUES(?,?,?,?)",
+                "INSERT INTO research_memory(strategy_hash,strategy_id,status,payload) VALUES(?,?,?,?)",
                 (spec.strategy_hash, spec.strategy_id, status.value, payload),
             )
 
     def seen(self, strategy_hash: str) -> bool:
         row = self._db.execute(
-            "SELECT 1 FROM research_memory WHERE strategy_hash=? LIMIT 1",
-            (strategy_hash,),
+            "SELECT 1 FROM research_memory WHERE strategy_hash=? LIMIT 1", (strategy_hash,)
         ).fetchone()
         return row is not None
 
@@ -259,25 +258,51 @@ class SQLiteStrategyMemory:
         ).fetchone()
         return self._entry(row) if row else None
 
-    def history(self, strategy_hash: str | None = None) -> tuple[MemoryEntry, ...]:
+    def iter_history(
+        self,
+        strategy_hash: str | None = None,
+        *,
+        batch_size: int = 256,
+    ) -> Iterator[MemoryEntry]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
         if strategy_hash is None:
-            rows = self._db.execute(
+            cursor = self._db.execute(
                 "SELECT strategy_hash,strategy_id,status,payload FROM research_memory ORDER BY seq"
-            ).fetchall()
+            )
         else:
-            rows = self._db.execute(
+            cursor = self._db.execute(
                 "SELECT strategy_hash,strategy_id,status,payload FROM research_memory "
                 "WHERE strategy_hash=? ORDER BY seq",
                 (strategy_hash,),
-            ).fetchall()
-        return tuple(self._entry(row) for row in rows)
+            )
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield self._entry(row)
 
-    def graveyard(self) -> tuple[str, ...]:
-        rows = self._db.execute(
+    def history(self, strategy_hash: str | None = None) -> tuple[MemoryEntry, ...]:
+        """Compatibility convenience for small callers; large callers should use iter_history."""
+        return tuple(self.iter_history(strategy_hash))
+
+    def iter_graveyard(self, *, batch_size: int = 256) -> Iterator[str]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        cursor = self._db.execute(
             "SELECT DISTINCT strategy_hash FROM research_memory WHERE status=? ORDER BY strategy_hash",
             (CandidateStatus.REJECTED.value,),
-        ).fetchall()
-        return tuple(row[0] for row in rows)
+        )
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield row[0]
+
+    def graveyard(self) -> tuple[str, ...]:
+        return tuple(self.iter_graveyard())
 
     def integrity_ok(self) -> bool:
         return self._db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

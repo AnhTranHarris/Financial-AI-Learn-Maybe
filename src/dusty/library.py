@@ -16,6 +16,16 @@ class ArtifactClass(StrEnum):
     TEMPORARY = "temporary"
 
 
+class KnowledgeKind(StrEnum):
+    INDICATOR = "indicator"
+    STRATEGY = "strategy"
+    METHOD = "method"
+    FAILURE = "failure"
+    MARKET_CONTEXT = "market_context"
+    ECONOMIC = "economic"
+    EXECUTION = "execution"
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRecord:
     source_id: str
@@ -73,8 +83,38 @@ class ArtifactRecord:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class KnowledgeRecord:
+    record_id: str
+    kind: KnowledgeKind
+    text: str
+    tags: tuple[str, ...]
+    created_at: datetime
+    source_id: str | None = None
+
+    @classmethod
+    def of(
+        cls,
+        record_id: str,
+        kind: KnowledgeKind,
+        text: str,
+        tags: tuple[str, ...],
+        created_at: datetime,
+        *,
+        source_id: str | None = None,
+    ) -> "KnowledgeRecord":
+        normalized = tuple(sorted({tag.strip().lower() for tag in tags if tag.strip()}))
+        return cls(record_id, kind, text.strip(), normalized, created_at, source_id)
+
+    def __post_init__(self) -> None:
+        if not self.record_id or not self.text or not self.tags:
+            raise ValueError("knowledge requires identity, text, and at least one tag")
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("knowledge timestamp must be timezone-aware")
+
+
 class SQLiteLearningLibrary:
-    """Disk-first catalog. Raw market history remains owned by its upstream source (for example MT5)."""
+    """Disk-first catalog and compact knowledge index; raw market history stays upstream."""
 
     def __init__(self, path: str | Path, *, allow_memory: bool = False) -> None:
         if str(path) == ":memory:" and not allow_memory:
@@ -96,6 +136,17 @@ class SQLiteLearningLibrary:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_artifact_class ON artifacts(artifact_class,created_at)"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS knowledge("
+            "record_id TEXT PRIMARY KEY, kind TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL,"
+            "source_id TEXT, FOREIGN KEY(source_id) REFERENCES sources(source_id))"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS knowledge_tags("
+            "record_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(record_id,tag),"
+            "FOREIGN KEY(record_id) REFERENCES knowledge(record_id) ON DELETE CASCADE)"
+        )
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_tag ON knowledge_tags(tag,record_id)")
         self._db.commit()
 
     def register_source(self, record: SourceRecord) -> None:
@@ -137,6 +188,49 @@ class SQLiteLearningLibrary:
                     payload,
                 ),
             )
+
+    def remember_knowledge(self, record: KnowledgeRecord) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO knowledge(record_id,kind,text,created_at,source_id) VALUES(?,?,?,?,?)",
+                (record.record_id, record.kind.value, record.text, record.created_at.isoformat(), record.source_id),
+            )
+            self._db.executemany(
+                "INSERT INTO knowledge_tags(record_id,tag) VALUES(?,?)",
+                ((record.record_id, tag) for tag in record.tags),
+            )
+
+    def retrieve_knowledge(self, tags: tuple[str, ...], *, limit: int = 50) -> tuple[KnowledgeRecord, ...]:
+        normalized = tuple(sorted({tag.strip().lower() for tag in tags if tag.strip()}))
+        if not normalized:
+            return ()
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        placeholders = ",".join("?" for _ in normalized)
+        rows = self._db.execute(
+            "SELECT k.record_id,k.kind,k.text,k.created_at,k.source_id,COUNT(DISTINCT t.tag) AS score "
+            "FROM knowledge k JOIN knowledge_tags t ON t.record_id=k.record_id "
+            f"WHERE t.tag IN ({placeholders}) "
+            "GROUP BY k.record_id,k.kind,k.text,k.created_at,k.source_id "
+            "ORDER BY score DESC,k.created_at DESC,k.record_id LIMIT ?",
+            (*normalized, limit),
+        ).fetchall()
+        result: list[KnowledgeRecord] = []
+        for record_id, kind, text, created_at, source_id, _ in rows:
+            tag_rows = self._db.execute(
+                "SELECT tag FROM knowledge_tags WHERE record_id=? ORDER BY tag", (record_id,)
+            ).fetchall()
+            result.append(
+                KnowledgeRecord(
+                    record_id=record_id,
+                    kind=KnowledgeKind(kind),
+                    text=text,
+                    tags=tuple(row[0] for row in tag_rows),
+                    created_at=datetime.fromisoformat(created_at),
+                    source_id=source_id,
+                )
+            )
+        return tuple(result)
 
     def iter_artifacts(self, *, batch_size: int = 256) -> Iterator[ArtifactRecord]:
         if batch_size < 1:
