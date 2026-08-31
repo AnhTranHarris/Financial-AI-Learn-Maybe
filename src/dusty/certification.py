@@ -52,6 +52,26 @@ class ResearchQualification:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class DemoGateInput:
+    reasoning_certified: bool
+    library_integrity: bool
+    resource_governor_certified: bool
+    provenance_complete: bool
+    external_claims_reproduced: bool
+    streaming_research_certified: bool
+    walk_forward_passed: bool
+    mt5_reconciled: bool
+    real_tick_validation_passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DemoQualification:
+    ready_for_demo_integration: bool
+    broker_write_authorized: bool
+    reasons: tuple[str, ...] = ()
+
+
 def certify_reasoning_core() -> ReasoningCertification:
     """Exhaust the finite v1 semantic space and fingerprint its behavior."""
     failures: list[str] = []
@@ -138,6 +158,27 @@ def qualify_research(inputs: ResearchGateInput) -> ResearchQualification:
     reasons = tuple(reason for reason, passed in checks.items() if not passed)
     return ResearchQualification(
         ready_for_shadow_research=not reasons,
+        broker_write_authorized=False,
+        reasons=reasons,
+    )
+
+
+def qualify_demo_candidate(inputs: DemoGateInput) -> DemoQualification:
+    """M35 candidate gate. It certifies readiness to build demo integration, not execution authority."""
+    checks = {
+        "reasoning_not_certified": inputs.reasoning_certified,
+        "library_integrity_failed": inputs.library_integrity,
+        "resource_governor_not_certified": inputs.resource_governor_certified,
+        "provenance_incomplete": inputs.provenance_complete,
+        "external_claims_not_reproduced": inputs.external_claims_reproduced,
+        "streaming_research_not_certified": inputs.streaming_research_certified,
+        "walk_forward_failed": inputs.walk_forward_passed,
+        "mt5_not_reconciled": inputs.mt5_reconciled,
+        "real_tick_validation_missing": inputs.real_tick_validation_passed,
+    }
+    reasons = tuple(reason for reason, passed in checks.items() if not passed)
+    return DemoQualification(
+        ready_for_demo_integration=not reasons,
         broker_write_authorized=False,
         reasons=reasons,
     )

@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterator
 
 from .core import (
     AnalystState,
@@ -60,7 +61,7 @@ class JournalRecord:
 
 
 class SQLiteJournal:
-    """Tiny append-only semantic journal. SQLite is the only persistence dependency."""
+    """Append-only semantic journal with batched iteration for long-running Dusty sessions."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._db = sqlite3.connect(str(path))
@@ -71,6 +72,7 @@ class SQLiteJournal:
             "person_id TEXT NOT NULL,"
             "payload TEXT NOT NULL)"
         )
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_journal_person ON journal(person_id,seq)")
         self._db.commit()
 
     def append(self, record: JournalRecord) -> None:
@@ -80,15 +82,30 @@ class SQLiteJournal:
                 (record.person_id, record.to_json()),
             )
 
-    def records(self, person_id: str | None = None) -> list[JournalRecord]:
+    def iter_records(
+        self,
+        person_id: str | None = None,
+        *,
+        batch_size: int = 256,
+    ) -> Iterator[JournalRecord]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
         if person_id is None:
-            rows = self._db.execute("SELECT payload FROM journal ORDER BY seq").fetchall()
+            cursor = self._db.execute("SELECT payload FROM journal ORDER BY seq")
         else:
-            rows = self._db.execute(
-                "SELECT payload FROM journal WHERE person_id=? ORDER BY seq",
-                (person_id,),
-            ).fetchall()
-        return [JournalRecord.from_json(row[0]) for row in rows]
+            cursor = self._db.execute(
+                "SELECT payload FROM journal WHERE person_id=? ORDER BY seq", (person_id,)
+            )
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield JournalRecord.from_json(row[0])
+
+    def records(self, person_id: str | None = None) -> list[JournalRecord]:
+        """Compatibility helper for small callers; large callers should use iter_records."""
+        return list(self.iter_records(person_id))
 
     def integrity_ok(self) -> bool:
         return self._db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
