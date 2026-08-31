@@ -256,26 +256,34 @@ def purged_walk_forward_ranges(
     embargo_rows: int = 0,
     max_folds: int = 64,
 ) -> tuple[FoldRange, ...]:
-    """Build bounded chronological folds with explicit train/test separation."""
+    """Build bounded chronological folds with explicit purge and post-test embargo."""
     if min(total_rows, train_rows, test_rows, max_folds) < 1:
         raise ValueError("row counts and max_folds must be positive")
     if purge_rows < 0 or embargo_rows < 0:
         raise ValueError("purge and embargo cannot be negative")
     folds: list[FoldRange] = []
     test_start = train_rows + purge_rows
+    previous_test_end: int | None = None
     while test_start + test_rows <= total_rows and len(folds) < max_folds:
         train_end = test_start - purge_rows
+        # Do not let the next training window consume the post-test embargo neighborhood.
+        if previous_test_end is not None and embargo_rows:
+            train_end = min(train_end, previous_test_end)
         train_start = max(0, train_end - train_rows)
+        if train_start >= train_end:
+            break
+        test_end = test_start + test_rows
         folds.append(
             FoldRange(
                 fold_id=f"wf-{len(folds):03d}",
                 train_start=train_start,
                 train_end=train_end,
                 test_start=test_start,
-                test_end=test_start + test_rows,
+                test_end=test_end,
             )
         )
-        test_start += test_rows + embargo_rows
+        previous_test_end = test_end
+        test_start = test_end + embargo_rows
     return tuple(folds)
 
 
