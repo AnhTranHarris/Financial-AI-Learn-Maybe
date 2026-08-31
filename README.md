@@ -30,6 +30,8 @@ Initial categorical state:
 
 Entry requires the relevant four-way permission. Holding continues while the thesis remains defensible. Exit is asymmetric: a material invalidation channel may independently establish an exit case. Exiting never authorizes an automatic reversal.
 
+**Reasoning decisions never mutate execution truth.** `ENTRY_LONG`, `ENTRY_SHORT`, and `EXIT` are semantic qualifications only; position state changes only after a later external execution/confirmation layer reports what actually happened.
+
 ## Deterministic lifecycle
 
 The lifecycle is encoded as a compact `state + event -> next_state` transition table rather than a class per phase.
@@ -78,9 +80,9 @@ Evidence is classified as:
 
 Exceptions are orthogonal to the normal loop:
 
-- **E1 RECONSIDER** — return to observation/reassessment.
-- **E2 ABORT** — discard the current hypothesis; if a position exists, qualify an exit.
-- **E3 STAND_DOWN** — stop participation; if a position exists, qualify an exit first.
+- **E1 RECONSIDER** — return to observation/reassessment without inventing an execution action.
+- **E2 ABORT** — discard the current hypothesis; if a position exists, semantically qualify an exit.
+- **E3 STAND_DOWN** — stop participation; if a position exists, semantically qualify an exit first.
 
 ## Journal and learning
 

@@ -132,6 +132,22 @@ class DecisionTests(unittest.TestCase):
             Decision.EXIT,
         )
 
+    def test_semantic_decisions_do_not_mutate_position_truth(self):
+        coherent = CoherenceResult(CoherenceState.COHERENT)
+        person = Person("p", "EURUSD", "s")
+        self.assertIs(
+            person.reason(Cognition(A.LONG, S.CLEAR, P.READY, G.NORMAL), coherent),
+            Decision.ENTRY_LONG,
+        )
+        self.assertIs(person.position, PositionState.FLAT)
+
+        person.position = PositionState.OPEN_LONG
+        self.assertIs(
+            person.reason(Cognition(A.SHORT, S.CLEAR, P.WAIT, G.NORMAL), coherent),
+            Decision.EXIT,
+        )
+        self.assertIs(person.position, PositionState.OPEN_LONG)
+
 
 class CoherenceAndExceptionTests(unittest.TestCase):
     def test_coherence_states(self):
@@ -180,6 +196,16 @@ class CoherenceAndExceptionTests(unittest.TestCase):
         self.assertIs(person.reason(c, bad), Decision.ABORT)
         person.position = PositionState.OPEN_LONG
         self.assertIs(person.reason(c, bad), Decision.EXIT)
+        self.assertIs(person.position, PositionState.OPEN_LONG)
+
+    def test_e1_reconsider_preserves_open_position_truth(self):
+        person = Person("p", "EURUSD", "s", position=PositionState.OPEN_LONG)
+        decision = person.reason(
+            Cognition(A.LONG, S.CLEAR, P.WAIT, G.NORMAL),
+            CoherenceResult(CoherenceState.INSUFFICIENT),
+        )
+        self.assertIs(decision, Decision.OBSERVE)
+        self.assertIs(person.position, PositionState.OPEN_LONG)
 
 
 if __name__ == "__main__":

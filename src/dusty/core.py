@@ -198,23 +198,12 @@ class Person:
             self.phase = advance(self.phase, event)
         return previous, self.phase
 
-    def apply(self, decision: Decision) -> None:
-        if decision is Decision.ENTRY_LONG:
-            self.position = PositionState.OPEN_LONG
-        elif decision is Decision.ENTRY_SHORT:
-            self.position = PositionState.OPEN_SHORT
-        elif decision is Decision.EXIT:
-            self.position = PositionState.FLAT
-        elif decision is Decision.ABORT:
-            self.hypothesis_id = ""
-
     def reason(self, cognition: Cognition, coherence: CoherenceResult) -> Decision:
+        """Return a semantic decision without mutating broker/execution truth."""
         exception = assess_exception(coherence, self.health)
-        decision = exception_decision(exception, self.position)
-        if decision is None:
-            decision = synthesize(cognition, self.position)
-        self.apply(decision)
-        return decision
+        return exception_decision(exception, self.position) or synthesize(
+            cognition, self.position
+        )
 
 
 def check_coherence(
@@ -290,13 +279,11 @@ def exception_decision(
 ) -> Decision | None:
     if level is ExceptionLevel.NONE:
         return None
-    if position is not PositionState.FLAT:
-        return Decision.EXIT
     if level is ExceptionLevel.E1_RECONSIDER:
         return Decision.OBSERVE
     if level is ExceptionLevel.E2_ABORT:
-        return Decision.ABORT
-    return Decision.STAND_DOWN
+        return Decision.EXIT if position is not PositionState.FLAT else Decision.ABORT
+    return Decision.EXIT if position is not PositionState.FLAT else Decision.STAND_DOWN
 
 
 def recovery_ready(
