@@ -64,6 +64,27 @@ class FeatureBar:
         )
 
 
+def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar, ...]:
+    """Convert MT5 bar-open records into completed observations without lookahead.
+
+    MT5's Python bar ``time`` is the bar opening time. A historical OHLC row is treated as knowable only
+    when the next bar has actually opened. The final raw bar is therefore dropped because this bounded
+    history slice contains no later observation proving it completed. This is intentionally conservative
+    across weekend/session gaps and avoids assuming a bar's final high/low/close were known at its open.
+    """
+    rows = tuple(bars)
+    if tuple(sorted(rows, key=lambda row: row.at)) != rows:
+        raise ValueError("MT5 bars must be chronological")
+    if len({row.at for row in rows}) != len(rows):
+        raise ValueError("MT5 bar-open timestamps must be unique")
+    if len(rows) < 2:
+        return ()
+    return tuple(
+        FeatureBar.from_mt5(current, available_at=following.at)
+        for current, following in zip(rows, rows[1:], strict=True)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureConfig:
     ma_period: int = 20
@@ -163,6 +184,16 @@ def true_range(bars: Sequence[FeatureBar]) -> tuple[float, ...]:
 
 
 def atr(bars: Sequence[FeatureBar], period: int) -> tuple[float | None, ...]:
+    """MetaTrader built-in iATR-compatible target: simple moving average of True Range.
+
+    Wilder/SMMA ATR remains a distinct concept and must not be silently substituted for MT5's built-in
+    iATR semantics. Native parity is still verified by DustyIndicatorParity.mq5 on the user's terminal.
+    """
+    return sma(true_range(bars), period)
+
+
+def wilder_atr(bars: Sequence[FeatureBar], period: int) -> tuple[float | None, ...]:
+    """Explicit Wilder/SMMA ATR for research that intentionally requests that variant."""
     return smma(true_range(bars), period)
 
 
@@ -225,13 +256,16 @@ def compute_standard_features(
             values["return_1"] = bar.close / rows[index - 1].close - 1.0
         if sma_values[index] is not None:
             values[f"sma_{config.ma_period}"] = float(sma_values[index])
+            values["sma"] = float(sma_values[index])
         if ema_values[index] is not None:
             values[f"ema_{config.ma_period}"] = float(ema_values[index])
+            values["ema"] = float(ema_values[index])
         if atr_values[index] is not None:
             values[f"atr_{config.atr_period}"] = float(atr_values[index])
             values["atr"] = float(atr_values[index])
         if rsi_values[index] is not None:
             values[f"rsi_{config.rsi_period}"] = float(rsi_values[index])
+            values["rsi"] = float(rsi_values[index])
         vectors.append(FeatureVector.of(bar.at, values))
     return tuple(vectors)
 
@@ -243,6 +277,7 @@ class MT5IndicatorRow:
     ema: float
     atr: float
     rsi: float
+    source_open_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,11 +291,22 @@ class IndicatorParityResult:
 def parse_mt5_indicator_csv(text: str) -> tuple[MT5IndicatorRow, ...]:
     rows = []
     for row in csv.DictReader(io.StringIO(text)):
-        raw_time = (row.get("time") or "").strip()
-        if not raw_time:
+        raw_available = (row.get("available_time") or row.get("time") or "").strip()
+        if not raw_available:
             continue
-        at = datetime.fromtimestamp(int(raw_time), tz=timezone.utc)
-        rows.append(MT5IndicatorRow(at, float(row["sma"]), float(row["ema"]), float(row["atr"]), float(row["rsi"])))
+        available_at = datetime.fromtimestamp(int(raw_available), tz=timezone.utc)
+        raw_open = (row.get("source_open_time") or "").strip()
+        source_open_at = datetime.fromtimestamp(int(raw_open), tz=timezone.utc) if raw_open else None
+        rows.append(
+            MT5IndicatorRow(
+                available_at,
+                float(row["sma"]),
+                float(row["ema"]),
+                float(row["atr"]),
+                float(row["rsi"]),
+                source_open_at=source_open_at,
+            )
+        )
     return tuple(rows)
 
 
