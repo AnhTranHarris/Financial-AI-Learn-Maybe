@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from dusty.core import GuardianState
 from dusty.experience import TradeSide
 from dusty.features import (
     FeatureConfig,
@@ -40,6 +41,7 @@ class InvestmentReviewProofTests(unittest.TestCase):
             volume_max=100.0,
             margin_rate=0.01,
             commission_per_lot=7.0,
+            point_size=0.0001,
         )
 
     def spec(self, *, cooldown: int = 0, trailing: str = "off", scale_in: int = 0, scale_out: tuple[float, ...] = ()) -> StrategySpecV2:
@@ -77,7 +79,7 @@ class InvestmentReviewProofTests(unittest.TestCase):
             )
         return tuple(rows)
 
-    def raw_mt5_bars(self, count: int = 65) -> tuple[MT5Bar, ...]:
+    def raw_mt5_bars(self, count: int = 65, *, spread: int = 10) -> tuple[MT5Bar, ...]:
         start = datetime(2026, 1, 1, tzinfo=UTC)
         rows = []
         price = 1.10
@@ -91,7 +93,7 @@ class InvestmentReviewProofTests(unittest.TestCase):
                     low=price - 0.0005,
                     close=price,
                     tick_volume=100 + index,
-                    spread=10,
+                    spread=spread,
                     real_volume=0,
                 )
             )
@@ -107,6 +109,15 @@ class InvestmentReviewProofTests(unittest.TestCase):
             expected_slippage_price=0.00005,
         )
 
+    def request(self, raw: tuple[MT5Bar, ...], *, timeframe: str = "M15") -> MT5BarRequest:
+        return MT5BarRequest(
+            terminal_path="terminal.exe",
+            symbol="EURUSD",
+            timeframe=timeframe,
+            start=raw[0].at,
+            end=raw[-1].at + timedelta(minutes=15),
+        )
+
     def test_mt5_bar_open_time_is_not_used_as_completed_bar_availability(self) -> None:
         raw = self.raw_mt5_bars(4)
         completed = completed_feature_bars_from_mt5(raw)
@@ -115,6 +126,67 @@ class InvestmentReviewProofTests(unittest.TestCase):
         self.assertEqual(completed[0].at, raw[1].at)
         self.assertGreater(completed[0].at, completed[0].source_open_at)
         self.assertNotIn(raw[-1].at, {bar.source_open_at for bar in completed})
+
+    def test_historical_and_decision_spread_clocks_are_not_conflated(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        raw = (
+            MT5Bar(start, 1.10, 1.11, 1.09, 1.105, 100, 2, 0),
+            MT5Bar(start + timedelta(minutes=15), 1.106, 1.12, 1.10, 1.115, 120, 80, 0),
+            MT5Bar(start + timedelta(minutes=30), 1.116, 1.13, 1.11, 1.125, 140, 7, 0),
+        )
+        completed = completed_feature_bars_from_mt5(raw)
+        self.assertEqual(completed[0].spread_points, 2.0)
+        self.assertEqual(completed[0].decision_spread_proxy_points, 80.0)
+        self.assertEqual(completed[0].spread_points_for_guardian, 80.0)
+        self.assertEqual(completed[1].spread_points, 80.0)
+        self.assertEqual(completed[1].decision_spread_proxy_points, 7.0)
+
+    def test_mt5_lab_guardian_uses_availability_spread_proxy(self) -> None:
+        raw = list(self.raw_mt5_bars())
+        row = raw[5]
+        raw[5] = MT5Bar(
+            row.at,
+            row.open,
+            row.high,
+            row.low,
+            row.close,
+            row.tick_volume,
+            80,
+            row.real_volume,
+        )
+        raw_tuple = tuple(raw)
+        run = run_laboratory_from_mt5(
+            FakeWorker(raw_tuple),
+            self.request(raw_tuple),
+            compile_strategy(self.spec()),
+            economics=self.economics(),
+            config=self.config(),
+        )
+        trace = next(item for item in run.cognition if item.at == raw_tuple[5].at)
+        self.assertEqual(trace.assessment.cognition.guardian, GuardianState.CAUTION)
+        self.assertIn("spread_above_normal_ceiling", trace.assessment.reasons_for("guardian"))
+
+    def test_mt5_spread_proxy_increases_sizing_and_pnl_friction(self) -> None:
+        raw = self.raw_mt5_bars(spread=20)
+        run = run_laboratory_from_mt5(
+            FakeWorker(raw),
+            self.request(raw),
+            compile_strategy(self.spec()),
+            economics=self.economics(),
+            config=self.config(),
+        )
+        approved = [trace for trace in run.growth_sizing if trace.approved]
+        self.assertTrue(approved)
+        self.assertAlmostEqual(approved[0].spread_price_used, 0.002)
+        self.assertEqual(
+            approved[0].spread_basis,
+            "mt5_availability_bar_spread_proxy_with_configured_floor",
+        )
+        self.assertIn(
+            "mt5_availability_bar_spread_proxy_with_configured_floor",
+            run.spread_cost_bases,
+        )
+        self.assertGreater(approved[0].spread_price_used, self.config().spread_price)
 
     def test_builtin_atr_target_is_simple_average_of_true_range(self) -> None:
         from dusty.features import FeatureBar
@@ -180,20 +252,14 @@ class InvestmentReviewProofTests(unittest.TestCase):
         self.assertEqual(run.minimum_lot_manifest, "")
         self.assertEqual(run.growth_manifest, "")
         self.assertIn("dynamic_trailing_manifest_not_supported", run.mt5_manifest_reasons)
+        self.assertEqual(run.spread_cost_bases, ("configured_spread_price",))
 
     def test_mt5_reference_lab_drops_unproven_last_bar_and_matches_strategy_timeframe(self) -> None:
         raw = self.raw_mt5_bars()
         strategy = compile_strategy(self.spec())
-        request = MT5BarRequest(
-            terminal_path="terminal.exe",
-            symbol="EURUSD",
-            timeframe="M15",
-            start=raw[0].at,
-            end=raw[-1].at + timedelta(minutes=15),
-        )
         run = run_laboratory_from_mt5(
             FakeWorker(raw),
-            request,
+            self.request(raw),
             strategy,
             economics=self.economics(),
             config=self.config(),
