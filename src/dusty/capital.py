@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -23,6 +24,18 @@ class PositionSizingRequest:
     commission_per_lot: float | None = None
 
     def __post_init__(self) -> None:
+        values = (
+            self.equity,
+            self.risk_fraction,
+            self.entry_price,
+            self.stop_price,
+            self.spread_price,
+            self.expected_slippage_price,
+        )
+        if self.commission_per_lot is not None:
+            values += (self.commission_per_lot,)
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("position sizing inputs must be finite")
         if self.equity <= 0 or self.entry_price <= 0 or self.stop_price <= 0:
             raise ValueError("equity and prices must be positive")
         if not 0.0 < self.risk_fraction <= 1.0:
@@ -63,8 +76,8 @@ def loss_per_lot(request: PositionSizingRequest) -> float:
         else request.commission_per_lot
     )
     total = movement_cost + commission
-    if total <= 0:
-        raise ValueError("loss per lot must be positive")
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("loss per lot must be finite and positive")
     return total
 
 
@@ -88,7 +101,7 @@ def size_position(
             approved_volume=volume,
             expected_loss=expected,
             effective_risk_fraction=expected / request.equity,
-            reasons=(),
+            reasons=("research_size_not_growth_authority",),
         )
 
     raw = allowed / per_lot
@@ -132,7 +145,10 @@ def minimum_viable_capital(
 ) -> float:
     """Equity required for the broker minimum lot to fit the approved percentage risk."""
     risk = request.risk_fraction if risk_fraction is None else risk_fraction
-    if not 0.0 < risk <= 1.0:
-        raise ValueError("risk fraction must be in (0,1]")
+    if not math.isfinite(risk) or not 0.0 < risk <= 1.0:
+        raise ValueError("risk fraction must be finite and in (0,1]")
     minimum_loss = loss_per_lot(request) * request.economics.volume_min
-    return minimum_loss / risk
+    result = minimum_loss / risk
+    if not math.isfinite(result):
+        raise ValueError("minimum viable capital is not finite")
+    return result
