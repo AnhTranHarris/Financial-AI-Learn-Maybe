@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
@@ -44,6 +45,22 @@ class InstrumentEconomics:
     freeze_level_points: float = 0.0
 
     def __post_init__(self) -> None:
+        values = (
+            self.contract_size,
+            self.tick_size,
+            self.tick_value,
+            self.volume_min,
+            self.volume_step,
+            self.volume_max,
+            self.margin_rate,
+            self.commission_per_lot,
+            self.swap_long,
+            self.swap_short,
+            self.stop_level_points,
+            self.freeze_level_points,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("instrument economics must be finite")
         required_positive = {
             "contract_size": self.contract_size,
             "tick_size": self.tick_size,
@@ -64,12 +81,17 @@ class InstrumentEconomics:
 
     def normalize_volume_down(self, requested: float) -> float:
         """Round down only; never increase risk to reach a convenient lot size."""
+        if not math.isfinite(requested) or requested < 0:
+            raise ValueError("requested volume must be finite and nonnegative")
         if requested < self.volume_min:
             return 0.0
         capped = min(requested, self.volume_max)
         steps = int((capped - self.volume_min) / self.volume_step + 1e-12)
         normalized = self.volume_min + steps * self.volume_step
-        return round(min(normalized, self.volume_max), 12)
+        result = round(min(normalized, self.volume_max), 12)
+        if result > requested + 1e-12:
+            raise AssertionError("volume normalization rounded upward")
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,8 +167,8 @@ class BrokerSymbolSnapshot:
             raise ValueError("broker and account currency are required")
         if self.captured_at.tzinfo is None or self.captured_at.utcoffset() is None:
             raise ValueError("broker symbol snapshot timestamp must be timezone-aware")
-        if self.leverage < 0:
-            raise ValueError("leverage cannot be negative")
+        if not math.isfinite(self.leverage) or self.leverage < 0:
+            raise ValueError("leverage must be finite and nonnegative")
         if self.market.economics is None:
             raise ValueError("broker symbol snapshot requires instrument economics")
 
