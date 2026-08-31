@@ -12,6 +12,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PYTHONPATH: src
+      PYTHONHASHSEED: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,5 +28,17 @@ jobs:
         run: python -m unittest discover -s tests -p "test_investment_lab.py" -v
       - name: Investment review proofs
         run: python -m unittest discover -s tests -p "test_investment_review_proofs.py" -v
+      - name: Data acquisition gate
+        run: python -m unittest discover -s tests -p "test_data_acquisition.py" -v
+      - name: Event acquisition gate
+        run: python -m unittest discover -s tests -p "test_event_acquisition.py" -v
+      - name: MT5 research gate
+        run: python -m unittest discover -s tests -p "test_m66_m67.py" -v
+      - name: MT5 tester contract gate
+        run: python -m unittest discover -s tests -p "test_m67_tester_contract.py" -v
+      - name: Demo session execution gate
+        run: python -m unittest discover -s tests -p "test_m70_m73.py" -v
+      - name: Demo supervisor certification gate
+        run: python -m unittest discover -s tests -p "test_m74_m75.py" -v
       - name: Full unittest suite
         run: python -m unittest discover -s tests -v
