@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from statistics import fmean
 from typing import Mapping, Sequence
@@ -48,6 +49,7 @@ class EntryCognitionRequest:
     cooldown_remaining: int = 0
     spread_points: float = 0.0
     forecasts: tuple[Forecast, ...] = ()
+    reasoning_at: datetime | None = None
 
     @classmethod
     def of(
@@ -63,14 +65,42 @@ class EntryCognitionRequest:
         cooldown_remaining: int = 0,
         spread_points: float = 0.0,
         forecasts: Sequence[Forecast] = (),
+        reasoning_at: datetime | None = None,
     ) -> "EntryCognitionRequest":
-        return cls(strategy, tuple(sorted(features.items())), coherence, risk, health, session, event_blocked, cooldown_remaining, spread_points, tuple(forecasts))
+        return cls(
+            strategy,
+            tuple(sorted(features.items())),
+            coherence,
+            risk,
+            health,
+            session,
+            event_blocked,
+            cooldown_remaining,
+            spread_points,
+            tuple(forecasts),
+            reasoning_at,
+        )
 
     def __post_init__(self) -> None:
         if self.cooldown_remaining < 0:
             raise ValueError("cooldown remaining cannot be negative")
         if not math.isfinite(self.spread_points) or self.spread_points < 0:
             raise ValueError("spread points must be finite and nonnegative")
+        if self.reasoning_at is not None and (
+            self.reasoning_at.tzinfo is None or self.reasoning_at.utcoffset() is None
+        ):
+            raise ValueError("cognition reasoning_at must be timezone-aware")
+        if self.forecasts and self.reasoning_at is None:
+            raise ValueError("forecast cognition requires an explicit reasoning_at timestamp")
+        if self.reasoning_at is not None:
+            future = tuple(
+                forecast
+                for forecast in self.forecasts
+                if forecast.at > self.reasoning_at
+            )
+            if future:
+                providers = ",".join(sorted({forecast.provider for forecast in future}))
+                raise ValueError(f"future_forecast_not_available:{providers}")
 
     def feature_map(self) -> dict[str, Scalar]:
         return dict(self.features)
@@ -97,7 +127,11 @@ class CognitionAssessment:
 
 
 def _forecast_consensus(forecasts: Sequence[Forecast], threshold: float) -> tuple[int, float]:
-    meaningful = [forecast.predicted_return for forecast in forecasts if abs(forecast.predicted_return) > threshold]
+    meaningful = [
+        forecast.predicted_return
+        for forecast in forecasts
+        if abs(forecast.predicted_return) > threshold
+    ]
     if not meaningful:
         return 0, 0.0
     mean = fmean(meaningful)
@@ -108,16 +142,25 @@ def derive_entry_cognition(
     request: EntryCognitionRequest,
     policy: CognitionPolicy = CognitionPolicy(),
 ) -> CognitionAssessment:
-    """Derive entry cognition from machine-observable evidence; roles are outputs, not caller inputs.
+    """Derive entry cognition from point-in-time machine-observable evidence.
 
-    Forecasts may confirm or challenge a strategy setup, but cannot create a setup when entry rules fail.
-    Risk/health may reduce or veto authority, never manufacture directional conviction.
+    Roles are outputs rather than caller assertions. Forecasts may confirm or challenge an existing
+    frozen-strategy setup, but cannot create one, and no forecast timestamp may lie after the explicit
+    reasoning timestamp. Risk/health may reduce or veto authority, never manufacture directional
+    conviction.
     """
     features = request.feature_map()
     pure_rule_match = request.strategy.spec.entry_matches(features)
-    session_match = not request.strategy.spec.session_filters or request.session.upper() in {item.upper() for item in request.strategy.spec.session_filters}
+    session_match = (
+        not request.strategy.spec.session_filters
+        or request.session.upper()
+        in {item.upper() for item in request.strategy.spec.session_filters}
+    )
     direction_sign = 1 if request.strategy.spec.direction is TradeSide.LONG else -1
-    forecast_sign, forecast_mean = _forecast_consensus(request.forecasts, policy.forecast_neutral_return)
+    forecast_sign, forecast_mean = _forecast_consensus(
+        request.forecasts,
+        policy.forecast_neutral_return,
+    )
     forecast_conflict = pure_rule_match and forecast_sign != 0 and forecast_sign != direction_sign
 
     analyst_reasons: list[str] = []
@@ -128,7 +171,11 @@ def derive_entry_cognition(
         analyst = AnalystState.UNCLEAR
         analyst_reasons.extend(("entry_rules_met", "forecast_consensus_conflicts"))
     else:
-        analyst = AnalystState.LONG if request.strategy.spec.direction is TradeSide.LONG else AnalystState.SHORT
+        analyst = (
+            AnalystState.LONG
+            if request.strategy.spec.direction is TradeSide.LONG
+            else AnalystState.SHORT
+        )
         analyst_reasons.append("entry_rules_met")
         if forecast_sign == direction_sign:
             analyst_reasons.append("forecast_consensus_confirms")
@@ -178,15 +225,25 @@ def derive_entry_cognition(
         patience_reasons.append("setup_temporally_ready")
 
     guardian_reasons: list[str] = []
-    if request.health is HealthState.FAILED or not request.risk.allowed or request.risk.state in {RiskState.RESEARCH_ONLY, RiskState.FAILED}:
+    if (
+        request.health is HealthState.FAILED
+        or not request.risk.allowed
+        or request.risk.state in {RiskState.RESEARCH_ONLY, RiskState.FAILED}
+    ):
         guardian = GuardianState.STOP
         if request.health is HealthState.FAILED:
             guardian_reasons.append("system_health_failed")
         if not request.risk.allowed:
-            guardian_reasons.extend(f"risk:{reason}" for reason in request.risk.reasons or ("not_allowed",))
+            guardian_reasons.extend(
+                f"risk:{reason}" for reason in request.risk.reasons or ("not_allowed",)
+            )
         if request.risk.state in {RiskState.RESEARCH_ONLY, RiskState.FAILED}:
             guardian_reasons.append(f"risk_state:{request.risk.state.value}")
-    elif request.health is HealthState.DEGRADED or request.risk.state in {RiskState.CAUTION, RiskState.DEFENSIVE} or request.spread_points > policy.max_spread_points_normal:
+    elif (
+        request.health is HealthState.DEGRADED
+        or request.risk.state in {RiskState.CAUTION, RiskState.DEFENSIVE}
+        or request.spread_points > policy.max_spread_points_normal
+    ):
         guardian = GuardianState.CAUTION
         if request.health is HealthState.DEGRADED:
             guardian_reasons.append("system_health_degraded")
@@ -209,16 +266,35 @@ def derive_entry_cognition(
         "strategy_hash": request.strategy.strategy_hash,
         "features": request.features,
         "coherence": (request.coherence.state.value, request.coherence.reasons),
-        "risk": (request.risk.allowed, request.risk.state.value, request.risk.risk_multiplier, request.risk.reasons),
+        "risk": (
+            request.risk.allowed,
+            request.risk.state.value,
+            request.risk.risk_multiplier,
+            request.risk.reasons,
+        ),
         "health": request.health.value,
         "session": request.session,
         "event_blocked": request.event_blocked,
         "cooldown_remaining": request.cooldown_remaining,
         "spread_points": request.spread_points,
-        "forecasts": tuple((item.provider, item.at.isoformat(), item.horizon_steps, item.origin, item.point, item.lower, item.upper) for item in request.forecasts),
+        "reasoning_at": request.reasoning_at.isoformat() if request.reasoning_at else None,
+        "forecasts": tuple(
+            (
+                item.provider,
+                item.at.isoformat(),
+                item.horizon_steps,
+                item.origin,
+                item.point,
+                item.lower,
+                item.upper,
+            )
+            for item in request.forecasts
+        ),
         "forecast_mean": forecast_mean,
         "cognition": (analyst.value, skeptic.value, patience.value, guardian.value),
         "reasons": tuple((item.role, item.reasons) for item in justifications),
     }
-    fingerprint = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+    fingerprint = sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
     return CognitionAssessment(cognition, justifications, fingerprint)
