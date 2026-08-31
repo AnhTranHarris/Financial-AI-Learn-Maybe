@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from .experience import TradeSide
 from .research import Clause, Scalar, StrategySpec
@@ -106,10 +107,9 @@ class StrategySpecV2:
         def clause_payload(clause: Clause) -> dict[str, object]:
             return {"feature": clause.feature, "op": clause.op.value, "value": clause.value}
 
-        payload = {
-            "schema_version": self.schema_version,
-            "direction": self.direction.value,
-            "entry_groups": [
+        groups = []
+        for group in self.entry_groups:
+            groups.append(
                 {
                     "mode": group.mode.value,
                     "clauses": sorted(
@@ -117,8 +117,15 @@ class StrategySpecV2:
                         key=lambda item: (str(item["feature"]), str(item["op"]), repr(item["value"])),
                     ),
                 }
-                for group in self.entry_groups
-            ],
+            )
+        encoded_groups = {
+            json.dumps(group, sort_keys=True, separators=(",", ":")): group for group in groups
+        }
+        canonical_groups = [encoded_groups[key] for key in sorted(encoded_groups)]
+        payload = {
+            "schema_version": self.schema_version,
+            "direction": self.direction.value,
+            "entry_groups": canonical_groups,
             "exit_plan": {
                 "stop_rule": self.exit_plan.stop_rule,
                 "target_rule": self.exit_plan.target_rule,
@@ -150,11 +157,14 @@ class StrategySpecV2:
 class StrategyEligibilityPolicy:
     min_decision_timeframe_minutes: int = 5
     min_intended_horizon_minutes: int = 15
+    max_new_entries_per_hour: int = 3
     high_execution_sensitivity_research_only: bool = True
 
     def __post_init__(self) -> None:
         if self.min_decision_timeframe_minutes < 1 or self.min_intended_horizon_minutes < 1:
             raise ValueError("eligibility time limits must be positive")
+        if self.max_new_entries_per_hour < 1:
+            raise ValueError("entry frequency limit must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +206,24 @@ def assess_strategy_eligibility(
         and policy.high_execution_sensitivity_research_only
     ):
         return EligibilityAssessment(EligibilityStatus.RESEARCH_ONLY, ("high_execution_sensitivity",))
+    return EligibilityAssessment(EligibilityStatus.ALLOWED, ())
+
+
+def assess_observed_entry_frequency(
+    entry_times: Iterable[datetime],
+    policy: StrategyEligibilityPolicy = StrategyEligibilityPolicy(),
+) -> EligibilityAssessment:
+    """Catch accidental machine-scalping even when declarative metadata claims otherwise."""
+    times = tuple(sorted(entry_times))
+    if any(value.tzinfo is None or value.utcoffset() is None for value in times):
+        raise ValueError("entry timestamps must be timezone-aware")
+    left = 0
+    one_hour = timedelta(hours=1)
+    for right, value in enumerate(times):
+        while left <= right and value - times[left] >= one_hour:
+            left += 1
+        if right - left + 1 > policy.max_new_entries_per_hour:
+            return EligibilityAssessment(EligibilityStatus.PROHIBITED, ("entry_frequency_prohibited",))
     return EligibilityAssessment(EligibilityStatus.ALLOWED, ())
 
 
