@@ -13,6 +13,12 @@ from .research import Scalar
 
 @dataclass(frozen=True, slots=True)
 class FeatureBar:
+    """A completed OHLC bar stamped at the instant its full contents are knowable.
+
+    ``source_open_at`` preserves the original MT5 bar-open timestamp when available. ``at`` is the
+    observation/availability timestamp used by all point-in-time features and decisions.
+    """
+
     at: datetime
     open: float
     high: float
@@ -20,10 +26,16 @@ class FeatureBar:
     close: float
     spread_points: float = 0.0
     tick_volume: float = 0.0
+    source_open_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.at.tzinfo is None or self.at.utcoffset() is None:
-            raise ValueError("feature bar timestamp must be timezone-aware")
+            raise ValueError("feature bar availability timestamp must be timezone-aware")
+        if self.source_open_at is not None:
+            if self.source_open_at.tzinfo is None or self.source_open_at.utcoffset() is None:
+                raise ValueError("source bar-open timestamp must be timezone-aware")
+            if self.source_open_at >= self.at:
+                raise ValueError("completed MT5 bar cannot be available at or before its open time")
         if any(not math.isfinite(v) or v <= 0 for v in (self.open, self.high, self.low, self.close)):
             raise ValueError("feature OHLC prices must be finite and positive")
         if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close, self.high):
@@ -34,8 +46,22 @@ class FeatureBar:
             raise ValueError("tick volume must be finite and nonnegative")
 
     @classmethod
-    def from_mt5(cls, bar: MT5Bar) -> "FeatureBar":
-        return cls(bar.at, bar.open, bar.high, bar.low, bar.close, float(bar.spread), float(bar.tick_volume))
+    def from_mt5(cls, bar: MT5Bar, *, available_at: datetime) -> "FeatureBar":
+        """Convert an MT5 bar-open record only when a later timestamp proves the bar completed."""
+        if available_at.tzinfo is None or available_at.utcoffset() is None:
+            raise ValueError("MT5 bar availability timestamp must be timezone-aware")
+        if available_at <= bar.at:
+            raise ValueError("MT5 completed bar must become available after its open timestamp")
+        return cls(
+            available_at,
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            float(bar.spread),
+            float(bar.tick_volume),
+            source_open_at=bar.at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,12 +200,12 @@ def compute_standard_features(
     bars: Iterable[FeatureBar],
     config: FeatureConfig = FeatureConfig(),
 ) -> tuple[FeatureVector, ...]:
-    """Point-in-time feature engine. Row i uses only bars <= i; no centered/future windows."""
+    """Point-in-time feature engine. Row i uses only completed bars available at or before row i."""
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
-        raise ValueError("feature bars must be chronological")
+        raise ValueError("feature bars must be chronological by availability time")
     if len({row.at for row in rows}) != len(rows):
-        raise ValueError("feature bar timestamps must be unique")
+        raise ValueError("feature bar availability timestamps must be unique")
     closes = tuple(row.close for row in rows)
     sma_values = sma(closes, config.ma_period)
     ema_values = ema(closes, config.ma_period)
