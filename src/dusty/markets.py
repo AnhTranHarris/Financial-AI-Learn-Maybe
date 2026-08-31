@@ -29,7 +29,13 @@ class InstrumentType(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class InstrumentEconomics:
-    """Broker-specific economic units required for safe sizing and cost accounting."""
+    """Broker-specific economic units required for safe sizing and cost accounting.
+
+    ``tick_size`` is the smallest price movement represented by the broker's trade-tick economics.
+    ``point_size`` is the terminal's symbol point used by point-denominated fields such as historical
+    MqlRates spread. They are deliberately distinct because some instruments expose different values.
+    A zero ``point_size`` means that point-denominated spread cannot be converted into price safely.
+    """
 
     contract_size: float
     tick_size: float
@@ -43,6 +49,7 @@ class InstrumentEconomics:
     swap_short: float = 0.0
     stop_level_points: float = 0.0
     freeze_level_points: float = 0.0
+    point_size: float = 0.0
 
     def __post_init__(self) -> None:
         values = (
@@ -58,6 +65,7 @@ class InstrumentEconomics:
             self.swap_short,
             self.stop_level_points,
             self.freeze_level_points,
+            self.point_size,
         )
         if any(not math.isfinite(value) for value in values):
             raise ValueError("instrument economics must be finite")
@@ -76,8 +84,8 @@ class InstrumentEconomics:
             raise ValueError("volume_max cannot be below volume_min")
         if self.margin_rate < 0 or self.commission_per_lot < 0:
             raise ValueError("margin and commission cannot be negative")
-        if self.stop_level_points < 0 or self.freeze_level_points < 0:
-            raise ValueError("broker distance constraints cannot be negative")
+        if self.stop_level_points < 0 or self.freeze_level_points < 0 or self.point_size < 0:
+            raise ValueError("broker point/distance constraints cannot be negative")
 
     def normalize_volume_down(self, requested: float) -> float:
         """Round down only; never increase risk to reach a convenient lot size."""
