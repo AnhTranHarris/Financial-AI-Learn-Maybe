@@ -47,7 +47,19 @@ class TesterDeal:
             raise ValueError("tester deal type must be buy or sell")
         if self.entry_type not in {"in", "out", "inout", "out_by"}:
             raise ValueError("tester deal entry type is unsupported")
-        if any(not math.isfinite(v) for v in (self.volume, self.price, self.commission, self.swap, self.profit, self.fee, self.sl, self.tp)):
+        if any(
+            not math.isfinite(v)
+            for v in (
+                self.volume,
+                self.price,
+                self.commission,
+                self.swap,
+                self.profit,
+                self.fee,
+                self.sl,
+                self.tp,
+            )
+        ):
             raise ValueError("tester deal economics must be finite")
         if self.volume <= 0 or self.price <= 0 or self.sl < 0 or self.tp < 0:
             raise ValueError("tester deal prices/volume are invalid")
@@ -86,7 +98,10 @@ def parse_tester_deals_csv(text: str) -> tuple[TesterDeal, ...]:
                 strategy_hash=row["strategy_hash"].strip(),
                 position_id=int(row["position_id"]),
                 deal_id=int(row["deal_id"]),
-                at=datetime.fromtimestamp(int(row["time_msc"]) / 1000.0, tz=timezone.utc),
+                at=datetime.fromtimestamp(
+                    int(row["time_msc"]) / 1000.0,
+                    tz=timezone.utc,
+                ),
                 deal_type=row["deal_type_name"].strip().lower(),
                 entry_type=row["entry_type_name"].strip().lower(),
                 volume=float(row["volume"]),
@@ -121,12 +136,17 @@ class TesterTrade:
     initial_tp: float
 
 
-def normalize_tester_trades(deals: Iterable[TesterDeal], *, volume_tolerance: float = 1e-9) -> tuple[TesterTrade, ...]:
+def normalize_tester_trades(
+    deals: Iterable[TesterDeal],
+    *,
+    volume_tolerance: float = 1e-9,
+) -> tuple[TesterTrade, ...]:
     """Normalize the tester EA's deal ledger into one-in/one-out reference trades.
 
-    The current reference laboratory is intentionally single-position and does not claim parity for
-    partial fills, reversals, scaling, or close-by operations. Those observations fail loudly instead of
-    being coerced into a simple trade.
+    ``net_pnl`` is the native cash effect: profit + commission + swap + fee across the complete
+    position. The current reference laboratory is intentionally single-position and does not claim
+    parity for partial fills, reversals, scaling, or close-by operations. Those observations fail
+    loudly instead of being coerced into a simple trade.
     """
     if volume_tolerance < 0:
         raise ValueError("volume tolerance cannot be negative")
@@ -141,7 +161,9 @@ def normalize_tester_trades(deals: Iterable[TesterDeal], *, volume_tolerance: fl
         exits = [item for item in ordered if item.entry_type == "out"]
         unsupported = [item for item in ordered if item.entry_type not in {"in", "out"}]
         if unsupported or len(entries) != 1 or len(exits) != 1:
-            raise ValueError("tester reference parity requires exactly one entry and one exit deal per position")
+            raise ValueError(
+                "tester reference parity requires exactly one entry and one exit deal per position"
+            )
         entry, exit_deal = entries[0], exits[0]
         if abs(entry.volume - exit_deal.volume) > volume_tolerance:
             raise ValueError("tester reference parity does not support partial-volume exits")
@@ -189,6 +211,7 @@ class ExpectedExecutionEnvelope:
     exit_reference_price: float
     initial_sl: float
     initial_tp: float
+    expected_net_pnl: float | None = None
 
     def __post_init__(self) -> None:
         times = (self.entry_signal_at, self.exit_not_before, self.exit_not_after)
@@ -196,10 +219,20 @@ class ExpectedExecutionEnvelope:
             raise ValueError("parity envelope timestamps must be timezone-aware")
         if self.exit_not_after < self.exit_not_before or self.exit_not_after <= self.entry_signal_at:
             raise ValueError("parity exit window is invalid")
-        if any(not math.isfinite(v) or v <= 0 for v in (self.volume, self.entry_reference_price, self.exit_reference_price, self.initial_sl)):
+        if any(
+            not math.isfinite(v) or v <= 0
+            for v in (
+                self.volume,
+                self.entry_reference_price,
+                self.exit_reference_price,
+                self.initial_sl,
+            )
+        ):
             raise ValueError("parity envelope economics must be finite and positive")
         if not math.isfinite(self.initial_tp) or self.initial_tp < 0:
             raise ValueError("parity target must be finite and nonnegative")
+        if self.expected_net_pnl is not None and not math.isfinite(self.expected_net_pnl):
+            raise ValueError("expected native net PnL must be finite when supplied")
 
 
 def expected_execution_envelopes(
@@ -209,12 +242,26 @@ def expected_execution_envelopes(
     strategy_hash: str,
     trade_ids: Sequence[str],
     volumes: Sequence[float],
+    expected_net_pnls: Sequence[float] | None = None,
 ) -> tuple[ExpectedExecutionEnvelope, ...]:
     if not (len(trades) == len(trade_ids) == len(volumes)):
         raise ValueError("parity expectation inputs must align")
+    if expected_net_pnls is not None and len(expected_net_pnls) != len(trades):
+        raise ValueError("expected net PnL inputs must align with parity trades")
+    pnl_rows: Sequence[float | None]
+    if expected_net_pnls is None:
+        pnl_rows = (None,) * len(trades)
+    else:
+        pnl_rows = tuple(float(item) for item in expected_net_pnls)
     by_available = {bar.at: bar for bar in bars}
     result = []
-    for trade, trade_id, volume in zip(trades, trade_ids, volumes, strict=True):
+    for trade, trade_id, volume, expected_pnl in zip(
+        trades,
+        trade_ids,
+        volumes,
+        pnl_rows,
+        strict=True,
+    ):
         if trade.strategy_hash != strategy_hash:
             raise ValueError("runtime trade belongs to another strategy")
         exit_bar = by_available.get(trade.exit_at)
@@ -230,7 +277,9 @@ def expected_execution_envelopes(
             kind = ExpectedExitKind.TIME
             start = trade.exit_at
         else:
-            raise ValueError(f"unsupported runtime exit reason for tester parity: {trade.exit_reason}")
+            raise ValueError(
+                f"unsupported runtime exit reason for tester parity: {trade.exit_reason}"
+            )
         if start is None:
             raise ValueError("MT5 parity requires source-open provenance for exit window")
         result.append(
@@ -247,6 +296,7 @@ def expected_execution_envelopes(
                 exit_reference_price=trade.exit_price,
                 initial_sl=trade.stop_price,
                 initial_tp=trade.target_price or 0.0,
+                expected_net_pnl=expected_pnl,
             )
         )
     return tuple(result)
@@ -268,11 +318,27 @@ def reconcile_execution_envelopes(
     max_exit_price_gap: float,
     max_volume_gap: float = 1e-9,
     max_time_exit_delay_seconds: float = 60.0,
+    max_net_pnl_gap: float | None = None,
 ) -> ExecutionParityAssessment:
-    """Compare semantics and execution windows, not fictitious exact bar-close fill timestamps."""
-    limits = (max_entry_delay_seconds, max_entry_price_gap, max_exit_price_gap, max_volume_gap, max_time_exit_delay_seconds)
+    """Compare execution semantics, timing, prices and—when requested—native cash economics.
+
+    Price/timing tolerances acknowledge real tester execution rather than fictitious exact bar-close
+    fills. Cash parity is opt-in here so low-level callers can inspect execution-only behavior, but the
+    M75 native trust qualifier requires it. Its tolerance must be declared before observing the result.
+    """
+    limits = (
+        max_entry_delay_seconds,
+        max_entry_price_gap,
+        max_exit_price_gap,
+        max_volume_gap,
+        max_time_exit_delay_seconds,
+    )
     if any(not math.isfinite(value) or value < 0 for value in limits):
         raise ValueError("parity tolerances must be finite and nonnegative")
+    if max_net_pnl_gap is not None and (
+        not math.isfinite(max_net_pnl_gap) or max_net_pnl_gap < 0
+    ):
+        raise ValueError("net PnL parity tolerance must be finite and nonnegative")
     expected_rows = tuple(expected)
     observed_rows = tuple(observed)
     if len({item.trade_id for item in expected_rows}) != len(expected_rows):
@@ -325,10 +391,21 @@ def reconcile_execution_envelopes(
         else:
             if got.exit_reason != "expert":
                 reasons.append(prefix + "time_exit_not_expert")
-            if got.exit_at < want.exit_not_before or got.exit_at > want.exit_not_after + timedelta(seconds=max_time_exit_delay_seconds):
+            if (
+                got.exit_at < want.exit_not_before
+                or got.exit_at
+                > want.exit_not_after + timedelta(seconds=max_time_exit_delay_seconds)
+            ):
                 reasons.append(prefix + "time_exit_delay")
         if abs(got.exit_price - want.exit_reference_price) > max_exit_price_gap:
             reasons.append(prefix + "exit_price_gap")
+
+        if max_net_pnl_gap is not None:
+            if want.expected_net_pnl is None:
+                reasons.append(prefix + "expected_net_pnl_missing")
+            elif abs(got.net_pnl - want.expected_net_pnl) > max_net_pnl_gap:
+                reasons.append(prefix + "net_pnl_gap")
+
         if len(reasons) == before:
             matched += 1
     return ExecutionParityAssessment(not reasons, matched, tuple(reasons))
