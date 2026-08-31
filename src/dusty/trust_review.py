@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -134,6 +135,7 @@ class MT5Environment:
 @dataclass(frozen=True, slots=True)
 class NativeIndicatorProof:
     artifact: ArtifactFingerprint
+    input_sha256: str
     environment: MT5Environment | None
     parity: IndicatorParityResult
     passed: bool
@@ -143,6 +145,7 @@ class NativeIndicatorProof:
 @dataclass(frozen=True, slots=True)
 class NativeTesterProof:
     artifact: ArtifactFingerprint
+    input_sha256: str
     environment: MT5Environment | None
     parity: ExecutionParityAssessment
     passed: bool
@@ -215,6 +218,39 @@ def _parse_environment(
     return environment, tuple(reasons)
 
 
+def _features_hash(features: Sequence[FeatureVector]) -> str:
+    payload = tuple(
+        (item.at.isoformat(), item.values)
+        for item in features
+    )
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _expected_hash(expected: Sequence[ExpectedExecutionEnvelope]) -> str:
+    payload = tuple(
+        (
+            item.strategy_hash,
+            item.trade_id,
+            item.side.value,
+            item.volume,
+            item.entry_signal_at.isoformat(),
+            item.entry_reference_price,
+            item.exit_not_before.isoformat(),
+            item.exit_not_after.isoformat(),
+            item.exit_kind.value,
+            item.exit_reference_price,
+            item.initial_sl,
+            item.initial_tp,
+        )
+        for item in expected
+    )
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def qualify_native_indicators(
     features: Iterable[FeatureVector],
     mt5_csv: str,
@@ -226,6 +262,7 @@ def qualify_native_indicators(
     min_rows: int = 20,
     abs_tolerance: float = 1e-8,
 ) -> NativeIndicatorProof:
+    feature_rows = tuple(features)
     artifact = ArtifactFingerprint.from_text(
         "mt5_indicator_parity_csv",
         mt5_csv,
@@ -239,7 +276,7 @@ def qualify_native_indicators(
     )
     rows = parse_mt5_indicator_csv(mt5_csv)
     parity = compare_mt5_indicators(
-        features,
+        feature_rows,
         rows,
         config=config,
         min_rows=min_rows,
@@ -248,6 +285,7 @@ def qualify_native_indicators(
     reasons = tuple(environment_reasons) + tuple(parity.reasons)
     return NativeIndicatorProof(
         artifact,
+        _features_hash(feature_rows),
         environment,
         parity,
         not reasons,
@@ -268,6 +306,7 @@ def qualify_native_tester(
     max_volume_gap: float = 1e-9,
     max_time_exit_delay_seconds: float = 60.0,
 ) -> NativeTesterProof:
+    expected_rows = tuple(expected)
     artifact = ArtifactFingerprint.from_text(
         "mt5_tester_deals_csv",
         deals_csv,
@@ -282,7 +321,7 @@ def qualify_native_tester(
     deals = parse_tester_deals_csv(deals_csv)
     trades = normalize_tester_trades(deals)
     parity = reconcile_execution_envelopes(
-        expected,
+        expected_rows,
         trades,
         max_entry_delay_seconds=max_entry_delay_seconds,
         max_entry_price_gap=max_entry_price_gap,
@@ -293,6 +332,7 @@ def qualify_native_tester(
     reasons = tuple(environment_reasons) + tuple(parity.reasons)
     return NativeTesterProof(
         artifact,
+        _expected_hash(expected_rows),
         environment,
         parity,
         not reasons,
@@ -317,7 +357,7 @@ def _data_assessment(
         DataProbeKind.EVENT,
         DataProbeKind.PUBLIC_STRATEGY,
     }
-    missing = tuple(sorted((kind.value for kind in required - kinds)))
+    missing = tuple(sorted(kind.value for kind in required - kinds))
     if missing:
         return CapabilityAssessment(
             Capability.DATA_ACQUISITION,
@@ -373,9 +413,6 @@ def _cognition_assessment(software: SoftwareProof | None) -> CapabilityAssessmen
             ProofLevel.FAILED,
             ("cognition_software_tests_failed",),
         )
-    # This capability is a deterministic software transformation. External market truth is separately
-    # certified by data/feature layers, so no broker-native execution artifact is needed to prove the
-    # transformation itself.
     return CapabilityAssessment(
         Capability.EVIDENCE_COGNITION,
         ProofLevel.OPERATIONALLY_PROVEN,
@@ -408,8 +445,8 @@ def _lab_assessment(
         reasons.extend(tester.reasons or ("native_tester_parity_failed",))
     if reasons:
         level = ProofLevel.FAILED if (
-            indicator is not None and not indicator.passed
-            or tester is not None and not tester.passed
+            (indicator is not None and not indicator.passed)
+            or (tester is not None and not tester.passed)
         ) else ProofLevel.OPERATIONAL_EVIDENCE_REQUIRED
         return CapabilityAssessment(
             Capability.MT5_LABORATORY,
@@ -431,28 +468,47 @@ def build_m75_trust_report(
     indicator_proof: NativeIndicatorProof | None = None,
     tester_proof: NativeTesterProof | None = None,
 ) -> M75TrustReport:
-    if len(commit_sha.strip()) < 7:
+    commit = commit_sha.strip()
+    if len(commit) < 7:
         raise ValueError("trust report requires commit identity")
     probes = tuple(data_probes)
-    assessments = (
-        _data_assessment(software, probes),
-        _indicator_assessment(software, indicator_proof),
-        _cognition_assessment(software),
-        _lab_assessment(software, indicator_proof, tester_proof, probes),
-    )
+    if software is not None and software.commit_sha.strip() != commit:
+        assessments = tuple(
+            CapabilityAssessment(
+                capability,
+                ProofLevel.FAILED,
+                ("software_proof_commit_mismatch",),
+            )
+            for capability in Capability
+        )
+    else:
+        assessments = (
+            _data_assessment(software, probes),
+            _indicator_assessment(software, indicator_proof),
+            _cognition_assessment(software),
+            _lab_assessment(software, indicator_proof, tester_proof, probes),
+        )
     payload = "|".join(
         (
-            commit_sha,
+            commit,
             software.commit_sha if software else "no-software-proof",
             software.run_id if software else "",
             *(f"{item.capability.value}:{item.level.value}:{','.join(item.reasons)}" for item in assessments),
             *(f"probe:{probe.kind.value}:{probe.source_id}:{probe.artifact.sha256}" for probe in probes),
-            indicator_proof.artifact.sha256 if indicator_proof else "no-indicator-proof",
-            tester_proof.artifact.sha256 if tester_proof else "no-tester-proof",
+            (
+                f"indicator:{indicator_proof.input_sha256}:{indicator_proof.artifact.sha256}"
+                if indicator_proof
+                else "no-indicator-proof"
+            ),
+            (
+                f"tester:{tester_proof.input_sha256}:{tester_proof.artifact.sha256}"
+                if tester_proof
+                else "no-tester-proof"
+            ),
         )
     )
     return M75TrustReport(
-        commit_sha.strip(),
+        commit,
         assessments,
         sha256(payload.encode("utf-8")).hexdigest(),
     )
