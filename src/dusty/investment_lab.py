@@ -18,16 +18,46 @@ from .core import (
     Person,
     check_coherence,
 )
-from .features import FeatureBar, FeatureConfig, FeatureVector, compute_standard_features
+from .features import (
+    FeatureBar,
+    FeatureConfig,
+    FeatureVector,
+    completed_feature_bars_from_mt5,
+    compute_standard_features,
+)
 from .forecasting import Forecast
 from .markets import InstrumentEconomics
 from .mt5worker import MT5BarRequest, ReadOnlyMT5Worker
 from .risk import AccountRiskSnapshot, RiskAssessment, RiskConstitution, TradeRiskRequest, assess_trade_risk
 from .runtime import CompiledStrategy, PriceRuleKind, RuntimeBar, RuntimeTrade, generate_runtime_trades
+from .strategy_ir import assess_observed_entry_frequency, assess_strategy_eligibility
 
 
 SessionResolver = Callable[[datetime], str]
 EventBlockResolver = Callable[[datetime], bool]
+
+
+_MT5_TIMEFRAME_MINUTES = {
+    "M1": 1,
+    "M2": 2,
+    "M3": 3,
+    "M4": 4,
+    "M5": 5,
+    "M6": 6,
+    "M10": 10,
+    "M12": 12,
+    "M15": 15,
+    "M20": 20,
+    "M30": 30,
+    "H1": 60,
+    "H2": 120,
+    "H3": 180,
+    "H4": 240,
+    "H6": 360,
+    "H8": 480,
+    "H12": 720,
+    "D1": 1440,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +127,8 @@ class LaboratoryRun:
     growth_sizing: tuple[GrowthSizingTrace, ...]
     minimum_lot_manifest: str
     growth_manifest: str
+    mt5_manifest_supported: bool = True
+    mt5_manifest_reasons: tuple[str, ...] = ()
 
     @property
     def cognition_authorized_entries(self) -> int:
@@ -118,7 +150,7 @@ def _coherence(vector: FeatureVector, required: Sequence[str], *, max_items: int
             source="dusty_feature_engine",
             observed_at=vector.at,
             category="market_feature",
-            provenance="mt5_bars->dusty_features",
+            provenance="mt5_completed_bars->dusty_features",
         )
         for key, value in vector.values
     )
@@ -174,6 +206,21 @@ def _manifest_row(trade_id: str, runtime: RuntimeTrade, volume: float) -> Resear
         runtime.stop_price,
         runtime.target_price or 0.0,
     )
+
+
+def _manifest_support(strategy: CompiledStrategy) -> tuple[bool, tuple[str, ...]]:
+    """State exactly what the current tester manifest can reproduce.
+
+    Dynamic trailing/breakeven changes require an ordered protection-action manifest. Until that exists,
+    Python may research those strategies, but MT5 parity is explicitly unavailable rather than falsely
+    claimed from only the initial SL/TP and planned close time.
+    """
+    reasons: list[str] = []
+    if strategy.trailing.kind is not PriceRuleKind.OFF:
+        reasons.append("dynamic_trailing_manifest_not_supported")
+    if strategy.breakeven_rr is not None:
+        reasons.append("dynamic_breakeven_manifest_not_supported")
+    return not reasons, tuple(reasons)
 
 
 def _growth_stage(
@@ -281,14 +328,17 @@ def run_laboratory_from_bars(
     event_block_resolver: EventBlockResolver | None = None,
     health: HealthState = HealthState.HEALTHY,
 ) -> LaboratoryRun:
-    """Investment-review reference chain from raw bars through cognition, two-stage sizing, and MT5 manifests.
+    """Reference chain from completed bars through cognition, two-stage sizing, and MT5 manifests.
 
-    This is deliberately a single-symbol, single-position reference laboratory. It proves semantic wiring;
+    This is deliberately a single-symbol, single-position laboratory. It proves semantic wiring;
     portfolio concurrency remains owned by the separate portfolio/backtest layers.
     """
+    eligibility = assess_strategy_eligibility(strategy.spec)
+    if not eligibility.promotable:
+        raise ValueError(f"strategy_not_execution_eligible:{','.join(eligibility.reasons)}")
     feature_bars = tuple(bars)
     if not symbol.strip() or not feature_bars:
-        raise ValueError("laboratory requires symbol and bars")
+        raise ValueError("laboratory requires symbol and completed bars")
     features = compute_standard_features(feature_bars, config.feature_config)
     required = _required_feature_keys(strategy)
     baseline_risk = _baseline_risk(config.growth_starting_equity, config.growth_risk_fraction, config.risk_constitution)
@@ -322,6 +372,10 @@ def run_laboratory_from_bars(
 
     expected_entry = Decision.ENTRY_LONG if strategy.spec.direction.value == "long" else Decision.ENTRY_SHORT
     potential = generate_runtime_trades(strategy, runtime_bars, entry_authorizer=lambda row, _: decisions.get(row.at) is expected_entry)
+    frequency = assess_observed_entry_frequency(trade.entry_at for trade in potential)
+    if not frequency.promotable:
+        raise ValueError(f"observed_entry_frequency_not_eligible:{','.join(frequency.reasons)}")
+
     cost_per_lot = _friction_cost_per_lot(config, economics)
     minimum_simulated = tuple(
         _simulated_trade(f"minimum-{index:06d}", trade, symbol=symbol, volume=economics.volume_min, cost_per_lot=cost_per_lot)
@@ -333,7 +387,24 @@ def run_laboratory_from_bars(
         _manifest_row(f"minimum-{index:06d}", trade, economics.volume_min) for index, trade in enumerate(potential)
     )
     growth_result, growth_sizing, growth_manifest = _growth_stage(potential, feature_bars, symbol=symbol, economics=economics, config=config)
-    return LaboratoryRun(strategy.strategy_hash, len(feature_bars), len(features), tuple(traces), potential, minimum_result, growth_result, growth_sizing, minimum_manifest, growth_manifest)
+    manifest_supported, manifest_reasons = _manifest_support(strategy)
+    if not manifest_supported:
+        minimum_manifest = ""
+        growth_manifest = ""
+    return LaboratoryRun(
+        strategy.strategy_hash,
+        len(feature_bars),
+        len(features),
+        tuple(traces),
+        potential,
+        minimum_result,
+        growth_result,
+        growth_sizing,
+        minimum_manifest,
+        growth_manifest,
+        manifest_supported,
+        manifest_reasons,
+    )
 
 
 def run_laboratory_from_mt5(
@@ -348,7 +419,15 @@ def run_laboratory_from_mt5(
     event_block_resolver: EventBlockResolver | None = None,
     health: HealthState = HealthState.HEALTHY,
 ) -> LaboratoryRun:
-    bars = tuple(FeatureBar.from_mt5(bar) for bar in worker.stream_bars(request))
+    requested_minutes = _MT5_TIMEFRAME_MINUTES.get(request.timeframe.upper())
+    if requested_minutes is None:
+        raise ValueError("investment laboratory requires an explicitly mapped intraday/daily MT5 timeframe")
+    if requested_minutes != strategy.spec.decision_timeframe_minutes:
+        raise ValueError("strategy decision timeframe does not match MT5 history timeframe")
+    raw_bars = tuple(worker.stream_bars(request))
+    bars = completed_feature_bars_from_mt5(raw_bars)
+    if not bars:
+        raise ValueError("MT5 history did not contain two chronological bars needed to prove completion")
     return run_laboratory_from_bars(
         strategy,
         bars,
