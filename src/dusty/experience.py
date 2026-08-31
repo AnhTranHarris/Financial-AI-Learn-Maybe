@@ -78,8 +78,16 @@ class TradingEpisode:
         return next(action for action in self.actions if action.kind is ActionKind.EXIT)
 
     @property
+    def pnl(self) -> float:
+        return episode_pnl(self.actions)
+
+    @property
+    def entry_notional(self) -> float:
+        return episode_entry_notional(self.actions)
+
+    @property
     def return_fraction(self) -> float:
-        return signed_return(self.entry.price, self.exit.price, self.entry.side)
+        return self.pnl / self.entry_notional
 
     @property
     def duration_minutes(self) -> float:
@@ -170,6 +178,31 @@ def signed_return(entry_price: float, exit_price: float, side: TradeSide) -> flo
     return direction * (exit_price - entry_price) / entry_price
 
 
+def episode_entry_notional(actions: Iterable[TradeAction]) -> float:
+    """Gross notional committed on ENTRY/SCALE_IN actions for normalized episode return."""
+    return sum(
+        action.price * action.quantity
+        for action in actions
+        if action.kind in {ActionKind.ENTRY, ActionKind.SCALE_IN}
+    )
+
+
+def episode_pnl(actions: Iterable[TradeAction]) -> float:
+    """Quantity-aware cash-flow PnL; long buys/sells and short sells/buys are symmetric."""
+    rows = tuple(actions)
+    if not rows:
+        raise ValueError("episode actions are required")
+    direction = 1.0 if rows[0].side is TradeSide.LONG else -1.0
+    cash = 0.0
+    for action in rows:
+        notional = action.price * action.quantity
+        if action.kind in {ActionKind.ENTRY, ActionKind.SCALE_IN}:
+            cash -= direction * notional
+        else:
+            cash += direction * notional
+    return cash
+
+
 def reconstruct_episode(
     episode_id: str,
     symbol: str,
@@ -196,14 +229,25 @@ def reconstruct_episode(
     if ordered[0].kind is not ActionKind.ENTRY or ordered[-1].kind is not ActionKind.EXIT:
         raise ValueError("entry must be first and exit must be last")
     side = entries[0].side
+    open_quantity = 0.0
     for action in ordered:
         _aware(action.at)
         if action.side is not side:
             raise ValueError("all actions in one episode must share direction")
         if action.price <= 0 or action.quantity <= 0:
             raise ValueError("action price and quantity must be positive")
+        if action.kind in {ActionKind.ENTRY, ActionKind.SCALE_IN}:
+            open_quantity += action.quantity
+        else:
+            open_quantity -= action.quantity
+            if open_quantity < -1e-12:
+                raise ValueError("scale-out/exit quantity exceeds open quantity")
+    if abs(open_quantity) > 1e-12:
+        raise ValueError("episode must finish with zero open quantity")
     if exits[0].at <= entries[0].at:
         raise ValueError("exit must occur after entry")
+    if episode_entry_notional(ordered) <= 0:
+        raise ValueError("episode entry notional must be positive")
     return TradingEpisode(
         episode_id=episode_id,
         symbol=symbol.upper(),
