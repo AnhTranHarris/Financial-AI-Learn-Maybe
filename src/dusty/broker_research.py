@@ -4,10 +4,11 @@ import csv
 import io
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .experience import TradeSide
+from .runtime import RuntimeTrade
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,150 @@ class MT5ResearchCalculator:
 
     def _last_error(self) -> object:
         return self._mt5.last_error() if hasattr(self._mt5, "last_error") else "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchManifestRow:
+    trade_id: str
+    entry_at: datetime
+    exit_at: datetime
+    side: TradeSide
+    volume: float
+    stop_price: float
+    target_price: float
+
+    def __post_init__(self) -> None:
+        if not self.trade_id.strip():
+            raise ValueError("research manifest trade id is required")
+        if self.entry_at.tzinfo is None or self.entry_at.utcoffset() is None:
+            raise ValueError("research manifest entry timestamp must be timezone-aware")
+        if self.exit_at.tzinfo is None or self.exit_at.utcoffset() is None:
+            raise ValueError("research manifest exit timestamp must be timezone-aware")
+        if self.exit_at <= self.entry_at:
+            raise ValueError("research manifest exit must follow entry")
+        if self.volume <= 0 or self.stop_price <= 0 or self.target_price < 0:
+            raise ValueError("research manifest economics are invalid")
+        if any(not math.isfinite(value) for value in (self.volume, self.stop_price, self.target_price)):
+            raise ValueError("research manifest economics must be finite")
+
+
+def manifest_rows(
+    trades: Iterable[RuntimeTrade],
+    *,
+    volume: float,
+) -> tuple[ResearchManifestRow, ...]:
+    """Translate the single Python strategy runtime into a tester execution manifest.
+
+    The Strategy Tester EA consumes only these already-decided actions. It does not
+    re-implement indicators or strategy clauses, preventing semantic drift between
+    Python research and MQL5 execution mechanics.
+    """
+    if not math.isfinite(volume) or volume <= 0:
+        raise ValueError("research manifest volume must be finite and positive")
+    rows = []
+    for index, trade in enumerate(trades):
+        rows.append(
+            ResearchManifestRow(
+                trade_id=f"{trade.strategy_hash[:12]}-{index:06d}",
+                entry_at=trade.entry_at,
+                exit_at=trade.exit_at,
+                side=trade.side,
+                volume=volume,
+                stop_price=trade.stop_price,
+                target_price=trade.target_price or 0.0,
+            )
+        )
+    return tuple(rows)
+
+
+def render_research_manifest(rows: Iterable[ResearchManifestRow]) -> str:
+    """Render the tester-only EA manifest in deterministic UTC order."""
+    collected = tuple(rows)
+    if tuple(sorted(collected, key=lambda row: (row.entry_at, row.trade_id))) != collected:
+        raise ValueError("research manifest must be chronological")
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(("trade_id", "entry_time", "exit_time", "side", "volume", "stop_price", "target_price"))
+    for row in collected:
+        entry = row.entry_at.astimezone(timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
+        exit_at = row.exit_at.astimezone(timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
+        writer.writerow(
+            (
+                row.trade_id,
+                entry,
+                exit_at,
+                row.side.value,
+                f"{row.volume:.12g}",
+                f"{row.stop_price:.17g}",
+                f"{row.target_price:.17g}",
+            )
+        )
+    return buffer.getvalue()
+
+
+@dataclass(frozen=True, slots=True)
+class DealParityRecord:
+    strategy_hash: str
+    position_id: int
+    deal_id: int
+    time_msc: int
+    deal_type: int
+    entry_type: int
+    volume: float
+    price: float
+    commission: float
+    swap: float
+    profit: float
+    reason: int
+    comment: str
+
+    def __post_init__(self) -> None:
+        if not self.strategy_hash.strip() or self.position_id < 0 or self.deal_id <= 0 or self.time_msc <= 0:
+            raise ValueError("deal parity identity is invalid")
+        values = (self.volume, self.price, self.commission, self.swap, self.profit)
+        if any(not math.isfinite(value) for value in values) or self.volume <= 0 or self.price <= 0:
+            raise ValueError("deal parity economics are invalid")
+
+
+def parse_deal_parity_csv(text: str) -> tuple[DealParityRecord, ...]:
+    reader = csv.DictReader(io.StringIO(text))
+    required = {
+        "strategy_hash",
+        "position_id",
+        "deal_id",
+        "time_msc",
+        "deal_type",
+        "entry_type",
+        "volume",
+        "price",
+        "commission",
+        "swap",
+        "profit",
+        "reason",
+        "comment",
+    }
+    if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+        raise ValueError("MT5 deal parity CSV is missing required columns")
+    rows = []
+    for row in reader:
+        rows.append(
+            DealParityRecord(
+                strategy_hash=row["strategy_hash"],
+                position_id=int(row["position_id"]),
+                deal_id=int(row["deal_id"]),
+                time_msc=int(row["time_msc"]),
+                deal_type=int(row["deal_type"]),
+                entry_type=int(row["entry_type"]),
+                volume=float(row["volume"]),
+                price=float(row["price"]),
+                commission=float(row["commission"]),
+                swap=float(row["swap"]),
+                profit=float(row["profit"]),
+                reason=int(row["reason"]),
+                comment=row["comment"],
+            )
+        )
+    return tuple(rows)
 
 
 @dataclass(frozen=True, slots=True)
