@@ -98,6 +98,9 @@ def build_portfolio_risk_model(
     if not -1.0 <= insufficient_correlation <= 1.0 or not math.isfinite(insufficient_volatility) or insufficient_volatility <= 0:
         raise ValueError("invalid conservative fallback")
     rows = tuple(row for row in returns if row.at <= as_of)
+    identities = {(row.strategy_hash, row.at) for row in rows}
+    if len(identities) != len(rows):
+        raise ValueError("strategy return timestamps must be unique per strategy")
     by_strategy: dict[str, list[StrategyReturn]] = {}
     for row in rows:
         by_strategy.setdefault(row.strategy_hash, []).append(row)
@@ -117,23 +120,16 @@ def build_portfolio_risk_model(
 
     correlations = []
     hashes = sorted(by_strategy)
-    indexed = {
-        key: {row.at: row.value for row in by_strategy[key]}
-        for key in hashes
-    }
+    indexed = {key: {row.at: row.value for row in by_strategy[key]} for key in hashes}
     for left_index, left_hash in enumerate(hashes):
         for right_hash in hashes[left_index + 1 :]:
             common = sorted(set(indexed[left_hash]) & set(indexed[right_hash]))
             if len(common) < min_samples:
-                correlations.append(
-                    CorrelationEstimate(left_hash, right_hash, len(common), insufficient_correlation, EstimateState.INSUFFICIENT)
-                )
+                correlations.append(CorrelationEstimate(left_hash, right_hash, len(common), insufficient_correlation, EstimateState.INSUFFICIENT))
                 continue
             left = tuple(indexed[left_hash][at] for at in common)
             right = tuple(indexed[right_hash][at] for at in common)
-            correlations.append(
-                CorrelationEstimate(left_hash, right_hash, len(common), _correlation(left, right), EstimateState.MEASURED)
-            )
+            correlations.append(CorrelationEstimate(left_hash, right_hash, len(common), _correlation(left, right), EstimateState.MEASURED))
     return PortfolioRiskModel(as_of, tuple(volatilities), tuple(correlations))
 
 

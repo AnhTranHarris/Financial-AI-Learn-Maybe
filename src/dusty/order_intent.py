@@ -111,42 +111,49 @@ class BrokerPreflight:
 
 
 class MT5PreflightAdapter:
-    """Broker preflight only. This class intentionally has no order_send surface."""
+    """Broker preflight only. Identity is checked on the same initialized connection used for calculations."""
 
     def __init__(
         self,
         module: Any,
         session: DemoSession,
-        identity_reader: Callable[[], SessionIdentity],
+        connected_identity_reader: Callable[[], SessionIdentity],
     ) -> None:
         self._mt5 = module
         self._session = session
-        self._identity_reader = identity_reader
+        self._identity_reader = connected_identity_reader
 
     @property
     def broker_write_authorized(self) -> bool:
         return False
 
     def check(self, intent: OrderIntent, *, at: datetime) -> BrokerPreflight:
-        reasons: list[str] = []
         if at.tzinfo is None or at.utcoffset() is None:
             raise ValueError("preflight timestamp must be timezone-aware")
+        reasons: list[str] = []
         if intent.session_fingerprint != self._session.identity.fingerprint:
             reasons.append("session_fingerprint_mismatch")
         if at > intent.expires_at:
             reasons.append("intent_expired")
-        current = self._identity_reader()
-        verification = self._session.verify(current)
-        if not verification.valid:
-            reasons.extend(f"session_fault:{fault.value}" for fault in verification.faults)
+        if not all((intent.pm_approved, intent.risk_approved, intent.guardian_approved)) or intent.growth_multiplier <= 0:
+            reasons.append("governance_not_approved")
         if reasons:
             return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), tuple(reasons))
-        if not all((intent.pm_approved, intent.risk_approved, intent.guardian_approved)) or intent.growth_multiplier <= 0:
-            return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("governance_not_approved",))
 
         if not self._mt5.initialize(self._session.identity.terminal_path):
             return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("mt5_initialize_failed",))
         try:
+            verification = self._session.verify(self._identity_reader())
+            if not verification.valid:
+                return BrokerPreflight(
+                    intent,
+                    False,
+                    0.0,
+                    0.0,
+                    0.0,
+                    (),
+                    tuple(f"session_fault:{fault.value}" for fault in verification.faults),
+                )
             tick = self._mt5.symbol_info_tick(intent.symbol)
             if tick is None:
                 return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("symbol_tick_unavailable",))

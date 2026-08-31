@@ -20,18 +20,18 @@ class DemoExecutionResult:
 
 
 class DemoMT5ExecutionAdapter:
-    """The only Dusty module allowed to call MT5 order_send; demo verification is repeated immediately before send."""
+    """The only Dusty module allowed to call MT5 order_send; live-money authority is permanently false."""
 
     def __init__(
         self,
         module: Any,
         session: DemoSession,
-        identity_reader: Callable[[], SessionIdentity],
+        connected_identity_reader: Callable[[], SessionIdentity],
         ledger: SQLiteExecutionLedger,
     ) -> None:
         self._mt5 = module
         self._session = session
-        self._identity_reader = identity_reader
+        self._identity_reader = connected_identity_reader
         self._ledger = ledger
 
     @property
@@ -46,18 +46,16 @@ class DemoMT5ExecutionAdapter:
             raise ValueError("execution timestamp must be timezone-aware")
         if at > intent.expires_at:
             raise PermissionError("intent expired before execution")
-        current = self._identity_reader()
-        verification = self._session.verify(current)
-        if not verification.valid or not self._session.broker_write_authorized:
-            raise PermissionError("demo session is not write-authorized")
         if intent.session_fingerprint != self._session.identity.fingerprint:
             raise PermissionError("intent belongs to a different session")
-
-        self._ledger.authorize(intent.intent_hash, intent.client_tag, at=at)
-        self._ledger.reserve_send(intent.intent_hash, at=at)
         if not self._mt5.initialize(self._session.identity.terminal_path):
-            raise RuntimeError("MT5 initialize failed after send reservation")
+            raise RuntimeError("MT5 initialize failed before execution")
         try:
+            verification = self._session.verify(self._identity_reader())
+            if not verification.valid or not self._session.broker_write_authorized:
+                raise PermissionError("demo session is not write-authorized")
+            self._ledger.authorize(intent.intent_hash, intent.client_tag, at=at)
+            self._ledger.reserve_send(intent.intent_hash, at=at)
             result = self._mt5.order_send(preflight.request_dict())
         finally:
             self._mt5.shutdown()

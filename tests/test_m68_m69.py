@@ -3,11 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from dusty.capital_attribution import (
-    CapitalAttribution,
-    SQLiteCapitalAttribution,
-    rank_capital_reputations,
-)
+from dusty.capital_attribution import CapitalAttribution, SQLiteCapitalAttribution, rank_capital_reputations
 from dusty.experience import TradeSide
 from dusty.portfolio_model import EstimateState, StrategyReturn, build_portfolio_risk_model, derive_fx_factor_exposures
 
@@ -30,13 +26,15 @@ class PortfolioModelTests(unittest.TestCase):
         self.assertLess(model.volatility_map()["a"], 1.0)
 
     def test_sparse_history_is_conservative_not_zero_correlation(self):
-        rows = (
-            StrategyReturn("a", "EURUSD", NOW, 0.01),
-            StrategyReturn("b", "GBPUSD", NOW, 0.02),
-        )
+        rows = (StrategyReturn("a", "EURUSD", NOW, 0.01), StrategyReturn("b", "GBPUSD", NOW, 0.02))
         model = build_portfolio_risk_model(rows, as_of=NOW, min_samples=5)
         self.assertEqual(model.correlations[0].state, EstimateState.INSUFFICIENT)
         self.assertEqual(model.correlations[0].correlation, 1.0)
+
+    def test_duplicate_strategy_timestamp_is_rejected(self):
+        rows = (StrategyReturn("a", "EURUSD", NOW, 0.01), StrategyReturn("a", "EURUSD", NOW, 0.02))
+        with self.assertRaises(ValueError):
+            build_portfolio_risk_model(rows, as_of=NOW, min_samples=2)
 
     def test_fx_factor_exposures_make_usd_direction_explicit(self):
         eur = dict(derive_fx_factor_exposures("EURUSD", TradeSide.LONG))
@@ -50,19 +48,13 @@ class CapitalAttributionTests(unittest.TestCase):
         return CapitalAttribution(identity, strategy, "EURUSD", NOW, pnl, 100.0, drawdown, rules)
 
     def test_bad_big_win_cannot_outrank_smaller_good_win(self):
-        rows = (
-            self.row("good", "good", 10.0, True, 0.01),
-            self.row("bad", "bad", 100.0, False, 0.00),
-        )
+        rows = (self.row("good", "good", 10.0, True, 0.01), self.row("bad", "bad", 100.0, False, 0.00))
         ranked = rank_capital_reputations(rows)
         self.assertEqual(ranked[0].strategy_hash, "good")
         self.assertEqual(ranked[1].governance_pass_rate, 0.0)
 
     def test_losses_raise_investigation_priority_not_reward(self):
-        rows = (
-            self.row("w", "s", 10.0, True, 0.01),
-            self.row("l", "s", -5.0, True, 0.02),
-        )
+        rows = (self.row("w", "s", 10.0, True, 0.01), self.row("l", "s", -5.0, True, 0.02))
         reputation = rank_capital_reputations(rows)[0]
         self.assertEqual(reputation.investigation_priority, 1)
 

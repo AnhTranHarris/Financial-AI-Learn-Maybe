@@ -146,12 +146,14 @@ class SQLiteExecutionLedger:
         if current.state is not ExecutionState.SENT_UNKNOWN:
             raise ValueError("only ambiguous sends may be reconciled")
         matches = tuple(row for row in snapshots if row.client_tag == current.client_tag)
-        if len(matches) != 1:
+        if not matches:
+            return current
+        if len(matches) > 1:
             return self.transition(
                 intent_hash,
                 ExecutionState.FAULT,
                 at=at,
-                note="ambiguous_send_has_zero_or_multiple_broker_matches",
+                note="ambiguous_send_has_multiple_broker_matches",
             )
         match = matches[0]
         target = ExecutionState.CLOSED if match.closed else (ExecutionState.FILLED if match.deal_ticket or match.position_ticket else ExecutionState.ACCEPTED)

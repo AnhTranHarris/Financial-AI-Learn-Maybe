@@ -79,29 +79,22 @@ class PITMemoryTests(unittest.TestCase):
     def test_retrieval_cannot_see_future_known_record(self):
         db = SQLitePITKnowledge()
         try:
-            db.remember(
-                TemporalKnowledge.of(
-                    record_id="past",
-                    kind="event",
-                    text="known",
-                    tags=("eurusd",),
-                    known_at=NOW,
-                    effective_at=NOW + timedelta(hours=1),
-                )
-            )
-            db.remember(
-                TemporalKnowledge.of(
-                    record_id="future",
-                    kind="event",
-                    text="not yet known",
-                    tags=("eurusd",),
-                    known_at=NOW + timedelta(hours=2),
-                    effective_at=NOW,
-                )
-            )
+            db.remember(TemporalKnowledge.of(record_id="past", kind="event", text="known", tags=("eurusd",), known_at=NOW, effective_at=NOW + timedelta(hours=1)))
+            db.remember(TemporalKnowledge.of(record_id="future", kind="event", text="not yet known", tags=("eurusd",), known_at=NOW + timedelta(hours=2), effective_at=NOW))
             rows = db.retrieve_as_of(("eurusd",), as_of=NOW + timedelta(minutes=30))
             self.assertEqual(tuple(row.record_id for row in rows), ("past",))
             self.assertTrue(db.integrity_ok())
+        finally:
+            db.close()
+
+    def test_pit_comparison_is_absolute_across_timezone_offsets(self):
+        db = SQLitePITKnowledge()
+        try:
+            plus_two = timezone(timedelta(hours=2))
+            known = datetime(2026, 8, 31, 12, 0, tzinfo=plus_two)  # same instant as NOW
+            db.remember(TemporalKnowledge.of(record_id="offset", kind="event", text="known", tags=("eurusd",), known_at=known, effective_at=known))
+            rows = db.retrieve_as_of(("eurusd",), as_of=NOW)
+            self.assertEqual(tuple(row.record_id for row in rows), ("offset",))
         finally:
             db.close()
 
@@ -146,13 +139,10 @@ class BrokerResearchTests(unittest.TestCase):
             "abc,t1,2026-08-31T10:00:00+00:00,2026-08-31T11:00:00+00:00,long,0.1,1.1,1.11,100\n"
         )
         observed = parse_trade_parity_csv(csv_text)
-        expected = (
-            TradeParityRecord("abc", "t1", NOW, NOW + timedelta(hours=1), TradeSide.LONG, 0.1, 1.1, 1.11, 100.0),
-        )
+        expected = (TradeParityRecord("abc", "t1", NOW, NOW + timedelta(hours=1), TradeSide.LONG, 0.1, 1.1, 1.11, 100.0),)
         assessment = reconcile_trade_parity(expected, observed)
         self.assertTrue(assessment.passed)
         self.assertEqual(assessment.matched, 1)
-
         bad = (TradeParityRecord("abc", "t1", NOW, NOW + timedelta(hours=1), TradeSide.LONG, 0.1, 1.1, 1.11, 80.0),)
         failed = reconcile_trade_parity(expected, bad)
         self.assertFalse(failed.passed)

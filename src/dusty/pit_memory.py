@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -56,7 +56,7 @@ class SQLitePITKnowledge:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS pit_knowledge("
             "record_id TEXT PRIMARY KEY,kind TEXT NOT NULL,text TEXT NOT NULL,tags TEXT NOT NULL,"
-            "known_at TEXT NOT NULL,effective_at TEXT NOT NULL,expires_at TEXT,source_id TEXT)"
+            "known_at REAL NOT NULL,effective_at REAL NOT NULL,expires_at REAL,source_id TEXT)"
         )
         self._db.execute("CREATE INDEX IF NOT EXISTS idx_pit_known ON pit_knowledge(known_at,record_id)")
         self._db.commit()
@@ -72,9 +72,9 @@ class SQLitePITKnowledge:
                     record.kind,
                     record.text,
                     tags,
-                    record.known_at.isoformat(),
-                    record.effective_at.isoformat(),
-                    record.expires_at.isoformat() if record.expires_at else None,
+                    record.known_at.timestamp(),
+                    record.effective_at.timestamp(),
+                    record.expires_at.timestamp() if record.expires_at else None,
                     record.source_id,
                 ),
             )
@@ -87,11 +87,12 @@ class SQLitePITKnowledge:
         wanted = {tag.strip().lower() for tag in tags if tag.strip()}
         if not wanted:
             return ()
+        instant = as_of.timestamp()
         rows = self._db.execute(
             "SELECT record_id,kind,text,tags,known_at,effective_at,expires_at,source_id "
             "FROM pit_knowledge WHERE known_at<=? AND (expires_at IS NULL OR expires_at>=?) "
             "ORDER BY known_at DESC,record_id",
-            (as_of.isoformat(), as_of.isoformat()),
+            (instant, instant),
         ).fetchall()
         result = []
         for row in rows:
@@ -104,9 +105,9 @@ class SQLitePITKnowledge:
                     kind=row[1],
                     text=row[2],
                     tags=record_tags,
-                    known_at=datetime.fromisoformat(row[4]),
-                    effective_at=datetime.fromisoformat(row[5]),
-                    expires_at=datetime.fromisoformat(row[6]) if row[6] else None,
+                    known_at=datetime.fromtimestamp(float(row[4]), tz=timezone.utc),
+                    effective_at=datetime.fromtimestamp(float(row[5]), tz=timezone.utc),
+                    expires_at=datetime.fromtimestamp(float(row[6]), tz=timezone.utc) if row[6] is not None else None,
                     source_id=row[7],
                 )
             )

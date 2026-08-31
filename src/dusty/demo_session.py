@@ -132,45 +132,65 @@ def _account_mode(raw: object, module: Any) -> AccountMode:
     return AccountMode.UNKNOWN
 
 
+class MT5IdentityProbe:
+    """Reads identity either on an already-open MT5 connection or in a self-managed read call."""
+
+    def __init__(
+        self,
+        module: Any,
+        *,
+        terminal_path: str,
+        symbol_spec_fingerprint: str | Callable[[], str],
+    ) -> None:
+        if not terminal_path.strip():
+            raise ValueError("terminal path is required")
+        self.module = module
+        self.terminal_path = terminal_path
+        self._symbol_spec_fingerprint = symbol_spec_fingerprint
+
+    def read_connected(self) -> SessionIdentity:
+        account = self.module.account_info()
+        terminal = self.module.terminal_info() if hasattr(self.module, "terminal_info") else None
+        if account is None:
+            raise RuntimeError("MT5 account_info unavailable")
+        build = _attr(terminal, "build", None)
+        if build is None and hasattr(self.module, "version"):
+            version = self.module.version()
+            build = version[1] if version and len(version) > 1 else "unknown"
+        fingerprint = self._symbol_spec_fingerprint() if callable(self._symbol_spec_fingerprint) else self._symbol_spec_fingerprint
+        return SessionIdentity(
+            terminal_path=self.terminal_path,
+            terminal_build=str(build if build is not None else "unknown"),
+            server=str(_attr(account, "server", "")),
+            login=int(_attr(account, "login", 0)),
+            account_mode=_account_mode(_attr(account, "trade_mode", None), self.module),
+            account_currency=str(_attr(account, "currency", "")),
+            leverage=float(_attr(account, "leverage", 0.0)),
+            trade_allowed=bool(_attr(account, "trade_allowed", False)),
+            expert_trading_allowed=bool(_attr(account, "trade_expert", False)),
+            margin_mode=int(_attr(account, "margin_mode", -1)),
+            symbol_spec_fingerprint=str(fingerprint),
+            captured_at=datetime.now(timezone.utc),
+        )
+
+    def read(self) -> SessionIdentity:
+        if not self.module.initialize(self.terminal_path):
+            error = self.module.last_error() if hasattr(self.module, "last_error") else "unknown"
+            raise RuntimeError(f"MT5 initialize failed: {error}")
+        try:
+            return self.read_connected()
+        finally:
+            self.module.shutdown()
+
+
 def make_mt5_identity_reader(
     module: Any,
     *,
     terminal_path: str,
     symbol_spec_fingerprint: str | Callable[[], str],
 ) -> Callable[[], SessionIdentity]:
-    """Return a fresh identity reader. Each call initializes and shuts down MT5 independently."""
-    if not terminal_path.strip():
-        raise ValueError("terminal path is required")
-
-    def read() -> SessionIdentity:
-        if not module.initialize(terminal_path):
-            error = module.last_error() if hasattr(module, "last_error") else "unknown"
-            raise RuntimeError(f"MT5 initialize failed: {error}")
-        try:
-            account = module.account_info()
-            terminal = module.terminal_info() if hasattr(module, "terminal_info") else None
-            if account is None:
-                raise RuntimeError("MT5 account_info unavailable")
-            build = _attr(terminal, "build", None)
-            if build is None and hasattr(module, "version"):
-                version = module.version()
-                build = version[1] if version and len(version) > 1 else "unknown"
-            fingerprint = symbol_spec_fingerprint() if callable(symbol_spec_fingerprint) else symbol_spec_fingerprint
-            return SessionIdentity(
-                terminal_path=terminal_path,
-                terminal_build=str(build if build is not None else "unknown"),
-                server=str(_attr(account, "server", "")),
-                login=int(_attr(account, "login", 0)),
-                account_mode=_account_mode(_attr(account, "trade_mode", None), module),
-                account_currency=str(_attr(account, "currency", "")),
-                leverage=float(_attr(account, "leverage", 0.0)),
-                trade_allowed=bool(_attr(account, "trade_allowed", False)),
-                expert_trading_allowed=bool(_attr(account, "trade_expert", False)),
-                margin_mode=int(_attr(account, "margin_mode", -1)),
-                symbol_spec_fingerprint=str(fingerprint),
-                captured_at=datetime.now(timezone.utc),
-            )
-        finally:
-            module.shutdown()
-
-    return read
+    return MT5IdentityProbe(
+        module,
+        terminal_path=terminal_path,
+        symbol_spec_fingerprint=symbol_spec_fingerprint,
+    ).read

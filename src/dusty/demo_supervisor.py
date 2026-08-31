@@ -101,17 +101,14 @@ class SQLiteSupervisorState:
         now = at.timestamp()
         until = (at + duration).timestamp()
         with self._db:
-            row = self._db.execute(
-                "SELECT owner_id,acquired_at,lease_until FROM terminal_leases WHERE terminal_id=?",
-                (terminal_id,),
-            ).fetchone()
-            if row is not None and float(row[2]) > now and row[0] != owner_id:
-                return None
-            self._db.execute(
+            cursor = self._db.execute(
                 "INSERT INTO terminal_leases(terminal_id,owner_id,acquired_at,lease_until) VALUES(?,?,?,?) "
-                "ON CONFLICT(terminal_id) DO UPDATE SET owner_id=excluded.owner_id,acquired_at=excluded.acquired_at,lease_until=excluded.lease_until",
-                (terminal_id, owner_id, now, until),
+                "ON CONFLICT(terminal_id) DO UPDATE SET owner_id=excluded.owner_id,acquired_at=excluded.acquired_at,lease_until=excluded.lease_until "
+                "WHERE terminal_leases.lease_until<=? OR terminal_leases.owner_id=excluded.owner_id",
+                (terminal_id, owner_id, now, until, now),
             )
+        if cursor.rowcount != 1:
+            return None
         return TerminalLease(terminal_id, owner_id, at, at + duration)
 
     def release_lease(self, terminal_id: str, owner_id: str) -> bool:
