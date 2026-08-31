@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from .markets import BrokerSymbolSnapshot, InstrumentEconomics, MarketIdentity
 from .mt5lab import MT5TestRequest, MT5TickMode
 
 
@@ -53,7 +54,7 @@ class MT5Bar:
 
 
 class ReadOnlyMT5Worker:
-    """Lazy optional MetaTrader5 adapter exposing history only, never broker writes."""
+    """Lazy optional MetaTrader5 adapter exposing reads only, never broker writes."""
 
     def __init__(self, module: Any | None = None) -> None:
         self._module = module
@@ -66,6 +67,77 @@ class ReadOnlyMT5Worker:
         if self._module is None:
             self._module = importlib.import_module("MetaTrader5")
         return self._module
+
+    def symbol_snapshot(
+        self,
+        terminal_path: str,
+        market: MarketIdentity,
+        *,
+        broker: str = "",
+        captured_at: datetime | None = None,
+    ) -> BrokerSymbolSnapshot:
+        """Read broker contract units without exposing any order surface."""
+        if not terminal_path.strip():
+            raise ValueError("terminal path is required")
+        mt5 = self._mt5()
+        if not mt5.initialize(terminal_path):
+            error = mt5.last_error() if hasattr(mt5, "last_error") else "unknown"
+            raise RuntimeError(f"MT5 initialize failed: {error}")
+        try:
+            info = mt5.symbol_info(market.raw_symbol)
+            account = mt5.account_info()
+            if info is None or account is None:
+                error = mt5.last_error() if hasattr(mt5, "last_error") else "unknown"
+                raise RuntimeError(f"MT5 symbol/account specification unavailable: {error}")
+            leverage = float(_attr(account, "leverage", 0.0) or 0.0)
+            contract_size = float(_attr(info, "trade_contract_size", 0.0) or 0.0)
+            tick_size = float(_attr(info, "trade_tick_size", 0.0) or _attr(info, "point", 0.0) or 0.0)
+            tick_value = float(_attr(info, "trade_tick_value", 0.0) or 0.0)
+            bid = float(_attr(info, "bid", 0.0) or 0.0)
+            margin_initial = float(_attr(info, "margin_initial", 0.0) or 0.0)
+            if margin_initial > 0 and bid > 0 and contract_size > 0:
+                margin_rate = margin_initial / (bid * contract_size)
+            else:
+                margin_rate = 1.0 / leverage if leverage > 0 else 0.0
+            previous = market.economics
+            economics = InstrumentEconomics(
+                contract_size=contract_size,
+                tick_size=tick_size,
+                tick_value=tick_value,
+                volume_min=float(_attr(info, "volume_min", 0.0) or 0.0),
+                volume_step=float(_attr(info, "volume_step", 0.0) or 0.0),
+                volume_max=float(_attr(info, "volume_max", 0.0) or 0.0),
+                margin_rate=margin_rate,
+                commission_per_lot=previous.commission_per_lot if previous else 0.0,
+                swap_long=float(_attr(info, "swap_long", 0.0) or 0.0),
+                swap_short=float(_attr(info, "swap_short", 0.0) or 0.0),
+                stop_level_points=float(_attr(info, "trade_stops_level", 0.0) or 0.0),
+                freeze_level_points=float(_attr(info, "trade_freeze_level", 0.0) or 0.0),
+            )
+            enriched = MarketIdentity.of(
+                raw_symbol=market.raw_symbol,
+                economic_underlier=market.economic_underlier,
+                asset_class=market.asset_class,
+                instrument_type=market.instrument_type,
+                venue=market.venue,
+                contract=market.contract,
+                expiry=market.expiry,
+                base_currency=str(_attr(info, "currency_base", market.base_currency) or market.base_currency),
+                quote_currency=str(_attr(info, "currency_profit", market.quote_currency) or market.quote_currency),
+                sessions=market.sessions,
+                economics=economics,
+            )
+            when = captured_at or datetime.now(timezone.utc)
+            resolved_broker = broker.strip() or str(_attr(account, "server", "mt5") or "mt5")
+            return BrokerSymbolSnapshot(
+                broker=resolved_broker,
+                account_currency=str(_attr(account, "currency", "") or ""),
+                market=enriched,
+                captured_at=when,
+                leverage=leverage,
+            )
+        finally:
+            mt5.shutdown()
 
     def stream_bars(self, request: MT5BarRequest) -> Iterator[MT5Bar]:
         mt5 = self._mt5()
@@ -112,6 +184,14 @@ def _field(row: Any, name: str, index: int) -> Any:
         return row[name]
     except (KeyError, TypeError, IndexError, ValueError):
         return row[index]
+
+
+def _attr(row: Any, name: str, default: Any) -> Any:
+    if hasattr(row, name):
+        return getattr(row, name)
+    if isinstance(row, dict):
+        return row.get(name, default)
+    return default
 
 
 def render_tester_ini(
