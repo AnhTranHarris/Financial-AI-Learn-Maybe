@@ -36,6 +36,35 @@ bool TradeResultAccepted()
    return(code==TRADE_RETCODE_DONE || code==TRADE_RETCODE_PLACED || code==TRADE_RETCODE_DONE_PARTIAL);
   }
 
+string DealTypeName(const long value)
+  {
+   if(value==DEAL_TYPE_BUY) return "buy";
+   if(value==DEAL_TYPE_SELL) return "sell";
+   return "other";
+  }
+
+string DealEntryName(const long value)
+  {
+   if(value==DEAL_ENTRY_IN) return "in";
+   if(value==DEAL_ENTRY_OUT) return "out";
+   if(value==DEAL_ENTRY_INOUT) return "inout";
+   if(value==DEAL_ENTRY_OUT_BY) return "out_by";
+   return "other";
+  }
+
+string DealReasonName(const long value)
+  {
+   if(value==DEAL_REASON_EXPERT) return "expert";
+   if(value==DEAL_REASON_SL) return "sl";
+   if(value==DEAL_REASON_TP) return "tp";
+   if(value==DEAL_REASON_SO) return "stopout";
+   if(value==DEAL_REASON_ROLLOVER) return "rollover";
+   if(value==DEAL_REASON_CLIENT) return "client";
+   if(value==DEAL_REASON_MOBILE) return "mobile";
+   if(value==DEAL_REASON_WEB) return "web";
+   return "other";
+  }
+
 ulong FindPlanPosition(const string trade_id)
   {
    const string expected_comment="DDT:"+trade_id;
@@ -189,8 +218,9 @@ void ExportDeals()
       PrintFormat("DustyResearchEA cannot open deal export %s. Error=%d",InpDealsFile,GetLastError());
       return;
      }
-   FileWrite(handle,"strategy_hash","position_id","deal_id","time_msc","deal_type","entry_type",
-             "volume","price","commission","swap","profit","reason","comment");
+   FileWrite(handle,"strategy_hash","position_id","deal_id","time_msc","deal_type","deal_type_name",
+             "entry_type","entry_type_name","volume","price","commission","swap","profit","fee",
+             "reason","reason_name","sl","tp","comment");
    for(int i=0;i<HistoryDealsTotal();i++)
      {
       const ulong deal=HistoryDealGetTicket(i);
@@ -201,19 +231,27 @@ void ExportDeals()
       const long deal_type=HistoryDealGetInteger(deal,DEAL_TYPE);
       if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL)
          continue;
+      const long entry_type=HistoryDealGetInteger(deal,DEAL_ENTRY);
+      const long reason=HistoryDealGetInteger(deal,DEAL_REASON);
       FileWrite(handle,
                 InpStrategyHash,
                 HistoryDealGetInteger(deal,DEAL_POSITION_ID),
                 deal,
                 HistoryDealGetInteger(deal,DEAL_TIME_MSC),
                 deal_type,
-                HistoryDealGetInteger(deal,DEAL_ENTRY),
+                DealTypeName(deal_type),
+                entry_type,
+                DealEntryName(entry_type),
                 HistoryDealGetDouble(deal,DEAL_VOLUME),
                 HistoryDealGetDouble(deal,DEAL_PRICE),
                 HistoryDealGetDouble(deal,DEAL_COMMISSION),
                 HistoryDealGetDouble(deal,DEAL_SWAP),
                 HistoryDealGetDouble(deal,DEAL_PROFIT),
-                HistoryDealGetInteger(deal,DEAL_REASON),
+                HistoryDealGetDouble(deal,DEAL_FEE),
+                reason,
+                DealReasonName(reason),
+                HistoryDealGetDouble(deal,DEAL_SL),
+                HistoryDealGetDouble(deal,DEAL_TP),
                 HistoryDealGetString(deal,DEAL_COMMENT));
      }
    FileClose(handle);
