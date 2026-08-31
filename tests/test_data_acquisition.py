@@ -14,6 +14,7 @@ from dusty.data_acquisition import (
     HTTPSClient,
     RetryPolicy,
     SECSubmissionsAdapter,
+    macro_observation_evidence,
     source_capability,
 )
 
@@ -34,8 +35,11 @@ class RoutingFetcher:
 class DataAcquisitionTests(unittest.TestCase):
     def test_capability_manifest_is_honest(self) -> None:
         self.assertTrue(source_capability("bls").automatic)
+        self.assertTrue(source_capability("fed_rss").automatic)
+        self.assertTrue(source_capability("bls_calendar").automatic)
         self.assertEqual(source_capability("tradingview").mode, AcquisitionMode.UNSUPPORTED_AUTOMATIC)
         self.assertFalse(source_capability("forex_factory").automatic)
+        self.assertFalse(source_capability("eia").automatic)
         self.assertFalse(source_capability("unknown-source").automatic)
 
     def test_https_client_retries_boundedly(self) -> None:
@@ -48,7 +52,7 @@ class DataAcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.get_text("http://example.com/x")
 
-    def test_bls_series_normalization_uses_retrieval_as_known_time(self) -> None:
+    def test_bls_series_normalization_uses_retrieval_as_known_time_and_bridges_to_evidence(self) -> None:
         url = "https://api.bls.gov/publicAPI/v2/timeseries/data/CUSR0000SA0"
         payload = {"status": "REQUEST_SUCCEEDED", "Results": {"series": [{"data": [{"year": "2026", "period": "M07", "value": "323.0"}]}]}}
         client = HTTPSClient(fetch_bytes=RoutingFetcher({url: json.dumps(payload).encode()}), sleeper=lambda _: None)
@@ -58,6 +62,10 @@ class DataAcquisitionTests(unittest.TestCase):
         self.assertEqual(rows[0].period, "2026-M07")
         self.assertEqual(rows[0].value, 323.0)
         self.assertEqual(rows[0].known_at, known)
+        evidence = macro_observation_evidence(rows[0])
+        self.assertEqual(evidence.observed_at, known)
+        self.assertEqual(evidence.category, "macro")
+        self.assertEqual(evidence.value["value"], 323.0)
 
     def test_ecb_csv_normalization(self) -> None:
         url = "https://data-api.ecb.europa.eu/service/data/EXR/M.USD.EUR.SP00.A?format=csvdata&startPeriod=2026-07&endPeriod=2026-07"
@@ -67,11 +75,16 @@ class DataAcquisitionTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].value, 1.17)
 
+    def test_sec_adapter_refuses_non_contact_user_agent(self) -> None:
+        client = HTTPSClient(fetch_bytes=RoutingFetcher({}), sleeper=lambda _: None)
+        with self.assertRaises(ValueError):
+            SECSubmissionsAdapter(client)
+
     def test_sec_recent_filings_use_acceptance_time_when_available(self) -> None:
         url = "https://data.sec.gov/submissions/CIK0000320193.json"
         payload = {"filings": {"recent": {"accessionNumber": ["0001"], "form": ["10-Q"], "filingDate": ["2026-08-01"], "primaryDocument": ["a.htm"], "acceptanceDateTime": ["2026-08-01T16:03:00Z"]}}}
-        client = HTTPSClient(fetch_bytes=RoutingFetcher({url: json.dumps(payload).encode()}), sleeper=lambda _: None)
-        events = SECSubmissionsAdapter(client).fetch_recent("320193")
+        client = HTTPSClient(fetch_bytes=RoutingFetcher({url: json.dumps(payload).encode()}), sleeper=lambda _: None, user_agent="DustyDragonTest research@example.com")
+        events = SECSubmissionsAdapter(client, clock=lambda: 1.0, sleeper=lambda _: None).fetch_recent("320193")
         self.assertEqual(events[0].cik, "0000320193")
         self.assertEqual(events[0].known_at.hour, 16)
 
