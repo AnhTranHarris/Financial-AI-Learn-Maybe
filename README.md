@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M75**.
+Current engineering phase: **M0–M75 plus investment-trust remediation**. M76 has not been started.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -20,9 +20,12 @@ Current engineering phase: **M0–M75**.
 - controlled **DEMO-only** execution boundary: implemented;
 - durable order/deal/position lifecycle and multi-terminal supervisor: implemented;
 - six-desk/chaos certification framework: implemented;
+- investment-trust review: implemented for software proof and explicit native/live evidence qualification;
 - **live-money write authority: permanently false through M75**.
 
 M75 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
+
+The investment-trust remediation likewise does not manufacture native MT5 evidence. It proves the software evaluation paths and defines the exact local/native evidence required before indicator or execution claims can become operational facts.
 
 ## Permanent laws
 
@@ -112,7 +115,9 @@ public strategies / free event context / MT5 history
 - **M56–M65 — research reality and capital governance:** semantic hardening, broker economics, Strategy IR v2, realistic account ledger, statistical overfit defenses, Money Manager, Risk Constitution, Quant PM, Growth Manager, and evidence-backed pre-demo certification.
 - **M66–M75 — semantic unification and controlled Demo Desk:** one executable V2 runtime, MT5 deal parity, empirical portfolio risk, capital reputation, latched demo identity, immutable order intents, DEMO-only send boundary, durable execution lifecycle, multi-terminal supervision, and six-desk chaos certification.
 
-See [`docs/m66-m75.md`](docs/m66-m75.md) for the current phase in detail.
+See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
+
+See [`docs/m75-investment-trust-review.md`](docs/m75-investment-trust-review.md) for the four-capability proof standard, execution/spread semantics, cash-economics parity rule, and native MT5 evidence campaign.
 
 ## M66–M75 safety highlights
 
@@ -161,7 +166,7 @@ Dusty borrows engineering ideas from ten reference repositories while keeping a 
 
 ## Development and CI
 
-Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu.
+Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu, with named gates for feature semantics, cognition derivation, execution clock, investment-lab proofs, data/event acquisition, MT5 symbol economics, MT5 execution parity, M75 trust review, demo execution/supervision, category suites, and the full unittest suite.
 
 ```bash
 python -m compileall -q src tests
