@@ -81,7 +81,7 @@ def completed_feature_bars_from_mt5(bars: Iterable[MT5Bar]) -> tuple[FeatureBar,
         return ()
     return tuple(
         FeatureBar.from_mt5(current, available_at=following.at)
-        for current, following in zip(rows, rows[1:], strict=True)
+        for current, following in zip(rows, rows[1:])
     )
 
 
