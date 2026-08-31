@@ -11,6 +11,9 @@ from .research import Scalar
 from .strategy_ir import StrategySpecV2
 
 
+_EXECUTION_PRICE_KEY = "__execution_price__"
+
+
 class PriceRuleKind(StrEnum):
     OFF = "off"
     PCT = "pct"
@@ -192,6 +195,7 @@ class RuntimeBar:
     features: tuple[tuple[str, Scalar], ...]
     session: str = ""
     event_blocked: bool = False
+    execution_price: float | None = None
 
     @classmethod
     def of(
@@ -205,16 +209,40 @@ class RuntimeBar:
         features: Mapping[str, Scalar],
         session: str = "",
         event_blocked: bool = False,
+        execution_price: float | None = None,
     ) -> "RuntimeBar":
-        return cls(at, open, high, low, close, tuple(sorted(features.items())), session, event_blocked)
+        reserved = features.get(_EXECUTION_PRICE_KEY)
+        if execution_price is None and reserved is not None:
+            if isinstance(reserved, bool) or not isinstance(reserved, (int, float)):
+                raise ValueError("reserved execution price must be numeric")
+            execution_price = float(reserved)
+        return cls(
+            at,
+            open,
+            high,
+            low,
+            close,
+            tuple(sorted(features.items())),
+            session,
+            event_blocked,
+            execution_price,
+        )
 
     def __post_init__(self) -> None:
         if self.at.tzinfo is None or self.at.utcoffset() is None:
             raise ValueError("runtime bars must be timezone-aware")
         if any(not math.isfinite(value) or value <= 0 for value in (self.open, self.high, self.low, self.close)):
             raise ValueError("runtime OHLC prices must be finite and positive")
+        if self.execution_price is not None and (
+            not math.isfinite(self.execution_price) or self.execution_price <= 0
+        ):
+            raise ValueError("runtime execution price must be finite and positive")
         if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close, self.high):
             raise ValueError("runtime OHLC geometry is invalid")
+
+    @property
+    def market_price(self) -> float:
+        return self.close if self.execution_price is None else self.execution_price
 
     def feature_map(self) -> dict[str, Scalar]:
         return dict(self.features)
@@ -245,12 +273,13 @@ def generate_runtime_trades(
 ) -> tuple[RuntimeTrade, ...]:
     """Single-position deterministic interpreter used by research, shadow and future demo intent generation.
 
-    ``stop_price`` on RuntimeTrade is always the immutable initial protective stop used for sizing and
-    MT5 manifest parity. ``exit_stop_price`` records the final tightened stop for audit. If stop and
-    target are both touched inside one bar, stop wins. An optional entry_authorizer can only veto a
-    rule-matched entry; it cannot create an entry when strategy rules fail. Cooldown is enforced after
-    each completed trade. Scaling remains an explicit compile-time rejection until quantity-aware runtime
-    semantics exist.
+    A rule can become true only after the completed observation bar is available; entry and time-based
+    exit references therefore use ``RuntimeBar.market_price`` rather than silently reusing the completed
+    bar's old close. ``stop_price`` is the immutable initial protective stop used for sizing and MT5
+    manifest parity. ``exit_stop_price`` records the final tightened stop for audit. If stop and target
+    are both touched inside one bar, stop wins. An optional entry_authorizer can only veto a rule-matched
+    entry; it cannot create an entry when strategy rules fail. Cooldown is enforced after each completed
+    trade. Scaling remains an explicit compile-time rejection until quantity-aware runtime semantics exist.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
@@ -271,7 +300,7 @@ def generate_runtime_trades(
             authorized = entry_authorizer is None or (matches and entry_authorizer(bar, compiled))
             if matches and authorized:
                 entry_bar = bar
-                entry_price = bar.close
+                entry_price = bar.market_price
                 initial_stop_price = compiled.initial_stop(entry_price, features)
                 stop_price = initial_stop_price
                 target_price = compiled.initial_target(entry_price, stop_price, features)
@@ -287,11 +316,17 @@ def generate_runtime_trades(
         reason = ""
         exit_price = 0.0
         if stop_hit:
-            reason, exit_price = "stop", stop_price
+            reason = "stop"
+            if side is TradeSide.LONG and bar.open < stop_price:
+                exit_price = bar.open
+            elif side is TradeSide.SHORT and bar.open > stop_price:
+                exit_price = bar.open
+            else:
+                exit_price = stop_price
         elif target_hit:
             reason, exit_price = "target", target_price or bar.close
         elif held_steps >= compiled.spec.exit_plan.max_hold_steps:
-            reason, exit_price = "max_hold", bar.close
+            reason, exit_price = "max_hold", bar.market_price
         if reason:
             trades.append(
                 RuntimeTrade(
@@ -315,7 +350,7 @@ def generate_runtime_trades(
         stop_price = compiled.tightened_stop(
             entry_price=entry_price,
             current_stop=stop_price,
-            current_price=bar.close,
+            current_price=bar.market_price,
             features=features,
         )
     return tuple(trades)
