@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Sequence
 
 from .experience import TradeSide
 from .features import FeatureBar
@@ -273,15 +273,13 @@ def reconcile_execution_envelopes(
     limits = (max_entry_delay_seconds, max_entry_price_gap, max_exit_price_gap, max_volume_gap, max_time_exit_delay_seconds)
     if any(not math.isfinite(value) or value < 0 for value in limits):
         raise ValueError("parity tolerances must be finite and nonnegative")
-    left = {item.trade_id: item for item in expected}
-    right = {item.trade_id: item for item in observed}
-    if len(left) != len(tuple(expected)) if not isinstance(expected, tuple) else False:
+    expected_rows = tuple(expected)
+    observed_rows = tuple(observed)
+    if len({item.trade_id for item in expected_rows}) != len(expected_rows):
         raise ValueError("expected parity trade ids must be unique")
-    # Re-materialize safely for general iterables.
-    expected_rows = tuple(left.values())
-    observed_rows = tuple(observed) if not isinstance(observed, tuple) else observed
     if len({item.trade_id for item in observed_rows}) != len(observed_rows):
         raise ValueError("observed parity trade ids must be unique")
+    left = {item.trade_id: item for item in expected_rows}
     right = {item.trade_id: item for item in observed_rows}
     reasons: list[str] = []
     matched = 0
