@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from .core import EvidenceItem
 
 
 class AcquisitionMode(StrEnum):
@@ -35,9 +38,15 @@ _CAPABILITIES: dict[str, SourceCapability] = {
     "mt5_history": SourceCapability("mt5_history", AcquisitionMode.MT5_TERMINAL, True, "official terminal history API"),
     "bls": SourceCapability("bls", AcquisitionMode.DIRECT_PUBLIC_API, True, "official BLS Public Data API"),
     "ecb": SourceCapability("ecb", AcquisitionMode.DIRECT_PUBLIC_API, True, "official ECB Data Portal API"),
-    "sec_edgar": SourceCapability("sec_edgar", AcquisitionMode.DIRECT_PUBLIC_API, True, "official SEC public EDGAR data API"),
+    "sec_edgar": SourceCapability("sec_edgar", AcquisitionMode.DIRECT_PUBLIC_API, True, "official SEC public EDGAR data API with contact User-Agent and rate discipline"),
     "cftc_cot": SourceCapability("cftc_cot", AcquisitionMode.DIRECT_PUBLIC_API, True, "official CFTC public reporting API"),
+    "fed_rss": SourceCapability("fed_rss", AcquisitionMode.DIRECT_PUBLIC_API, True, "official Federal Reserve RSS feed"),
+    "bls_rss": SourceCapability("bls_rss", AcquisitionMode.DIRECT_PUBLIC_API, True, "official BLS RSS feed"),
+    "ecb_rss": SourceCapability("ecb_rss", AcquisitionMode.DIRECT_PUBLIC_API, True, "official ECB RSS feed"),
+    "boe_rss": SourceCapability("boe_rss", AcquisitionMode.DIRECT_PUBLIC_API, True, "official Bank of England RSS feed"),
+    "bls_calendar": SourceCapability("bls_calendar", AcquisitionMode.DIRECT_PUBLIC_API, True, "official BLS iCalendar release schedule"),
     "github_known_repo": SourceCapability("github_known_repo", AcquisitionMode.DIRECT_PUBLIC_API, True, "known public repository content only"),
+    "eia": SourceCapability("eia", AcquisitionMode.AUTHORIZED_ADAPTER, False, "official EIA API is suitable when the user supplies a free API key; Dusty never acquires or pays for keys"),
     "tradingview": SourceCapability("tradingview", AcquisitionMode.UNSUPPORTED_AUTOMATIC, False, "no official public data/indicator API; use user-authorized or supplied material"),
     "forex_factory": SourceCapability("forex_factory", AcquisitionMode.AUTHORIZED_ADAPTER, False, "automatic acquisition requires a verified lawful machine interface"),
     "myfxbook": SourceCapability("myfxbook", AcquisitionMode.AUTHORIZED_ADAPTER, False, "automatic acquisition requires an authorized API/session and must not scrape public rankings blindly"),
@@ -85,7 +94,9 @@ class HTTPSClient:
         self._fetch = fetch_bytes
         self._sleep = sleeper
         self.policy = policy
-        self.user_agent = user_agent
+        self.user_agent = user_agent.strip()
+        if not self.user_agent:
+            raise ValueError("HTTP User-Agent is required")
 
     def get_bytes(self, url: str, *, headers: Mapping[str, str] | None = None) -> bytes:
         parsed = urlparse(url)
@@ -130,6 +141,23 @@ class MacroObservation:
             raise ValueError("known_at must be timezone-aware")
         if self.effective_at is not None and (self.effective_at.tzinfo is None or self.effective_at.utcoffset() is None):
             raise ValueError("effective_at must be timezone-aware")
+
+
+def macro_observation_evidence(observation: MacroObservation) -> EvidenceItem:
+    """Bridge an official macro observation into Dusty's point-in-time evidence model."""
+    return EvidenceItem(
+        key=f"macro:{observation.source_id}:{observation.series_id}:{observation.period}",
+        value={
+            "value": observation.value,
+            "unit": observation.unit,
+            "period": observation.period,
+            "effective_at": observation.effective_at.isoformat() if observation.effective_at is not None else None,
+        },
+        source=observation.source_id,
+        observed_at=observation.known_at,
+        category="macro",
+        provenance=f"official:{observation.source_id}:{observation.series_id}",
+    )
 
 
 class BLSAdapter:
@@ -205,17 +233,45 @@ class FilingEvent:
     known_at: datetime
 
 
+_EMAIL = re.compile(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+")
+
+
 class SECSubmissionsAdapter:
     base_url = "https://data.sec.gov/submissions"
 
-    def __init__(self, client: HTTPSClient) -> None:
+    def __init__(
+        self,
+        client: HTTPSClient,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+        min_interval_seconds: float = 0.11,
+    ) -> None:
+        if not _EMAIL.search(client.user_agent):
+            raise ValueError("SEC automation requires a descriptive User-Agent containing a contact email")
+        if not math.isfinite(min_interval_seconds) or min_interval_seconds < 0.1:
+            raise ValueError("SEC request interval must be at least 0.1 seconds")
         self.client = client
+        self._clock = clock
+        self._sleeper = sleeper
+        self._min_interval_seconds = min_interval_seconds
+        self._last_request_at: float | None = None
+
+    def _respect_rate_limit(self) -> None:
+        now = self._clock()
+        if self._last_request_at is not None:
+            remaining = self._min_interval_seconds - (now - self._last_request_at)
+            if remaining > 0:
+                self._sleeper(remaining)
+                now = self._clock()
+        self._last_request_at = now
 
     def fetch_recent(self, cik: str, *, retrieved_at: datetime | None = None) -> tuple[FilingEvent, ...]:
         digits = "".join(ch for ch in cik if ch.isdigit())
         if not digits:
             raise ValueError("CIK is required")
         normalized = digits.zfill(10)
+        self._respect_rate_limit()
         payload = self.client.get_json(f"{self.base_url}/CIK{normalized}.json", headers={"Accept": "application/json"})
         if not isinstance(payload, dict):
             raise RuntimeError("SEC submissions response must be an object")
