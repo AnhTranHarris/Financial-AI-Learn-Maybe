@@ -132,6 +132,12 @@ TRANSITIONS: dict[tuple[ReasoningPhase, ReasoningEvent], ReasoningPhase] = {
 }
 
 
+def _require_aware(value: datetime, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return value
+
+
 def advance(phase: ReasoningPhase, event: ReasoningEvent) -> ReasoningPhase:
     """Return the only legal next phase for ``phase + event``."""
     try:
@@ -159,6 +165,17 @@ class EvidenceItem:
     provenance: str = ""
     confidence: float | None = None
     relevant: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.key.strip() or not self.source.strip():
+            raise ValueError("evidence key and source are required")
+        _require_aware(self.observed_at, "evidence observed_at")
+        if self.valid_until is not None:
+            _require_aware(self.valid_until, "evidence valid_until")
+            if self.valid_until < self.observed_at:
+                raise ValueError("evidence valid_until cannot precede observed_at")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("evidence confidence must be in [0, 1]")
 
     def is_fresh(self, at: datetime) -> bool:
         return self.valid_until is None or at <= self.valid_until
@@ -213,13 +230,20 @@ def check_coherence(
     required_keys: Iterable[str] = (),
     max_items: int = 32,
 ) -> CoherenceResult:
-    """Classify evidence usability with deterministic, strategy-neutral rules."""
-    at = at or datetime.now(timezone.utc)
+    """Classify evidence usability with deterministic, point-in-time-safe rules."""
+    at = _require_aware(at or datetime.now(timezone.utc), "reasoning timestamp")
     relevant = tuple(item for item in snapshot.items if item.relevant)
     if not relevant:
         return CoherenceResult(CoherenceState.INSUFFICIENT, ("no_relevant_evidence",))
     if len(relevant) > max_items:
         return CoherenceResult(CoherenceState.OVERLOADED, ("item_budget_exceeded",))
+
+    future = tuple(item for item in relevant if item.observed_at > at)
+    if future:
+        return CoherenceResult(
+            CoherenceState.INCOHERENT,
+            tuple(f"future_observation:{item.key}" for item in sorted(future, key=lambda x: (x.key, x.source))),
+        )
 
     fresh = tuple(item for item in relevant if item.is_fresh(at))
     if not fresh:
