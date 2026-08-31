@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from .experience import TradeSide
 from .research import Scalar
@@ -225,29 +225,43 @@ class RuntimeTrade:
     stop_price: float
     target_price: float | None
     exit_reason: str
+    exit_stop_price: float | None = None
 
 
-def generate_runtime_trades(compiled: CompiledStrategy, bars: Iterable[RuntimeBar]) -> tuple[RuntimeTrade, ...]:
+EntryAuthorizer = Callable[[RuntimeBar, CompiledStrategy], bool]
+
+
+def generate_runtime_trades(
+    compiled: CompiledStrategy,
+    bars: Iterable[RuntimeBar],
+    *,
+    entry_authorizer: EntryAuthorizer | None = None,
+) -> tuple[RuntimeTrade, ...]:
     """Single-position deterministic interpreter used by research, shadow and future demo intent generation.
 
-    If stop and target are both touched inside one bar, stop wins. This conservative ambiguity rule
-    is explicit so every laboratory can reproduce the same semantics.
+    ``stop_price`` on RuntimeTrade is always the immutable initial protective stop used for sizing and
+    MT5 manifest parity. ``exit_stop_price`` records the final tightened stop for audit. If stop and
+    target are both touched inside one bar, stop wins. An optional entry_authorizer can only veto a
+    rule-matched entry; it cannot create an entry when strategy rules fail.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
         raise ValueError("runtime bars must be chronological")
     trades: list[RuntimeTrade] = []
     entry_bar: RuntimeBar | None = None
-    entry_price = stop_price = 0.0
+    entry_price = stop_price = initial_stop_price = 0.0
     target_price: float | None = None
     held_steps = 0
     for bar in rows:
         features = bar.feature_map()
         if entry_bar is None:
-            if compiled.entry_matches(features, session=bar.session, event_blocked=bar.event_blocked):
+            matches = compiled.entry_matches(features, session=bar.session, event_blocked=bar.event_blocked)
+            authorized = entry_authorizer is None or entry_authorizer(bar, compiled)
+            if matches and authorized:
                 entry_bar = bar
                 entry_price = bar.close
-                stop_price = compiled.initial_stop(entry_price, features)
+                initial_stop_price = compiled.initial_stop(entry_price, features)
+                stop_price = initial_stop_price
                 target_price = compiled.initial_target(entry_price, stop_price, features)
                 held_steps = 0
             continue
@@ -275,9 +289,10 @@ def generate_runtime_trades(compiled: CompiledStrategy, bars: Iterable[RuntimeBa
                     side,
                     entry_price,
                     exit_price,
-                    stop_price,
+                    initial_stop_price,
                     target_price,
                     reason,
+                    exit_stop_price=stop_price,
                 )
             )
             entry_bar = None
