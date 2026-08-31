@@ -113,6 +113,8 @@ class GrowthSizingTrace:
     sizing: PositionSizingResult | None
     approved: bool
     reasons: tuple[str, ...]
+    spread_price_used: float = 0.0
+    spread_basis: str = "configured_spread_price"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,15 +131,22 @@ class LaboratoryRun:
     growth_manifest: str
     mt5_manifest_supported: bool = True
     mt5_manifest_reasons: tuple[str, ...] = ()
+    spread_cost_bases: tuple[str, ...] = ()
 
     @property
     def cognition_authorized_entries(self) -> int:
-        return sum(trace.decision in {Decision.ENTRY_LONG, Decision.ENTRY_SHORT} for trace in self.cognition)
+        return sum(
+            trace.decision in {Decision.ENTRY_LONG, Decision.ENTRY_SHORT}
+            for trace in self.cognition
+        )
 
 
 def _required_feature_keys(strategy: CompiledStrategy) -> tuple[str, ...]:
     keys = {clause.feature for group in strategy.spec.entry_groups for clause in group.clauses}
-    if any(rule.kind is PriceRuleKind.ATR for rule in (strategy.stop, strategy.target, strategy.trailing)):
+    if any(
+        rule.kind is PriceRuleKind.ATR
+        for rule in (strategy.stop, strategy.target, strategy.trailing)
+    ):
         keys.add("atr")
     return tuple(sorted(keys))
 
@@ -162,7 +171,11 @@ def _coherence(vector: FeatureVector, required: Sequence[str], *, max_items: int
     )
 
 
-def _baseline_risk(equity: float, risk_fraction: float, constitution: RiskConstitution) -> RiskAssessment:
+def _baseline_risk(
+    equity: float,
+    risk_fraction: float,
+    constitution: RiskConstitution,
+) -> RiskAssessment:
     snapshot = AccountRiskSnapshot(equity, equity, equity, equity, equity, 0.0, 0.0, 0.0)
     request = TradeRiskRequest(
         proposed_risk=risk_fraction,
@@ -174,9 +187,47 @@ def _baseline_risk(equity: float, risk_fraction: float, constitution: RiskConsti
     return assess_trade_risk(snapshot, request, constitution)
 
 
-def _friction_cost_per_lot(config: LaboratoryConfig, economics: InstrumentEconomics) -> float:
-    commission = economics.commission_per_lot if config.commission_per_lot is None else config.commission_per_lot
-    movement = (config.spread_price + config.expected_slippage_price) / economics.tick_size * economics.tick_value
+def _spread_price_for_entry(
+    runtime: RuntimeTrade,
+    bars_by_at: Mapping[datetime, FeatureBar],
+    *,
+    config: LaboratoryConfig,
+    economics: InstrumentEconomics,
+) -> tuple[float, str]:
+    """Choose a conservative research spread without pretending bar data is a native quote.
+
+    ``config.spread_price`` is always a floor. When an MT5-derived completed bar carries the following
+    bar's spread proxy and broker point size is known, the larger of that proxy-price and the configured
+    floor is charged. Exact Ask-Bid/tick execution remains a native tester concern.
+    """
+    bar = bars_by_at.get(runtime.entry_at)
+    if bar is None or bar.decision_spread_proxy_points is None:
+        return config.spread_price, "configured_spread_price"
+    if economics.point_size <= 0:
+        return config.spread_price, "configured_spread_price_point_size_unavailable"
+    proxy_price = bar.decision_spread_proxy_points * economics.point_size
+    return (
+        max(config.spread_price, proxy_price),
+        "mt5_availability_bar_spread_proxy_with_configured_floor",
+    )
+
+
+def _friction_cost_per_lot(
+    config: LaboratoryConfig,
+    economics: InstrumentEconomics,
+    *,
+    spread_price: float,
+) -> float:
+    commission = (
+        economics.commission_per_lot
+        if config.commission_per_lot is None
+        else config.commission_per_lot
+    )
+    movement = (
+        (spread_price + config.expected_slippage_price)
+        / economics.tick_size
+        * economics.tick_value
+    )
     return movement + commission
 
 
@@ -243,20 +294,33 @@ def _growth_stage(
     symbol: str,
     economics: InstrumentEconomics,
     config: LaboratoryConfig,
-) -> tuple[BacktestResultV2, tuple[GrowthSizingTrace, ...], str]:
+) -> tuple[
+    BacktestResultV2,
+    tuple[GrowthSizingTrace, ...],
+    str,
+    tuple[str, ...],
+]:
     equity = config.growth_starting_equity
     high_water = equity
     day_key = None
     week_key = None
     day_start = equity
     week_start = equity
-    cost_per_lot = _friction_cost_per_lot(config, economics)
     approved_trades: list[SimulatedTrade] = []
     manifest: list[ResearchManifestRow] = []
     traces: list[GrowthSizingTrace] = []
+    spread_bases: set[str] = set()
+    bars_by_at = {bar.at: bar for bar in bars}
 
     for index, runtime in enumerate(trades):
         trade_id = f"growth-{index:06d}"
+        spread_price, spread_basis = _spread_price_for_entry(
+            runtime,
+            bars_by_at,
+            config=config,
+            economics=economics,
+        )
+        spread_bases.add(spread_basis)
         current_day = runtime.entry_at.date()
         current_week = runtime.entry_at.isocalendar()[:2]
         if day_key != current_day:
@@ -278,11 +342,22 @@ def _growth_stage(
                     None,
                     False,
                     ("equity_depleted",),
+                    spread_price,
+                    spread_basis,
                 )
             )
             continue
 
-        snapshot = AccountRiskSnapshot(equity, equity, high_water, day_start, week_start, 0.0, 0.0, 0.0)
+        snapshot = AccountRiskSnapshot(
+            equity,
+            equity,
+            high_water,
+            day_start,
+            week_start,
+            0.0,
+            0.0,
+            0.0,
+        )
         preliminary = assess_trade_risk(
             snapshot,
             TradeRiskRequest(
@@ -304,6 +379,8 @@ def _growth_stage(
                     None,
                     False,
                     preliminary.reasons or ("risk_multiplier_zero",),
+                    spread_price,
+                    spread_basis,
                 )
             )
             continue
@@ -314,16 +391,32 @@ def _growth_stage(
             entry_price=runtime.entry_price,
             stop_price=runtime.stop_price,
             economics=economics,
-            spread_price=config.spread_price,
+            spread_price=spread_price,
             expected_slippage_price=config.expected_slippage_price,
             commission_per_lot=config.commission_per_lot,
         )
         sizing = size_position(sizing_request, mode=SizingMode.GROWTH_RISK)
         if not sizing.feasible or sizing.approved_volume <= 0:
-            traces.append(GrowthSizingTrace(trade_id, equity, preliminary, sizing, False, sizing.reasons))
+            traces.append(
+                GrowthSizingTrace(
+                    trade_id,
+                    equity,
+                    preliminary,
+                    sizing,
+                    False,
+                    sizing.reasons,
+                    spread_price,
+                    spread_basis,
+                )
+            )
             continue
 
-        margin = runtime.entry_price * economics.contract_size * sizing.approved_volume * economics.margin_rate
+        margin = (
+            runtime.entry_price
+            * economics.contract_size
+            * sizing.approved_volume
+            * economics.margin_rate
+        )
         final_risk = assess_trade_risk(
             snapshot,
             TradeRiskRequest(
@@ -336,9 +429,25 @@ def _growth_stage(
             config.risk_constitution,
         )
         if not final_risk.allowed:
-            traces.append(GrowthSizingTrace(trade_id, equity, final_risk, sizing, False, final_risk.reasons))
+            traces.append(
+                GrowthSizingTrace(
+                    trade_id,
+                    equity,
+                    final_risk,
+                    sizing,
+                    False,
+                    final_risk.reasons,
+                    spread_price,
+                    spread_basis,
+                )
+            )
             continue
 
+        cost_per_lot = _friction_cost_per_lot(
+            config,
+            economics,
+            spread_price=spread_price,
+        )
         simulated = _simulated_trade(
             trade_id,
             runtime,
@@ -348,7 +457,18 @@ def _growth_stage(
         )
         approved_trades.append(simulated)
         manifest.append(_manifest_row(trade_id, runtime, sizing.approved_volume))
-        traces.append(GrowthSizingTrace(trade_id, equity, final_risk, sizing, True, ()))
+        traces.append(
+            GrowthSizingTrace(
+                trade_id,
+                equity,
+                final_risk,
+                sizing,
+                True,
+                (),
+                spread_price,
+                spread_basis,
+            )
+        )
         equity += trade_net_pnl(simulated, economics)
         high_water = max(high_water, equity)
 
@@ -358,7 +478,12 @@ def _growth_stage(
         {symbol: economics},
         starting_equity=config.growth_starting_equity,
     )
-    return result, tuple(traces), render_research_manifest(manifest)
+    return (
+        result,
+        tuple(traces),
+        render_research_manifest(manifest),
+        tuple(sorted(spread_bases)),
+    )
 
 
 def run_laboratory_from_bars(
@@ -376,7 +501,8 @@ def run_laboratory_from_bars(
     """Reference chain from completed bars through cognition, two-stage sizing, and MT5 manifests.
 
     This is deliberately a single-symbol, single-position laboratory. It proves semantic wiring;
-    portfolio concurrency remains owned by the separate portfolio/backtest layers.
+    portfolio concurrency remains owned by the separate portfolio/backtest layers. Bar-level spread is
+    always labeled as historical/proxy evidence; native tick/tester execution is the final authority.
     """
     eligibility = assess_strategy_eligibility(strategy.spec)
     if not eligibility.promotable:
@@ -409,7 +535,7 @@ def run_laboratory_from_bars(
                 health=health,
                 session=session,
                 event_blocked=event_blocked,
-                spread_points=bar.spread_points,
+                spread_points=bar.spread_points_for_guardian,
                 forecasts=tuple(forecast_map.get(bar.at, ())),
                 reasoning_at=vector.at,
             ),
@@ -435,7 +561,11 @@ def run_laboratory_from_bars(
             )
         )
 
-    expected_entry = Decision.ENTRY_LONG if strategy.spec.direction.value == "long" else Decision.ENTRY_SHORT
+    expected_entry = (
+        Decision.ENTRY_LONG
+        if strategy.spec.direction.value == "long"
+        else Decision.ENTRY_SHORT
+    )
     potential = generate_runtime_trades(
         strategy,
         runtime_bars,
@@ -445,17 +575,30 @@ def run_laboratory_from_bars(
     if not frequency.promotable:
         raise ValueError(f"observed_entry_frequency_not_eligible:{','.join(frequency.reasons)}")
 
-    cost_per_lot = _friction_cost_per_lot(config, economics)
-    minimum_simulated = tuple(
-        _simulated_trade(
-            f"minimum-{index:06d}",
+    bars_by_at = {bar.at: bar for bar in feature_bars}
+    minimum_simulated: list[SimulatedTrade] = []
+    spread_bases: set[str] = set()
+    for index, trade in enumerate(potential):
+        spread_price, spread_basis = _spread_price_for_entry(
             trade,
-            symbol=symbol,
-            volume=economics.volume_min,
-            cost_per_lot=cost_per_lot,
+            bars_by_at,
+            config=config,
+            economics=economics,
         )
-        for index, trade in enumerate(potential)
-    )
+        spread_bases.add(spread_basis)
+        minimum_simulated.append(
+            _simulated_trade(
+                f"minimum-{index:06d}",
+                trade,
+                symbol=symbol,
+                volume=economics.volume_min,
+                cost_per_lot=_friction_cost_per_lot(
+                    config,
+                    economics,
+                    spread_price=spread_price,
+                ),
+            )
+        )
     minimum_result = simulate_portfolio(
         minimum_simulated,
         _market_marks(feature_bars, symbol),
@@ -466,13 +609,19 @@ def run_laboratory_from_bars(
         _manifest_row(f"minimum-{index:06d}", trade, economics.volume_min)
         for index, trade in enumerate(potential)
     )
-    growth_result, growth_sizing, growth_manifest = _growth_stage(
+    (
+        growth_result,
+        growth_sizing,
+        growth_manifest,
+        growth_spread_bases,
+    ) = _growth_stage(
         potential,
         feature_bars,
         symbol=symbol,
         economics=economics,
         config=config,
     )
+    spread_bases.update(growth_spread_bases)
     manifest_supported, manifest_reasons = _manifest_support(strategy)
     if not manifest_supported:
         minimum_manifest = ""
@@ -490,6 +639,7 @@ def run_laboratory_from_bars(
         growth_manifest,
         manifest_supported,
         manifest_reasons,
+        tuple(sorted(spread_bases)),
     )
 
 
@@ -507,13 +657,17 @@ def run_laboratory_from_mt5(
 ) -> LaboratoryRun:
     requested_minutes = _MT5_TIMEFRAME_MINUTES.get(request.timeframe.upper())
     if requested_minutes is None:
-        raise ValueError("investment laboratory requires an explicitly mapped intraday/daily MT5 timeframe")
+        raise ValueError(
+            "investment laboratory requires an explicitly mapped intraday/daily MT5 timeframe"
+        )
     if requested_minutes != strategy.spec.decision_timeframe_minutes:
         raise ValueError("strategy decision timeframe does not match MT5 history timeframe")
     raw_bars = tuple(worker.stream_bars(request))
     bars = completed_feature_bars_from_mt5(raw_bars)
     if not bars:
-        raise ValueError("MT5 history did not contain two chronological bars needed to prove completion")
+        raise ValueError(
+            "MT5 history did not contain two chronological bars needed to prove completion"
+        )
     return run_laboratory_from_bars(
         strategy,
         bars,
