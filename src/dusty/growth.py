@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
@@ -39,8 +40,11 @@ class CapitalState:
     net_external_flows: float = 0.0
 
     def __post_init__(self) -> None:
-        if min(self.starting_capital, self.current_equity, self.high_water_mark) <= 0:
-            raise ValueError("capital values must be positive")
+        values = (self.starting_capital, self.current_equity, self.high_water_mark, self.net_external_flows)
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("capital values must be finite")
+        if self.starting_capital <= 0 or self.current_equity < 0 or self.high_water_mark <= 0:
+            raise ValueError("starting/high-water capital must be positive and equity cannot be negative")
         if self.high_water_mark + 1e-12 < self.current_equity:
             raise ValueError("high-water mark cannot be below current equity")
 
@@ -77,12 +81,22 @@ class ResearchCycle:
     largest_winner_fraction: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.starting_capital <= 0 or self.ending_equity <= 0 or self.trade_count < 0:
+        values = (
+            self.starting_capital,
+            self.ending_equity,
+            self.max_drawdown_fraction,
+            self.largest_winner_fraction,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("research cycle values must be finite")
+        if self.starting_capital <= 0 or self.ending_equity < 0 or self.trade_count < 0:
             raise ValueError("invalid research cycle capital/trade count")
         if not 0.0 <= self.max_drawdown_fraction <= 1.0:
             raise ValueError("drawdown must be in [0,1]")
         if not 0.0 <= self.largest_winner_fraction <= 1.0:
             raise ValueError("winner concentration must be in [0,1]")
+        if self.ending_equity == 0 and self.max_drawdown_fraction < 1.0 - 1e-12:
+            raise ValueError("zero ending equity requires total drawdown")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +107,13 @@ class ResearchCyclePolicy:
     min_trades: int = 1
 
     def __post_init__(self) -> None:
+        values = (
+            self.min_growth_fraction,
+            self.max_drawdown_fraction,
+            self.max_largest_winner_fraction,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("research cycle policy values must be finite")
         if self.min_growth_fraction < 0 or not 0 < self.max_drawdown_fraction <= 1:
             raise ValueError("invalid cycle growth/drawdown policy")
         if not 0 < self.max_largest_winner_fraction <= 1 or self.min_trades < 1:
@@ -112,8 +133,10 @@ def classify_capital_health(
     minimum_viable_capital: float = 0.0,
     constitution: RiskConstitution = RiskConstitution(),
 ) -> CapitalHealth:
-    if minimum_viable_capital < 0:
-        raise ValueError("minimum viable capital cannot be negative")
+    if not math.isfinite(minimum_viable_capital) or minimum_viable_capital < 0:
+        raise ValueError("minimum viable capital must be finite and nonnegative")
+    if state.current_equity == 0:
+        return CapitalHealth.CAPITAL_INSUFFICIENT
     if minimum_viable_capital and state.current_equity < minimum_viable_capital:
         return CapitalHealth.CAPITAL_INSUFFICIENT
     drawdown = state.drawdown_fraction
@@ -157,7 +180,11 @@ def capital_feedback(
     rules_followed: bool,
     drawdown_fraction: float,
 ) -> CapitalFeedback:
-    """Automaton-inspired resource feedback without allowing profit to override the constitution."""
+    """Resource feedback without allowing profit to override the constitution."""
+    if not math.isfinite(pnl) or not math.isfinite(drawdown_fraction):
+        raise ValueError("capital feedback values must be finite")
+    if not 0.0 <= drawdown_fraction <= 1.0:
+        raise ValueError("drawdown fraction must be in [0,1]")
     outcome = classify_outcome(pnl=pnl, rules_followed=rules_followed)
     if not rules_followed:
         return CapitalFeedback(
@@ -213,6 +240,8 @@ def next_cycle_capital(
     cycle_passed: bool,
 ) -> float:
     """Capital compression is earned. Failure repeats the same starting capital."""
+    if not math.isfinite(current_starting_capital) or not math.isfinite(proposed_next_capital):
+        raise ValueError("cycle capital must be finite")
     if current_starting_capital <= 0 or proposed_next_capital <= 0:
         raise ValueError("cycle capital must be positive")
     if proposed_next_capital > current_starting_capital:
@@ -227,6 +256,8 @@ def compression_ladder(
     ratio: float = 0.8,
     max_levels: int = 32,
 ) -> tuple[float, ...]:
+    if any(not math.isfinite(value) for value in (starting_capital, floor, ratio)):
+        raise ValueError("compression inputs must be finite")
     if starting_capital <= 0 or floor <= 0 or starting_capital < floor:
         raise ValueError("starting capital must be at or above positive floor")
     if not 0.0 < ratio < 1.0 or max_levels < 1:
@@ -237,8 +268,6 @@ def compression_ladder(
         if abs(candidate - values[-1]) < 1e-12:
             break
         values.append(candidate)
-    if values[-1] > floor and len(values) < max_levels:
-        values.append(float(floor))
     return tuple(values)
 
 
@@ -247,11 +276,17 @@ def eligible_strategies_at_capital(
     minimum_viable_capital_by_strategy: Mapping[str, float],
 ) -> tuple[str, ...]:
     """At micro-capital, zero eligible strategies is a valid and safe portfolio."""
-    if capital <= 0:
-        raise ValueError("capital must be positive")
-    invalid = [name for name, minimum in minimum_viable_capital_by_strategy.items() if minimum <= 0]
+    if not math.isfinite(capital) or capital < 0:
+        raise ValueError("capital must be finite and nonnegative")
+    invalid = [
+        name
+        for name, minimum in minimum_viable_capital_by_strategy.items()
+        if not math.isfinite(minimum) or minimum <= 0
+    ]
     if invalid:
-        raise ValueError("minimum viable capital estimates must be positive")
+        raise ValueError("minimum viable capital estimates must be finite and positive")
+    if capital == 0:
+        return ()
     return tuple(
         sorted(
             strategy
