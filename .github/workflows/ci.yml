@@ -22,6 +22,10 @@ jobs:
         run: python -m compileall -q src tests
       - name: Feature engine gate
         run: python -m unittest discover -s tests -p "test_features.py" -v
+      - name: Cognition derivation gate
+        run: python -m unittest discover -s tests -p "test_cognition.py" -v
+      - name: Execution clock gate
+        run: python -m unittest discover -s tests -p "test_execution_clock.py" -v
       - name: Strategy IR gate
         run: python -m unittest discover -s tests -p "test_integrity_strategy_ir.py" -v
       - name: Investment laboratory gate
@@ -32,8 +36,12 @@ jobs:
         run: python -m unittest discover -s tests -p "test_data_acquisition.py" -v
       - name: Event acquisition gate
         run: python -m unittest discover -s tests -p "test_event_acquisition.py" -v
+      - name: MT5 symbol economics gate
+        run: python -m unittest discover -s tests -p "test_mt5_symbol_snapshot.py" -v
       - name: MT5 execution parity gate
         run: python -m unittest discover -s tests -p "test_tester_parity.py" -v
+      - name: M75 trust review gate
+        run: python -m unittest discover -s tests -p "test_trust_review.py" -v
       - name: MT5 research gate
         run: python -m unittest discover -s tests -p "test_m66_m67.py" -v
       - name: MT5 tester contract gate
