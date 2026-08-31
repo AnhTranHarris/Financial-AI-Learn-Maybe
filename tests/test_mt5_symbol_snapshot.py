@@ -26,8 +26,9 @@ class FakeMT5:
             return None
         return SimpleNamespace(
             trade_contract_size=100_000.0,
-            trade_tick_size=0.00001,
-            trade_tick_value=1.0,
+            point=0.00001,
+            trade_tick_size=0.0001,
+            trade_tick_value=10.0,
             volume_min=0.01,
             volume_step=0.01,
             volume_max=50.0,
@@ -67,6 +68,12 @@ class MT5SymbolSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.market.base_currency, "EUR")
         self.assertEqual(snapshot.market.quote_currency, "USD")
         self.assertEqual(snapshot.market.economics.volume_min, 0.01)
+        self.assertEqual(snapshot.market.economics.point_size, 0.00001)
+        self.assertEqual(snapshot.market.economics.tick_size, 0.0001)
+        self.assertNotEqual(
+            snapshot.market.economics.point_size,
+            snapshot.market.economics.tick_size,
+        )
         self.assertAlmostEqual(snapshot.market.economics.margin_rate, 0.01)
         self.assertEqual(module.shutdown_count, 1)
 
