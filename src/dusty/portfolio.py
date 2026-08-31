@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Iterable, Mapping
@@ -23,13 +24,18 @@ class PortfolioCandidate:
     def __post_init__(self) -> None:
         if not self.strategy_hash.strip() or not self.symbol.strip():
             raise ValueError("portfolio candidate requires strategy and symbol")
+        if any(not math.isfinite(value) for value in (self.quality_score, self.volatility, self.max_risk)):
+            raise ValueError("candidate quality/volatility/risk must be finite")
         if self.quality_score < 0 or self.volatility <= 0 or self.max_risk <= 0:
             raise ValueError("candidate quality/risk must be nonnegative and volatility positive")
         factors = [name for name, _ in self.factor_exposures]
         if len(set(factors)) != len(factors):
             raise ValueError("factor exposures must be unique")
-        if any(not name.strip() or abs(exposure) > 1.0 for name, exposure in self.factor_exposures):
-            raise ValueError("factor exposures require names and coefficients in [-1,1]")
+        if any(
+            not name.strip() or not math.isfinite(exposure) or abs(exposure) > 1.0
+            for name, exposure in self.factor_exposures
+        ):
+            raise ValueError("factor exposures require names and finite coefficients in [-1,1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +44,8 @@ class QuantPortfolioPolicy:
     max_factor_heat: float = 0.0125
 
     def __post_init__(self) -> None:
+        if any(not math.isfinite(value) for value in (self.max_symbol_heat, self.max_factor_heat)):
+            raise ValueError("portfolio policy heat limits must be finite")
         if self.max_symbol_heat <= 0 or self.max_factor_heat <= 0:
             raise ValueError("portfolio policy heat limits must be positive")
 
@@ -66,10 +74,10 @@ def _correlation(
 ) -> float:
     if left == right:
         return 1.0
-    value = correlations.get((left, right), correlations.get((right, left), 0.0))
-    if not -1.0 <= value <= 1.0:
-        raise ValueError("correlations must be in [-1,1]")
-    return float(value)
+    value = float(correlations.get((left, right), correlations.get((right, left), 0.0)))
+    if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+        raise ValueError("correlations must be finite and in [-1,1]")
+    return value
 
 
 def _candidate_score(
@@ -110,18 +118,17 @@ def allocate_portfolio(
     method: AllocationMethod = AllocationMethod.QUALITY_VOL_CORRELATION,
 ) -> PortfolioAllocation:
     """Allocate a supplied risk budget; the Quant PM is never allowed to create more risk."""
-    if total_risk_budget < 0:
-        raise ValueError("total risk budget cannot be negative")
+    if not math.isfinite(total_risk_budget) or total_risk_budget < 0:
+        raise ValueError("total risk budget must be finite and nonnegative")
     rows = tuple(candidates)
     if len({row.strategy_hash for row in rows}) != len(rows):
         raise ValueError("strategy candidates must be unique")
     if not rows or total_risk_budget == 0:
         return PortfolioAllocation((), 0.0, total_risk_budget, (), ())
     matrix = correlations or {}
-    scored = tuple(
-        (row, _candidate_score(row, rows, matrix, method))
-        for row in rows
-    )
+    scored = tuple((row, _candidate_score(row, rows, matrix, method)) for row in rows)
+    if any(not math.isfinite(score) or score < 0 for _, score in scored):
+        raise ValueError("portfolio candidate scores must be finite and nonnegative")
     total_score = sum(score for _, score in scored)
     if total_score <= 0:
         return PortfolioAllocation((), 0.0, total_risk_budget, (), ())
@@ -154,6 +161,10 @@ def allocate_portfolio(
 
     if used > total_risk_budget + 1e-12:
         raise AssertionError("portfolio manager created risk beyond supplied budget")
+    if any(value > policy.max_symbol_heat + 1e-12 for value in symbol_heat.values()):
+        raise AssertionError("portfolio manager exceeded symbol heat")
+    if any(abs(value) > policy.max_factor_heat + 1e-12 for value in factor_heat.values()):
+        raise AssertionError("portfolio manager exceeded factor heat")
     return PortfolioAllocation(
         allocations=tuple(sorted(allocations, key=lambda item: item.strategy_hash)),
         portfolio_heat=used,
