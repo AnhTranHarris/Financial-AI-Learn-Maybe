@@ -154,7 +154,8 @@ def assess_selection_bias(
 
     This is intentionally not labeled an exact Deflated Sharpe Ratio implementation. It uses a
     standardized mean score and subtracts sqrt(2*log(number of tried variants)), making the
-    burden of evidence rise as Dusty searches more alternatives.
+    burden of evidence rise as Dusty searches more alternatives. Zero-variance results are
+    rejected as suspicious rather than treated as mathematically perfect.
     """
     rows = tuple(float(value) for value in returns)
     if len(rows) < 2 or trial_count < 1:
@@ -164,10 +165,12 @@ def assess_selection_bias(
     mean = fmean(rows)
     sigma = pstdev(rows)
     standard_error = sigma / math.sqrt(len(rows)) if sigma > 0 else 0.0
-    raw_score = mean / standard_error if standard_error > 0 else (math.inf if mean > 0 else 0.0)
+    raw_score = mean / standard_error if standard_error > 0 else 0.0
     penalty = math.sqrt(2.0 * math.log(max(1, trial_count)))
     deflated = raw_score - penalty
     reasons: list[str] = []
+    if sigma == 0:
+        reasons.append("zero_variance_returns")
     if mean <= 0:
         reasons.append("non_positive_mean")
     if deflated <= min_deflated_score:
