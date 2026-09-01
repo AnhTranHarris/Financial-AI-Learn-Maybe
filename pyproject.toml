@@ -9,5 +9,8 @@ description = "Deterministic, provider-neutral reasoning core for Dusty Dragon"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+dusty-dragon = "dusty.basic_ui:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
