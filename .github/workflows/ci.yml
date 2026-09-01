@@ -57,6 +57,14 @@ jobs:
         run: python -m unittest discover -s tests -p "test_m80_m83.py" -v
       - name: Analysis runtime and firm mandate gate
         run: python -m unittest discover -s tests -p "test_m84_m85.py" -v
+      - name: Forecast constitution dataset and market clock gate
+        run: python -m unittest discover -s tests -p "test_m86_m88.py" -v
+      - name: Forecast evaluation cognition and tournament gate
+        run: python -m unittest discover -s tests -p "test_m89_m92.py" -v
+      - name: Forecast demo and capital opportunity gate
+        run: python -m unittest discover -s tests -p "test_m93_m94.py" -v
+      - name: Forecast certification gate
+        run: python -m unittest discover -s tests -p "test_m95.py" -v
       - name: Reasoning research category
         run: python tests/suite_group_runner.py reasoning_research
       - name: Curriculum event category

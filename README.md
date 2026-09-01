@@ -118,12 +118,15 @@ public strategies / free event context / MT5 history
 - **M56–M65 — research reality and capital governance:** semantic hardening, broker economics, Strategy IR v2, realistic account ledger, statistical overfit defenses, Money Manager, Risk Constitution, Quant PM, Growth Manager, and evidence-backed pre-demo certification.
 - **M66–M75 — semantic unification and controlled Demo Desk:** one executable V2 runtime, MT5 deal parity, empirical portfolio risk, capital reputation, latched demo identity, immutable order intents, DEMO-only send boundary, durable execution lifecycle, multi-terminal supervision, and six-desk chaos certification.
 - **M76–M85 — MT5 indicator, chart and trade intelligence:** durable analytical-tool registry, generated native/custom indicator probes, chart-object semantics, temporal/repainting validation, typed analysis graph, StrategySpecV3 long/short lifecycle, ablation/retirement, native tournament, frozen Demo analysis, pending-order preflight, and firm-mandate certification.
+- **M86–M95 — quant forecasting and bounded autonomous improvement:** typed probabilistic forecasts, point-in-time datasets, broker-native market time, proper scoring/calibration, forecast cognition, immutable challenger refinement, purged walk-forward promotion, append-only Demo forecast evidence, realized-capital opportunity expansion, and exact-head certification.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
 See [`docs/m75-investment-trust-review.md`](docs/m75-investment-trust-review.md) for the four-capability proof standard, execution/spread semantics, cash-economics parity rule, and native MT5 evidence campaign.
 
 See [`docs/m76-m85.md`](docs/m76-m85.md) for the indicator/chart intelligence, complete trade lifecycle, tool governance, native tournament and firm-mandate phase.
+
+See [`docs/m86-m95.md`](docs/m86-m95.md) for probabilistic forecasting, autonomous challenger research, market-clock behavior, forward-test evidence, capital-opportunity growth and the M95 native proof campaign.
 
 ## M66–M75 safety highlights
 
@@ -172,7 +175,7 @@ Dusty borrows engineering ideas from ten reference repositories while keeping a 
 
 ## Development and CI
 
-Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu, with named gates for feature semantics, cognition derivation, execution clock, investment-lab proofs, data/event acquisition, MT5 symbol economics, MT5 execution parity, M75 trust review, demo execution/supervision, M76–M85 analytical intelligence, category suites, and the full unittest suite.
+Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu, with named gates for feature semantics, cognition derivation, execution clock, investment-lab proofs, data/event acquisition, MT5 symbol economics, MT5 execution parity, M75 trust review, demo execution/supervision, M76–M85 analytical intelligence, M86–M95 forecasting intelligence, category suites, and the full unittest suite.
 
 ```bash
 python -m compileall -q src tests
