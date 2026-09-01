@@ -31,6 +31,7 @@ from .mt5worker import MT5BarRequest, ReadOnlyMT5Worker
 from .risk import AccountRiskSnapshot, RiskAssessment, RiskConstitution, TradeRiskRequest, assess_trade_risk
 from .runtime import CompiledStrategy, PriceRuleKind, RuntimeBar, RuntimeTrade, generate_runtime_trades
 from .strategy_ir import assess_observed_entry_frequency, assess_strategy_eligibility
+from .tester_parity import ExpectedExecutionEnvelope, expected_execution_envelopes
 
 
 SessionResolver = Callable[[datetime], str]
@@ -115,6 +116,7 @@ class GrowthSizingTrace:
     reasons: tuple[str, ...]
     spread_price_used: float = 0.0
     spread_basis: str = "configured_spread_price"
+    expected_net_pnl: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,7 @@ class LaboratoryRun:
     strategy_hash: str
     bar_count: int
     feature_count: int
+    feature_bars: tuple[FeatureBar, ...]
     cognition: tuple[CognitionTrace, ...]
     potential_trades: tuple[RuntimeTrade, ...]
     minimum_lot_backtest: BacktestResultV2
@@ -138,6 +141,52 @@ class LaboratoryRun:
         return sum(
             trace.decision in {Decision.ENTRY_LONG, Decision.ENTRY_SHORT}
             for trace in self.cognition
+        )
+
+    def growth_execution_envelopes(
+        self,
+    ) -> tuple[ExpectedExecutionEnvelope, ...]:
+        """Build native-tester expectations directly from this exact laboratory run.
+
+        Only growth trades that survived cognition, risk and broker-volume sizing are exported. Their
+        identifiers, volumes and ex-ante cash expectations are the same values used by the growth
+        manifest and backtest, preventing a caller from manually rebuilding a more favorable parity
+        input after observing native MT5 results.
+        """
+        if not self.mt5_manifest_supported:
+            raise ValueError("MT5 execution envelopes require a supported tester manifest")
+        if len(self.potential_trades) != len(self.growth_sizing):
+            raise ValueError("laboratory growth traces do not align with potential trades")
+        approved = tuple(
+            (trade, trace)
+            for trade, trace in zip(
+                self.potential_trades,
+                self.growth_sizing,
+                strict=True,
+            )
+            if trace.approved
+        )
+        if any(
+            trace.sizing is None or trace.expected_net_pnl is None
+            for _, trace in approved
+        ):
+            raise ValueError("approved growth trace lacks sizing or ex-ante net PnL")
+        volumes: list[float] = []
+        net_pnls: list[float] = []
+        for _, trace in approved:
+            sizing = trace.sizing
+            expected_net_pnl = trace.expected_net_pnl
+            if sizing is None or expected_net_pnl is None:
+                raise AssertionError("validated growth trace became incomplete")
+            volumes.append(sizing.approved_volume)
+            net_pnls.append(expected_net_pnl)
+        return expected_execution_envelopes(
+            tuple(trade for trade, _ in approved),
+            self.feature_bars,
+            strategy_hash=self.strategy_hash,
+            trade_ids=tuple(trace.trade_id for _, trace in approved),
+            volumes=tuple(volumes),
+            expected_net_pnls=tuple(net_pnls),
         )
 
 
@@ -457,6 +506,7 @@ def _growth_stage(
         )
         approved_trades.append(simulated)
         manifest.append(_manifest_row(trade_id, runtime, sizing.approved_volume))
+        expected_net_pnl = trade_net_pnl(simulated, economics)
         traces.append(
             GrowthSizingTrace(
                 trade_id,
@@ -467,9 +517,10 @@ def _growth_stage(
                 (),
                 spread_price,
                 spread_basis,
+                expected_net_pnl,
             )
         )
-        equity += trade_net_pnl(simulated, economics)
+        equity += expected_net_pnl
         high_water = max(high_water, equity)
 
     result = simulate_portfolio(
@@ -630,6 +681,7 @@ def run_laboratory_from_bars(
         strategy.strategy_hash,
         len(feature_bars),
         len(features),
+        feature_bars,
         tuple(traces),
         potential,
         minimum_result,

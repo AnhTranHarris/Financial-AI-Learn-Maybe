@@ -13,6 +13,7 @@ jobs:
     env:
       PYTHONPATH: src
       PYTHONHASHSEED: "0"
+      PYTHONWARNINGS: "error::DeprecationWarning"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

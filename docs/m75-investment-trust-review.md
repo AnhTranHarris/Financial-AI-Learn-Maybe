@@ -376,7 +376,10 @@ For every trade preserve:
 - expected net P&L;
 - spread cost basis.
 
-Build the execution envelopes with expected net P&L before opening the native tester output.
+Call `LaboratoryRun.growth_execution_envelopes()` before opening the native tester output. The
+method binds the exact approved growth trades to the same identifiers, volumes and ex-ante net P&L
+used by the manifest and laboratory ledger; it refuses unsupported manifest semantics or incomplete
+growth traces.
 
 ## 6. Run the MT5 fidelity ladder
 
@@ -441,7 +444,13 @@ Then build `M75TrustReport` with:
 - native indicator proof;
 - native tester proof.
 
-Only a report whose four capability assessments are all `OPERATIONALLY_PROVEN` may set `operationally_trusted=True`.
+Only a report whose capabilities reach their highest applicable proof level may set
+`operationally_trusted=True`:
+
+- data acquisition, market features and the MT5 laboratory must be `OPERATIONALLY_PROVEN`;
+- evidence-to-cognition must be `SOFTWARE_PROVEN`, because its defined claim is exhausted by a
+  deterministic software transformation and has no separate external observation to relabel as
+  operational evidence.
 
 ---
 
@@ -516,6 +525,8 @@ Therefore the acceptable pre-native verdict is:
 
 The acceptable post-native verdict is stronger:
 
-> **M0–M75 is operationally trusted for these four capabilities only when the exact-commit M75TrustReport passes all four capabilities with native/live evidence.**
+> **M0–M75 is operationally trusted for these four capabilities only when the exact-commit
+> M75TrustReport reaches the maximum applicable proof level for every capability: native/live evidence
+> for the three external capabilities and software proof for deterministic evidence-to-cognition.**
 
 M76 should not use missing native evidence as though it were already certified.

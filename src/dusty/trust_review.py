@@ -173,9 +173,28 @@ class M75TrustReport:
 
     @property
     def operationally_trusted(self) -> bool:
-        return all(
-            assessment.level is ProofLevel.OPERATIONALLY_PROVEN
+        """Return whether every capability reached its highest applicable proof level.
+
+        Evidence-to-cognition is a deterministic transformation whose claim is exhausted by its
+        software proof. The other capabilities make external runtime claims and therefore require
+        operational evidence. Keeping those maxima distinct prevents a software-only claim from being
+        mislabeled as operational while still allowing the complete M75 report to certify the whole
+        review boundary.
+        """
+        required = {
+            Capability.DATA_ACQUISITION: ProofLevel.OPERATIONALLY_PROVEN,
+            Capability.MARKET_FEATURES: ProofLevel.OPERATIONALLY_PROVEN,
+            Capability.EVIDENCE_COGNITION: ProofLevel.SOFTWARE_PROVEN,
+            Capability.MT5_LABORATORY: ProofLevel.OPERATIONALLY_PROVEN,
+        }
+        observed = {
+            assessment.capability: assessment.level
             for assessment in self.assessments
+        }
+        return (
+            len(self.assessments) == len(required)
+            and len(observed) == len(required)
+            and all(observed.get(capability) is level for capability, level in required.items())
         )
 
 
@@ -430,7 +449,7 @@ def _cognition_assessment(software: SoftwareProof | None) -> CapabilityAssessmen
         )
     return CapabilityAssessment(
         Capability.EVIDENCE_COGNITION,
-        ProofLevel.OPERATIONALLY_PROVEN,
+        ProofLevel.SOFTWARE_PROVEN,
         (),
     )
 

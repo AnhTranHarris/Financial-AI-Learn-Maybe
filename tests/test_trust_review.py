@@ -57,7 +57,11 @@ class TrustReviewTests(unittest.TestCase):
             f"5000,{symbol},PERIOD_M15,{source},{available},1.1,1.11,0.01,55\n"
         )
 
-    def tester_expected(self, *, expected_net_pnl: float | None = 1.0) -> tuple[ExpectedExecutionEnvelope, ...]:
+    def make_tester_expected(
+        self,
+        *,
+        expected_net_pnl: float | None = 1.0,
+    ) -> tuple[ExpectedExecutionEnvelope, ...]:
         entry = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
         exit_at = entry + timedelta(minutes=15)
         return (
@@ -78,7 +82,7 @@ class TrustReviewTests(unittest.TestCase):
             ),
         )
 
-    def tester_csv(self, *, profit: float = 1.0) -> str:
+    def make_tester_csv(self, *, profit: float = 1.0) -> str:
         entry = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
         exit_at = entry + timedelta(minutes=15)
         entry_msc = int(entry.timestamp() * 1000)
@@ -117,7 +121,7 @@ class TrustReviewTests(unittest.TestCase):
         )
         self.assertEqual(
             report.for_capability(Capability.EVIDENCE_COGNITION).level,
-            ProofLevel.OPERATIONALLY_PROVEN,
+            ProofLevel.SOFTWARE_PROVEN,
         )
         self.assertEqual(
             report.for_capability(Capability.MARKET_FEATURES).level,
@@ -173,8 +177,8 @@ class TrustReviewTests(unittest.TestCase):
 
     def test_native_tester_proof_binds_deals_environment_semantics_and_cash(self) -> None:
         proof = qualify_native_tester(
-            self.tester_expected(),
-            self.tester_csv(),
+            self.make_tester_expected(),
+            self.make_tester_csv(),
             expected_symbol="EURUSD",
             expected_period="PERIOD_M15",
             observed_at=NOW,
@@ -190,8 +194,8 @@ class TrustReviewTests(unittest.TestCase):
     def test_native_tester_trust_rejects_missing_or_drifted_cash_expectation(self) -> None:
         with self.assertRaisesRegex(ValueError, "expected net PnL"):
             qualify_native_tester(
-                self.tester_expected(expected_net_pnl=None),
-                self.tester_csv(),
+                self.make_tester_expected(expected_net_pnl=None),
+                self.make_tester_csv(),
                 expected_symbol="EURUSD",
                 expected_period="PERIOD_M15",
                 observed_at=NOW,
@@ -201,8 +205,8 @@ class TrustReviewTests(unittest.TestCase):
                 max_net_pnl_gap=0.0,
             )
         drifted = qualify_native_tester(
-            self.tester_expected(),
-            self.tester_csv(profit=1.5),
+            self.make_tester_expected(),
+            self.make_tester_csv(profit=1.5),
             expected_symbol="EURUSD",
             expected_period="PERIOD_M15",
             observed_at=NOW,
@@ -226,8 +230,8 @@ class TrustReviewTests(unittest.TestCase):
             min_rows=1,
         )
         tester = qualify_native_tester(
-            self.tester_expected(),
-            self.tester_csv(),
+            self.make_tester_expected(),
+            self.make_tester_csv(),
             expected_symbol="EURUSD",
             expected_period="PERIOD_M15",
             observed_at=NOW,
@@ -244,11 +248,17 @@ class TrustReviewTests(unittest.TestCase):
             tester_proof=tester,
         )
         self.assertTrue(report.operationally_trusted)
-        self.assertTrue(
-            all(
-                assessment.level is ProofLevel.OPERATIONALLY_PROVEN
+        self.assertEqual(
+            {
+                assessment.capability: assessment.level
                 for assessment in report.assessments
-            )
+            },
+            {
+                Capability.DATA_ACQUISITION: ProofLevel.OPERATIONALLY_PROVEN,
+                Capability.MARKET_FEATURES: ProofLevel.OPERATIONALLY_PROVEN,
+                Capability.EVIDENCE_COGNITION: ProofLevel.SOFTWARE_PROVEN,
+                Capability.MT5_LABORATORY: ProofLevel.OPERATIONALLY_PROVEN,
+            },
         )
 
 

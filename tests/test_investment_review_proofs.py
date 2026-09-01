@@ -253,6 +253,8 @@ class InvestmentReviewProofTests(unittest.TestCase):
         self.assertEqual(run.growth_manifest, "")
         self.assertIn("dynamic_trailing_manifest_not_supported", run.mt5_manifest_reasons)
         self.assertEqual(run.spread_cost_bases, ("configured_spread_price",))
+        with self.assertRaisesRegex(ValueError, "supported tester manifest"):
+            run.growth_execution_envelopes()
 
     def test_mt5_reference_lab_drops_unproven_last_bar_and_matches_strategy_timeframe(self) -> None:
         raw = self.raw_mt5_bars()
@@ -268,6 +270,15 @@ class InvestmentReviewProofTests(unittest.TestCase):
         self.assertTrue(run.mt5_manifest_supported)
         self.assertTrue(run.minimum_lot_manifest)
         self.assertTrue(run.growth_manifest)
+        envelopes = run.growth_execution_envelopes()
+        self.assertEqual(len(envelopes), run.growth_backtest.trade_count)
+        self.assertAlmostEqual(
+            sum(float(item.expected_net_pnl) for item in envelopes),
+            run.growth_backtest.net_pnl,
+        )
+        self.assertTrue(
+            all(item.trade_id in run.growth_manifest for item in envelopes)
+        )
 
         bad_request = MT5BarRequest(
             terminal_path="terminal.exe",
