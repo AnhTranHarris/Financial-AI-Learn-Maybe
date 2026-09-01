@@ -9,6 +9,12 @@ from dusty.demo_session import AccountMode, DemoSession, SessionFault, SessionId
 from dusty.execution_lifecycle import BrokerExecutionSnapshot, ExecutionState, PositionSnapshot, SQLiteExecutionLedger, assess_position_protection, close_by_position_request
 from dusty.experience import TradeSide
 from dusty.order_intent import MT5PreflightAdapter, OrderIntent
+from dusty.position_actions import (
+    MT5PositionActionPreflightAdapter,
+    PositionActionIntent,
+    PositionActionKind,
+)
+from dusty.strategy_v3 import OrderStyle
 
 
 NOW = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
@@ -25,8 +31,18 @@ def intent(session):
 class FakeMT5:
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
+    ORDER_TYPE_BUY_LIMIT = 2
+    ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
+    ORDER_TYPE_BUY_STOP_LIMIT = 6
+    ORDER_TYPE_SELL_STOP_LIMIT = 7
     TRADE_ACTION_DEAL = 1
+    TRADE_ACTION_PENDING = 5
+    TRADE_ACTION_SLTP = 6
+    TRADE_ACTION_REMOVE = 7
     ORDER_TIME_GTC = 0
+    ORDER_TIME_SPECIFIED = 2
     TRADE_RETCODE_PLACED = 10008
     TRADE_RETCODE_DONE = 10009
     TRADE_RETCODE_DONE_PARTIAL = 10010
@@ -108,6 +124,80 @@ class IntentAndExecutionTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertFalse(fake.initialized)
 
+    def test_governed_pending_long_and_short_use_broker_native_order_types(self):
+        session = DemoSession(identity())
+        fake = FakeMT5()
+        common = dict(
+            strategy_hash="s" * 64,
+            session_fingerprint=session.identity.fingerprint,
+            symbol="EURUSD",
+            volume=0.1,
+            approved_risk_fraction=0.0025,
+            allowed_loss=60.0,
+            pm_approved=True,
+            growth_multiplier=1.0,
+            risk_approved=True,
+            guardian_approved=True,
+            created_at=NOW,
+            expires_at=NOW + timedelta(minutes=2),
+            filling_mode=1,
+            order_style=OrderStyle.LIMIT,
+            pending_expiry=NOW + timedelta(hours=1),
+        )
+        long_intent = OrderIntent(
+            side=TradeSide.LONG,
+            reference_price=1.0990,
+            stop_price=1.0950,
+            target_price=1.1100,
+            **common,
+        )
+        short_intent = OrderIntent(
+            side=TradeSide.SHORT,
+            reference_price=1.1010,
+            stop_price=1.1050,
+            target_price=1.0900,
+            **common,
+        )
+        adapter = MT5PreflightAdapter(fake, session, lambda: identity())
+        long_result = adapter.check(long_intent, at=NOW)
+        short_result = adapter.check(short_intent, at=NOW)
+        self.assertTrue(long_result.passed)
+        self.assertTrue(short_result.passed)
+        self.assertEqual(long_result.request_dict()["type"], fake.ORDER_TYPE_BUY_LIMIT)
+        self.assertEqual(short_result.request_dict()["type"], fake.ORDER_TYPE_SELL_LIMIT)
+        self.assertEqual(long_result.request_dict()["action"], fake.TRADE_ACTION_PENDING)
+
+    def test_stop_limit_trigger_and_limit_geometry_fails_closed(self):
+        session = DemoSession(identity())
+        common = dict(
+            strategy_hash="s" * 64,
+            session_fingerprint=session.identity.fingerprint,
+            symbol="EURUSD",
+            side=TradeSide.LONG,
+            volume=0.1,
+            reference_price=1.1010,
+            stop_price=1.0950,
+            target_price=1.1100,
+            approved_risk_fraction=0.0025,
+            allowed_loss=60.0,
+            pm_approved=True,
+            growth_multiplier=1.0,
+            risk_approved=True,
+            guardian_approved=True,
+            created_at=NOW,
+            expires_at=NOW + timedelta(minutes=2),
+            filling_mode=1,
+            order_style=OrderStyle.STOP_LIMIT,
+            pending_expiry=NOW + timedelta(hours=1),
+        )
+        with self.assertRaises(ValueError):
+            OrderIntent(stop_limit_price=1.1020, **common)
+
+        valid = OrderIntent(stop_limit_price=1.1005, **common)
+        result = MT5PreflightAdapter(FakeMT5(), session, lambda: identity()).check(valid, at=NOW)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.request_dict()["stoplimit"], 1.1005)
+
     def test_only_demo_adapter_sends_and_replay_is_blocked(self):
         session = DemoSession(identity())
         fake = FakeMT5()
@@ -125,6 +215,67 @@ class IntentAndExecutionTests(unittest.TestCase):
             self.assertFalse(adapter.live_write_authorized)
         finally:
             ledger.close()
+
+    def test_position_protection_and_partial_close_share_single_demo_send_adapter(self):
+        session = DemoSession(identity())
+        fake = FakeMT5()
+        protection = PositionActionIntent(
+            "s" * 64,
+            session.identity.fingerprint,
+            PositionActionKind.TIGHTEN_STOP,
+            "EURUSD",
+            TradeSide.LONG,
+            42,
+            0,
+            0.1,
+            0.0,
+            1.095,
+            1.100,
+            1.110,
+            True,
+            True,
+            True,
+            NOW,
+            NOW + timedelta(minutes=1),
+            1,
+        )
+        preflight_adapter = MT5PositionActionPreflightAdapter(fake, session, lambda: identity())
+        preflight = preflight_adapter.check(protection, at=NOW)
+        self.assertTrue(preflight.passed)
+        self.assertFalse(hasattr(preflight_adapter, "order_send"))
+        ledger = SQLiteExecutionLedger()
+        try:
+            result = DemoMT5ExecutionAdapter(fake, session, lambda: identity(), ledger).send(
+                preflight, at=NOW + timedelta(seconds=1)
+            )
+            self.assertEqual(result.state, ExecutionState.PROTECTED)
+            self.assertEqual(fake.send_calls, 1)
+        finally:
+            ledger.close()
+
+    def test_stop_widening_is_rejected_before_broker_connection(self):
+        session = DemoSession(identity())
+        with self.assertRaises(ValueError):
+            PositionActionIntent(
+                "s" * 64,
+                session.identity.fingerprint,
+                PositionActionKind.TIGHTEN_STOP,
+                "EURUSD",
+                TradeSide.LONG,
+                42,
+                0,
+                0.1,
+                0.0,
+                1.095,
+                1.090,
+                1.110,
+                True,
+                True,
+                True,
+                NOW,
+                NOW + timedelta(minutes=1),
+                1,
+            )
 
     def test_drift_on_send_connection_causes_zero_send_calls(self):
         session = DemoSession(identity())

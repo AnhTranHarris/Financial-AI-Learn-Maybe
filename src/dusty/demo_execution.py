@@ -7,6 +7,7 @@ from typing import Any, Callable
 from .demo_session import DemoSession, SessionIdentity
 from .execution_lifecycle import ExecutionState, SQLiteExecutionLedger
 from .order_intent import BrokerPreflight
+from .position_actions import PositionActionPreflight
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +39,7 @@ class DemoMT5ExecutionAdapter:
     def live_write_authorized(self) -> bool:
         return False
 
-    def send(self, preflight: BrokerPreflight, *, at: datetime) -> DemoExecutionResult:
+    def send(self, preflight: BrokerPreflight | PositionActionPreflight, *, at: datetime) -> DemoExecutionResult:
         intent = preflight.intent
         if not preflight.passed:
             raise PermissionError("broker preflight did not pass")
@@ -72,7 +73,10 @@ class DemoMT5ExecutionAdapter:
         if retcode == partial:
             state = ExecutionState.PARTIAL
         elif retcode == done:
-            state = ExecutionState.FILLED if deal_ticket else ExecutionState.ACCEPTED
+            if isinstance(preflight, PositionActionPreflight):
+                state = preflight.success_state
+            else:
+                state = ExecutionState.FILLED if deal_ticket else ExecutionState.ACCEPTED
         elif retcode == placed:
             state = ExecutionState.ACCEPTED
         else:

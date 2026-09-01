@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .demo_session import DemoSession, SessionIdentity
 from .experience import TradeSide
+from .strategy_v3 import OrderStyle
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,9 @@ class OrderIntent:
     filling_mode: int
     magic: int = 662075
     max_price_drift_fraction: float = 0.001
+    order_style: OrderStyle = OrderStyle.MARKET
+    pending_expiry: datetime | None = None
+    stop_limit_price: float | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_hash.strip() or not self.session_fingerprint.strip() or not self.symbol.strip():
@@ -47,6 +51,8 @@ class OrderIntent:
         )
         if self.target_price is not None:
             values += (self.target_price,)
+        if self.stop_limit_price is not None:
+            values += (self.stop_limit_price,)
         if any(not math.isfinite(value) for value in values):
             raise ValueError("order intent economics must be finite")
         if self.volume <= 0 or self.reference_price <= 0 or self.stop_price <= 0 or self.allowed_loss <= 0:
@@ -59,6 +65,25 @@ class OrderIntent:
             raise ValueError("intent timestamps must be timezone-aware")
         if self.expires_at <= self.created_at:
             raise ValueError("intent expiry must follow creation")
+        if self.order_style is OrderStyle.MARKET:
+            if self.pending_expiry is not None or self.stop_limit_price is not None:
+                raise ValueError("market intent cannot carry pending-order fields")
+        else:
+            if self.pending_expiry is None:
+                raise ValueError("pending intent requires order expiration")
+            if self.pending_expiry.tzinfo is None or self.pending_expiry.utcoffset() is None:
+                raise ValueError("pending expiration must be timezone-aware")
+            if self.pending_expiry <= self.created_at:
+                raise ValueError("pending expiration must follow creation")
+            if self.order_style is OrderStyle.STOP_LIMIT:
+                if self.stop_limit_price is None or self.stop_limit_price <= 0:
+                    raise ValueError("stop-limit intent requires positive limit price")
+                if self.side is TradeSide.LONG and self.stop_limit_price > self.reference_price:
+                    raise ValueError("buy stop-limit limit price cannot exceed its stop trigger")
+                if self.side is TradeSide.SHORT and self.stop_limit_price < self.reference_price:
+                    raise ValueError("sell stop-limit limit price cannot be below its stop trigger")
+            elif self.stop_limit_price is not None:
+                raise ValueError("stop-limit price belongs only to stop-limit intent")
         if self.side is TradeSide.LONG:
             if self.stop_price >= self.reference_price or (self.target_price is not None and self.target_price <= self.reference_price):
                 raise ValueError("long intent stop/target are on the wrong side")
@@ -88,6 +113,9 @@ class OrderIntent:
             "filling_mode": self.filling_mode,
             "magic": self.magic,
             "max_price_drift_fraction": self.max_price_drift_fraction,
+            "order_style": self.order_style.value,
+            "pending_expiry": None if self.pending_expiry is None else self.pending_expiry.isoformat(),
+            "stop_limit_price": self.stop_limit_price,
         }
         return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -160,12 +188,23 @@ class MT5PreflightAdapter:
             market_price = float(tick.ask if intent.side is TradeSide.LONG else tick.bid)
             if not math.isfinite(market_price) or market_price <= 0:
                 return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("market_price_invalid",))
-            drift = abs(market_price - intent.reference_price) / intent.reference_price
-            if drift > intent.max_price_drift_fraction:
-                return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("price_drift_exceeded",))
-            order_type = self._mt5.ORDER_TYPE_BUY if intent.side is TradeSide.LONG else self._mt5.ORDER_TYPE_SELL
-            profit = self._mt5.order_calc_profit(order_type, intent.symbol, intent.volume, market_price, intent.stop_price)
-            margin = self._mt5.order_calc_margin(order_type, intent.symbol, intent.volume, market_price)
+            if intent.order_style is OrderStyle.MARKET:
+                drift = abs(market_price - intent.reference_price) / intent.reference_price
+                if drift > intent.max_price_drift_fraction:
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("price_drift_exceeded",))
+                order_type = self._mt5.ORDER_TYPE_BUY if intent.side is TradeSide.LONG else self._mt5.ORDER_TYPE_SELL
+                execution_price = market_price
+            else:
+                try:
+                    order_type = _pending_order_type(self._mt5, intent.order_style, intent.side)
+                except ValueError:
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_order_type_unsupported",))
+                execution_price = intent.reference_price
+                if not _pending_geometry_valid(intent, market_price):
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_price_geometry_invalid",))
+            calculation_type = self._mt5.ORDER_TYPE_BUY if intent.side is TradeSide.LONG else self._mt5.ORDER_TYPE_SELL
+            profit = self._mt5.order_calc_profit(calculation_type, intent.symbol, intent.volume, execution_price, intent.stop_price)
+            margin = self._mt5.order_calc_margin(calculation_type, intent.symbol, intent.volume, execution_price)
             if profit is None or margin is None:
                 return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("broker_calculation_failed",))
             loss = max(0.0, -float(profit))
@@ -175,11 +214,11 @@ class MT5PreflightAdapter:
             if loss > intent.allowed_loss + 1e-9:
                 return BrokerPreflight(intent, False, loss, required_margin, market_price, (), ("broker_loss_exceeds_budget",))
             request = {
-                "action": self._mt5.TRADE_ACTION_DEAL,
+                "action": self._mt5.TRADE_ACTION_DEAL if intent.order_style is OrderStyle.MARKET else self._mt5.TRADE_ACTION_PENDING,
                 "symbol": intent.symbol,
                 "volume": intent.volume,
                 "type": order_type,
-                "price": market_price,
+                "price": execution_price,
                 "sl": intent.stop_price,
                 "deviation": 20,
                 "magic": intent.magic,
@@ -187,6 +226,13 @@ class MT5PreflightAdapter:
                 "type_time": self._mt5.ORDER_TIME_GTC,
                 "type_filling": intent.filling_mode,
             }
+            if intent.pending_expiry is not None:
+                if not hasattr(self._mt5, "ORDER_TIME_SPECIFIED"):
+                    return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), ("pending_expiration_unsupported",))
+                request["type_time"] = self._mt5.ORDER_TIME_SPECIFIED
+                request["expiration"] = int(intent.pending_expiry.timestamp())
+            if intent.stop_limit_price is not None:
+                request["stoplimit"] = intent.stop_limit_price
             if intent.target_price is not None:
                 request["tp"] = intent.target_price
             check = self._mt5.order_check(request)
@@ -198,3 +244,26 @@ class MT5PreflightAdapter:
             return BrokerPreflight(intent, True, loss, required_margin, market_price, tuple(sorted(request.items())), ())
         finally:
             self._mt5.shutdown()
+
+
+def _pending_order_type(module: Any, style: OrderStyle, side: TradeSide) -> int:
+    names = {
+        (OrderStyle.LIMIT, TradeSide.LONG): "ORDER_TYPE_BUY_LIMIT",
+        (OrderStyle.LIMIT, TradeSide.SHORT): "ORDER_TYPE_SELL_LIMIT",
+        (OrderStyle.STOP, TradeSide.LONG): "ORDER_TYPE_BUY_STOP",
+        (OrderStyle.STOP, TradeSide.SHORT): "ORDER_TYPE_SELL_STOP",
+        (OrderStyle.STOP_LIMIT, TradeSide.LONG): "ORDER_TYPE_BUY_STOP_LIMIT",
+        (OrderStyle.STOP_LIMIT, TradeSide.SHORT): "ORDER_TYPE_SELL_STOP_LIMIT",
+    }
+    name = names.get((style, side))
+    if name is None or not hasattr(module, name):
+        raise ValueError("broker module does not expose requested pending order type")
+    return int(getattr(module, name))
+
+
+def _pending_geometry_valid(intent: OrderIntent, market_price: float) -> bool:
+    if intent.order_style is OrderStyle.LIMIT:
+        return intent.reference_price < market_price if intent.side is TradeSide.LONG else intent.reference_price > market_price
+    if intent.order_style in {OrderStyle.STOP, OrderStyle.STOP_LIMIT}:
+        return intent.reference_price > market_price if intent.side is TradeSide.LONG else intent.reference_price < market_price
+    return False

@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M75 plus investment-trust remediation**. M76 has not been started.
+Current engineering phase: **M0–M85 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -21,9 +21,10 @@ Current engineering phase: **M0–M75 plus investment-trust remediation**. M76 h
 - durable order/deal/position lifecycle and multi-terminal supervisor: implemented;
 - six-desk/chaos certification framework: implemented;
 - investment-trust review: implemented for software proof and explicit native/live evidence qualification;
-- **live-money write authority: permanently false through M75**.
+- MT5 indicator/chart intelligence and StrategySpecV3 lifecycle reasoning: implemented;
+- **live-money write authority: permanently false through M85**.
 
-M75 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
+M75/M85 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 indicator/chart/tester/demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
 
 The investment-trust remediation likewise does not manufacture native MT5 evidence. It proves the software evaluation paths and defines the exact local/native evidence required before indicator or execution claims can become operational facts.
 
@@ -43,7 +44,9 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading is outside M0–M75.
+15. Live trading is outside M0–M85.
+16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
+17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
 ## Architecture
 
@@ -114,10 +117,13 @@ public strategies / free event context / MT5 history
 - **M46–M55 — event intelligence:** market/underlier identity, free-source policy, scheduled/unscheduled events, source independence, scenarios, event reactions, source value, and event certification.
 - **M56–M65 — research reality and capital governance:** semantic hardening, broker economics, Strategy IR v2, realistic account ledger, statistical overfit defenses, Money Manager, Risk Constitution, Quant PM, Growth Manager, and evidence-backed pre-demo certification.
 - **M66–M75 — semantic unification and controlled Demo Desk:** one executable V2 runtime, MT5 deal parity, empirical portfolio risk, capital reputation, latched demo identity, immutable order intents, DEMO-only send boundary, durable execution lifecycle, multi-terminal supervision, and six-desk chaos certification.
+- **M76–M85 — MT5 indicator, chart and trade intelligence:** durable analytical-tool registry, generated native/custom indicator probes, chart-object semantics, temporal/repainting validation, typed analysis graph, StrategySpecV3 long/short lifecycle, ablation/retirement, native tournament, frozen Demo analysis, pending-order preflight, and firm-mandate certification.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
 See [`docs/m75-investment-trust-review.md`](docs/m75-investment-trust-review.md) for the four-capability proof standard, execution/spread semantics, cash-economics parity rule, and native MT5 evidence campaign.
+
+See [`docs/m76-m85.md`](docs/m76-m85.md) for the indicator/chart intelligence, complete trade lifecycle, tool governance, native tournament and firm-mandate phase.
 
 ## M66–M75 safety highlights
 
@@ -166,7 +172,7 @@ Dusty borrows engineering ideas from ten reference repositories while keeping a 
 
 ## Development and CI
 
-Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu, with named gates for feature semantics, cognition derivation, execution clock, investment-lab proofs, data/event acquisition, MT5 symbol economics, MT5 execution parity, M75 trust review, demo execution/supervision, category suites, and the full unittest suite.
+Runtime dependencies remain intentionally minimal. GitHub Actions runs compile and unittest on both Windows and Ubuntu, with named gates for feature semantics, cognition derivation, execution clock, investment-lab proofs, data/event acquisition, MT5 symbol economics, MT5 execution parity, M75 trust review, demo execution/supervision, M76–M85 analytical intelligence, category suites, and the full unittest suite.
 
 ```bash
 python -m compileall -q src tests

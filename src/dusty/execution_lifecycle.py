@@ -25,7 +25,7 @@ class ExecutionState(StrEnum):
 
 _ALLOWED: dict[ExecutionState, set[ExecutionState]] = {
     ExecutionState.AUTHORIZED: {ExecutionState.SENT_UNKNOWN},
-    ExecutionState.SENT_UNKNOWN: {ExecutionState.ACCEPTED, ExecutionState.PARTIAL, ExecutionState.FILLED, ExecutionState.REJECTED, ExecutionState.FAULT},
+    ExecutionState.SENT_UNKNOWN: {ExecutionState.ACCEPTED, ExecutionState.PARTIAL, ExecutionState.FILLED, ExecutionState.PROTECTED, ExecutionState.CLOSED, ExecutionState.REJECTED, ExecutionState.FAULT},
     ExecutionState.ACCEPTED: {ExecutionState.PARTIAL, ExecutionState.FILLED, ExecutionState.REJECTED, ExecutionState.FAULT},
     ExecutionState.PARTIAL: {ExecutionState.FILLED, ExecutionState.PROTECTED, ExecutionState.CLOSING, ExecutionState.FAULT},
     ExecutionState.FILLED: {ExecutionState.PROTECTED, ExecutionState.CLOSING, ExecutionState.CLOSED, ExecutionState.FAULT},

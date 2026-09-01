@@ -51,6 +51,12 @@ jobs:
         run: python -m unittest discover -s tests -p "test_m70_m73.py" -v
       - name: Demo supervisor certification gate
         run: python -m unittest discover -s tests -p "test_m74_m75.py" -v
+      - name: MT5 indicator and chart intelligence gate
+        run: python -m unittest discover -s tests -p "test_m76_m79.py" -v
+      - name: Strategy v3 and analytical tournament gate
+        run: python -m unittest discover -s tests -p "test_m80_m83.py" -v
+      - name: Analysis runtime and firm mandate gate
+        run: python -m unittest discover -s tests -p "test_m84_m85.py" -v
       - name: Reasoning research category
         run: python tests/suite_group_runner.py reasoning_research
       - name: Curriculum event category
