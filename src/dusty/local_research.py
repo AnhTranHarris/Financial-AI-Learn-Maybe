@@ -27,6 +27,8 @@ from .local_terminal import account_identity_fingerprint, _account_summary, _sym
 from .markets import InstrumentEconomics
 from .mt5worker import MT5Bar, _field
 from .reviewed_strategies import resolve_research_package
+from .research_capital import ResearchCapitalSummary, capital_summary_from_report
+from .research_environment import runtime_provenance
 from .strategy_catalog import OperatingMode, QualificationBinding
 
 
@@ -50,6 +52,8 @@ class ResearchJobView:
     state: str = "IDLE"
     message: str = "Ready for read-only MT5 history research"
     run_directory: str = ""
+    capital_summary: ResearchCapitalSummary | None = None
+    research_scope: str = ""
 
     @property
     def active(self) -> bool:
@@ -212,7 +216,8 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
     package = resolve_research_package(selection.strategy)
     terminal = selection.terminal
     return {
-        "schema": 1, "mode": "READ_ONLY_HISTORY_SIMULATION", "promotion_eligible": False,
+        "schema": 2, "mode": "READ_ONLY_HISTORY_SIMULATION", "promotion_eligible": False,
+        "runtime": runtime_provenance(), "research_scope": selection.research_scope,
         "code_commit": selection.binding.code_commit, "binding": selection.binding.fingerprint,
         "package_fingerprint": package.fingerprint, "strategy": asdict(package.spec),
         "feature_config": asdict(package.features), "cognition_policy": asdict(package.cognition),
@@ -246,20 +251,25 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
     completed = completed_feature_bars_from_mt5(bars)
     run = run_laboratory_from_bars(package.compiled, completed, symbol=selection.symbol.symbol,
                                    economics=economics, config=config)
-    report = {"economics": asdict(economics), "config": asdict(config), "laboratory": asdict(run)}
+    report = {"schema": 2, "runtime": runtime_provenance(),
+              "economics": asdict(economics), "config": asdict(config), "laboratory": asdict(run)}
+    capital = capital_summary_from_report(report, currency=selection.terminal.account.currency,
+                                         symbol=selection.symbol.symbol)
+    report["capital_summary"] = asdict(capital)
     hashes["report.json"] = _atomic_json(directory / "report.json", report)
     # Native manifests remain proposals inside the report, never native execution evidence.
     reasons: dict[str, int] = {}
     for trace in run.cognition:
         decision = trace.decision.value
         reasons[decision] = reasons.get(decision, 0) + 1
-    summary = _summary(run, selection, bars, reasons)
+    summary = _summary(run, selection, bars, reasons, capital)
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}
 
 
-def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar, ...], decisions: dict[str, int]) -> str:
+def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar, ...], decisions: dict[str, int],
+             capital: ResearchCapitalSummary) -> str:
     minimum, growth = run.minimum_lot_backtest, run.growth_backtest
     gap_count = sum(right.at - left.at > timedelta(minutes=15) for left, right in zip(bars, bars[1:]))
     return (
@@ -271,6 +281,12 @@ def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar
         f"{selection.terminal.account.currency}, max marked drawdown {growth.max_drawdown_fraction:.2%}\n"
         f"Hypothetical growth starting balance: {growth.starting_equity:.2f} from the connection snapshot; "
         "not a current portfolio allocation.\n"
+        f"Broker minimum lot: {capital.minimum_lot:g}; snapshot checked {selection.terminal.captured_at.isoformat()}\n"
+        f"{capital.display()}\nGrowth rejection counts: {dict(capital.rejection_counts)}\n"
+        "Sizing estimate = minimum-lot planned loss / effective requested risk for each sized setup. "
+        "It includes the recorded stop, spread proxy and assumed commission/slippage, but excludes "
+        "margin constraints, other positions and unmodeled costs/gap losses. It is NOT a rerun "
+        "at that balance, a capital target, or a change to risk limits.\n"
         f"Cognition decisions: {decisions}\nSpread basis: {', '.join(run.spread_cost_bases) or 'no entries'}\n\n"
         "LIMITATIONS: same-window research, no out-of-sample claim. Seed hypotheses are not online-"
         "discovered strategies or trained forecasts. Current symbol economics/margin are historical proxies. "
@@ -322,6 +338,7 @@ class LocalResearchRuntime:
         self._started = 0.0
         self._cancel_reason = ""
         self._request_hash = ""
+        self._research_scope = ""
 
     @property
     def active(self) -> bool:
@@ -350,6 +367,7 @@ class LocalResearchRuntime:
         try:
             directory.mkdir(parents=True, exist_ok=False)
             self._request_hash = _atomic_json(directory / "request.json", _request_payload(selection, self.settings, start, end))
+            self._research_scope = selection.research_scope
             process = self._context.Process(target=_research_worker,
                 args=(selection, self.settings, directory, start, end, self.repository), daemon=True)
             process.start()
@@ -385,7 +403,13 @@ class LocalResearchRuntime:
             result = read_research_result(directory, expected_request_hash=self._request_hash)
             if exitcode != 0:
                 raise ValueError("research_worker_exited_abnormally")
-            self._view = ResearchJobView(result["state"], result["message"], str(directory))
+            capital = None
+            if result["state"] == "COMPLETED":
+                request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+                report = json.loads((directory / "report.json").read_text(encoding="utf-8"))
+                capital = capital_summary_from_report(report, currency=request["account_currency"],
+                                                     symbol=request["symbol"]["symbol"])
+            self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope)
         except (OSError, ValueError, KeyError, TypeError):
             self._view = ResearchJobView("FAILED", "research_worker_failed_or_artifact_integrity_error", str(directory))
         return self._view

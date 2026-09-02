@@ -177,6 +177,22 @@ def _period(period: int) -> int:
     return period
 
 
+FEATURE_NUMERICS_VERSION = "sequential-binary64-v1"
+
+
+def _sequential_sum(values: Sequence[float]) -> float:
+    """Fixed addition order, preserving the original Python 3.11 indicator seeds.
+
+    Python 3.12 changed built-in sum's float algorithm. Do not let interpreter
+    upgrades silently change features or their evidence fingerprints. This policy
+    is reproducibility, not a claim of native MT5 indicator equivalence.
+    """
+    total = 0.0
+    for value in values:
+        total += float(value)
+    return total
+
+
 def sma(values: Sequence[float], period: int) -> tuple[float | None, ...]:
     period = _period(period)
     result: list[float | None] = [None] * len(values)
@@ -201,7 +217,7 @@ def ema(values: Sequence[float], period: int) -> tuple[float | None, ...]:
     seed_values = [float(value) for value in values[:period]]
     if any(not math.isfinite(value) for value in seed_values):
         raise ValueError("indicator input must be finite")
-    previous = sum(seed_values) / period
+    previous = _sequential_sum(seed_values) / period
     result[period - 1] = previous
     alpha = 2.0 / (period + 1.0)
     for index in range(period, len(values)):
@@ -222,7 +238,7 @@ def smma(values: Sequence[float], period: int) -> tuple[float | None, ...]:
     seed_values = [float(value) for value in values[:period]]
     if any(not math.isfinite(value) for value in seed_values):
         raise ValueError("indicator input must be finite")
-    previous = sum(seed_values) / period
+    previous = _sequential_sum(seed_values) / period
     result[period - 1] = previous
     for index in range(period, len(values)):
         value = float(values[index])
@@ -274,8 +290,8 @@ def rsi(values: Sequence[float], period: int) -> tuple[float | None, ...]:
             raise ValueError("indicator input must be finite")
         gains.append(max(delta, 0.0))
         losses.append(max(-delta, 0.0))
-    average_gain = sum(gains[:period]) / period
-    average_loss = sum(losses[:period]) / period
+    average_gain = _sequential_sum(gains[:period]) / period
+    average_loss = _sequential_sum(losses[:period]) / period
 
     def score(gain: float, loss: float) -> float:
         if loss == 0.0:

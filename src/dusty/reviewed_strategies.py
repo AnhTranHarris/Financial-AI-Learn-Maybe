@@ -11,7 +11,7 @@ import json
 
 from .cognition import CognitionPolicy
 from .experience import TradeSide
-from .features import FeatureConfig
+from .features import FEATURE_NUMERICS_VERSION, FeatureConfig
 from .research import Clause, RuleOp
 from .runtime import CompiledStrategy, compile_strategy
 from .strategy_catalog import StrategyCatalogEntry, StrategyStage
@@ -31,7 +31,7 @@ class ReviewedResearchPackage:
 
     @property
     def fingerprint(self) -> str:
-        payload = {"strategy_hash": self.spec.strategy_hash,
+        payload = {"strategy_hash": self.spec.strategy_hash, "feature_numerics": FEATURE_NUMERICS_VERSION,
                    "features": asdict(self.features), "cognition": asdict(self.cognition)}
         return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

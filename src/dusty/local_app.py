@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
 from typing import Callable, Protocol
 
 from .local_terminal import (
@@ -19,6 +21,7 @@ from .strategy_catalog import (
     assess_mode_gates,
     compatible_strategies,
 )
+from .research_capital import ResearchCapitalSummary
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,19 @@ class RuntimeSelection:
     strategy: StrategyCatalogEntry
     mode: OperatingMode
     binding: QualificationBinding
+
+    @property
+    def research_scope(self) -> str:
+        """Match explanations to the same account/environment/spec, not just ticker.
+
+        Balance/time may refresh, but the explanation retains its run's starting
+        balance. A different account or broker specification must hide it.
+        """
+        payload = (self.binding.fingerprint, self.terminal.account.identity_fingerprint,
+                   self.terminal.account.currency, self.terminal.data_path,
+                   self.terminal.terminal_build, self.terminal.installation.portable,
+                   asdict(self.symbol), asdict(self.strategy), self.mode.value)
+        return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +101,7 @@ class LocalApplicationView:
     run_directory: str = ""
     maintenance_active: bool = False
     restart_required: bool = False
+    capital_summary: ResearchCapitalSummary | None = None
 
 
 class LocalDustyApplication:
@@ -180,6 +197,38 @@ class LocalDustyApplication:
         self._last_message = f"symbol_selected:{symbol.symbol}"
         return self.view()
 
+    def refresh_account(self) -> LocalApplicationView:
+        """Read-only refresh; preserve selection only for the same verified account.
+
+        A failed refresh invalidates the old snapshot, preventing stale balance
+        from being presented as a new observation or used to start research.
+        """
+        self._require_idle()
+        previous = self._terminal
+        if previous is None:
+            raise RuntimeError("connect_a_terminal_before_refreshing_account")
+        try:
+            current = self._snapshot_reader.read(previous.installation)
+            def identity(row: TerminalSnapshot) -> tuple:
+                return (row.installation.identity_key, row.installation.portable, row.data_path,
+                        row.terminal_build, row.account.identity_fingerprint,
+                        row.account.server, row.account.mode, row.account.currency)
+            if (not current.connected or not previous.account.identity_fingerprint
+                    or identity(current) != identity(previous)):
+                raise ValueError("account_or_terminal_changed_reconnect_and_reselect")
+        except Exception:
+            self._clear_selection("account_refresh_failed_reconnect_required")
+            raise
+        self._terminal = current
+        if self._selected_symbol is not None and self._selected_symbol not in current.symbols:
+            self._selected_symbol = None
+            self._selected_strategy = None
+            self._selected_mode = OperatingMode.BACKTEST
+            self._last_message = "symbol_specification_changed_reselect_symbol_and_strategy"
+        else:
+            self._last_message = "account_refreshed_read_only"
+        return self.view()
+
     def select_strategy(self, strategy_id: str) -> LocalApplicationView:
         self._require_idle()
         if self._selected_symbol is None:
@@ -237,6 +286,9 @@ class LocalDustyApplication:
 
     def view(self) -> LocalApplicationView:
         job = self._runtime.poll() if hasattr(self._runtime, "poll") else None
+        selected = self._runtime_selection()
+        capital = (getattr(job, "capital_summary", None)
+                   if selected and getattr(job, "research_scope", "") == selected.research_scope else None)
         symbols = self._terminal.symbols if self._terminal is not None else ()
         candidates = (
             compatible_strategies(self._catalog, self._selected_symbol)
@@ -264,6 +316,7 @@ class LocalDustyApplication:
             run_directory=job.run_directory if job else "",
             maintenance_active=self._maintenance_active,
             restart_required=self._restart_required,
+            capital_summary=capital,
         )
 
     def _mode_gates(self) -> tuple[ModeGate, ...]:

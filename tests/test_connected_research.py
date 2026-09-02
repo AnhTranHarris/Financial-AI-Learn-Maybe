@@ -362,6 +362,8 @@ class ResearchCoordinatorTests(unittest.TestCase):
                     time.sleep(.02)
                 self.assertEqual(runtime.poll().state, "COMPLETED", runtime.poll().message)
                 self.assertIn("NOT CERTIFIED", runtime.poll().message)
+                self.assertIsNotNone(runtime.poll().capital_summary)
+                self.assertEqual(runtime.poll().research_scope, selection().research_scope)
             finally:
                 runtime.emergency_halt()
                 if runtime._process:

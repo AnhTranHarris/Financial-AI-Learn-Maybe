@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M101 plus investment-trust remediation**.
+Current engineering phase: **M0–M102 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -26,6 +26,7 @@ Current engineering phase: **M0–M101 plus investment-trust remediation**.
 - local Windows MT5 discovery, read-only terminal/account/symbol inventory, strategy/mode gates,
   a bare-bones desktop shell and a least-privilege Codex bridge: implemented;
 - connected, bounded read-only MT5-history research with immutable seed packages and saved results: implemented;
+- broker minimum-lot display, timestamped balance refresh, explanatory sizing thresholds and versioned numerical provenance: implemented;
 - **live-money write authority: false; the desktop's Demo and Live modes remain locked**.
 
 M75/M85 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 indicator/chart/tester/demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
@@ -48,7 +49,7 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading remains outside the currently authorized implementation, including M101.
+15. Live trading remains outside the currently authorized implementation, including M102.
 16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
 17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
@@ -125,6 +126,7 @@ public strategies / free event context / MT5 history
 - **M86–M95 — quant forecasting and bounded autonomous improvement:** typed probabilistic forecasts, point-in-time datasets, broker-native market time, proper scoring/calibration, forecast cognition, immutable challenger refinement, purged walk-forward promotion, append-only Demo forecast evidence, realized-capital opportunity expansion, and exact-head certification.
 - **M96–M100 — local runtime foundation and basic UI:** bounded Windows MT5 discovery, explicit terminal confirmation, read-only account/symbol/order/position/deal inventory, revocable strategy/mode selection gates, sanitized Codex reporting/development, and a disposable one-window desktop shell.
 - **M101 — connected research correction:** exact reviewed seed packages, selected-terminal history acquisition, two-stage laboratory simulation, cancellable spawned worker, hashed local evidence and visible research results. This is not native Strategy Tester certification or autonomous forecasting.
+- **M102 — sizing transparency and reproducibility:** broker minimum lot, last-checked account balance, read-only refresh before research, sample-derived sizing-only balance estimates, rejection explanations and explicit cross-Python indicator arithmetic. No risk limit or trading gate is relaxed.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
@@ -167,6 +169,14 @@ bounded history window and explicit cost assumptions, then runs the existing Pyt
 MT5 history. Research Results shows the outcome and saved artifact directory. Demo/Live stay locked
 even after positive simulated P&L. Unsupported currency conversions/nonlinear economics are rejected.
 See [M101 development audit and beginner test steps](docs/m101-connected-research.md).
+
+M102 adds **Refresh Account**, the selected symbol's broker minimum lot/volume step, and the
+last-checked balance (not a live feed). Start refreshes the account before freezing its research
+balance. Completed research explains growth rejections and displays a **preferred balance (risk
+sizing only)**: the highest minimum-lot risk threshold among that run's sized setups. This is not
+a deposit recommendation, a profitability claim or an amount that guarantees trading approval.
+It excludes margin and unmodeled costs/gap losses; incomplete sizing yields no preferred estimate.
+See [M102 definition, QC and safe update steps](docs/m102-sizing-transparency.md).
 
 Report requests use an existing local Codex CLI login in an
 ephemeral read-only sandbox. Development requests require an explicit confirmation, a clean Git

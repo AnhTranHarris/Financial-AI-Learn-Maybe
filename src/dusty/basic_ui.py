@@ -46,7 +46,7 @@ class DustyBasicUI:
         self._closing = False
         self._root = tk.Tk()
         self._root.title("Dusty Dragon — Local Control")
-        self._root.minsize(700, 470)
+        self._root.minsize(800, 650)
         self._terminal_by_label: dict[str, str] = {}
         self._strategy_by_label: dict[str, str] = {}
         self._terminal_var = tk.StringVar()
@@ -57,6 +57,8 @@ class DustyBasicUI:
         self._status_var = tk.StringVar(value="Ready")
         self._market_var = tk.StringVar(value="Terminal: not connected")
         self._position_var = tk.StringVar(value="Positions: —   Orders: —   Recent deals: —")
+        self._lot_var = tk.StringVar(value="Broker minimum lot: select a symbol")
+        self._capital_var = tk.StringVar(value="Preferred balance (risk sizing only): run research first")
         self._build()
         self._root.protocol("WM_DELETE_WINDOW", self._close)
         self._root.after(100, self._poll)
@@ -81,9 +83,11 @@ class DustyBasicUI:
         self._connect_button.grid(row=0, column=3, padx=4)
 
         ttk.Label(outer, text="Account").grid(row=1, column=0, sticky="nw", pady=5)
-        ttk.Label(outer, textvariable=self._account_var, wraplength=560).grid(
-            row=1, column=1, columnspan=3, sticky="w", padx=8, pady=5
+        ttk.Label(outer, textvariable=self._account_var, wraplength=490).grid(
+            row=1, column=1, columnspan=2, sticky="w", padx=8, pady=5
         )
+        self._account_refresh_button = ttk.Button(outer, text="Refresh Account", command=self._refresh_account)
+        self._account_refresh_button.grid(row=1, column=3, padx=4)
 
         ttk.Label(outer, text="Symbol").grid(row=2, column=0, sticky="w", pady=5)
         self._symbol_box = ttk.Combobox(outer, textvariable=self._symbol_var, state="readonly")
@@ -127,6 +131,8 @@ class DustyBasicUI:
         outer.rowconfigure(7, weight=1)
         ttk.Label(status, textvariable=self._market_var).pack(anchor="w", pady=2)
         ttk.Label(status, textvariable=self._position_var).pack(anchor="w", pady=2)
+        ttk.Label(status, textvariable=self._lot_var, wraplength=730).pack(anchor="w", pady=2)
+        ttk.Label(status, textvariable=self._capital_var, wraplength=730).pack(anchor="w", pady=6)
         ttk.Label(status, textvariable=self._status_var, wraplength=640).pack(anchor="w", pady=2)
         self._results_button = ttk.Button(status, text="Last Research Results", command=self._show_research_result)
         self._results_button.pack(anchor="w", pady=8)
@@ -181,6 +187,15 @@ class DustyBasicUI:
             return
         self._background(lambda: self._application.connect_terminal(identity), self._background_view)
 
+    def _refresh_account(self) -> None:
+        self._background(self._application.refresh_account, self._background_view)
+
+    def _start_after_account_refresh(self, result: Any, error: str | None) -> None:
+        if error:
+            self._show_error(error)
+        elif not self._closing:
+            self._guard(lambda: self._finish_action(self._application.start()))
+
     def _select_symbol(self, _event: object = None) -> None:
         value = self._symbol_var.get()
         if value:
@@ -229,7 +244,9 @@ class DustyBasicUI:
                 messagebox.showerror("Invalid research setting", str(exc), parent=window)
                 return
             window.destroy()
-            self._guard(lambda: self._finish_action(self._application.start()))
+            # Read a fresh balance before freezing a new research request. Account
+            # changes fail closed; this thread never logs in or sends orders.
+            self._background(self._application.refresh_account, self._start_after_account_refresh)
 
         self._ttk.Button(window, text="Run research (no orders)", command=launch).grid(row=5, column=0, columnspan=2, pady=12)
 
@@ -346,6 +363,14 @@ class DustyBasicUI:
             box.configure(state="disabled" if locked else "readonly")
         for button in (self._refresh_button, self._connect_button, self._report_button, self._development_button):
             button.configure(state="disabled" if locked else "normal")
+        self._account_refresh_button.configure(state="normal" if view.terminal and not locked else "disabled")
+        symbol = view.selected_symbol
+        self._lot_var.set(
+            f"Broker minimum lot: {symbol.volume_min:g} lots · Step: {symbol.volume_step:g} · {symbol.symbol}"
+            if symbol and symbol.volume_min > 0 else "Broker minimum lot: unavailable — select a symbol with valid broker economics"
+        )
+        self._capital_var.set(view.capital_summary.display() if view.capital_summary else
+                             "Preferred balance (risk sizing only): unavailable — complete research for this selection")
 
         if view.terminal is None:
             self._account_var.set("No terminal connected")
@@ -354,8 +379,9 @@ class DustyBasicUI:
         else:
             account = view.terminal.account
             self._account_var.set(
-                f"{account.company or account.server} · {account.mode.value.upper()} · {account.login_hint} · "
-                f"Balance {account.balance:.2f} {account.currency} · Equity {account.equity:.2f}"
+                f"{account.company or account.server} · {account.mode.value.upper()} · {account.login_hint}\n"
+                f"Current balance: {account.balance:,.2f} {account.currency} · Equity: {account.equity:,.2f}\n"
+                f"Last checked: {view.terminal.captured_at.strftime('%Y-%m-%d %H:%M:%S %Z')} (not a live feed)"
             )
             self._market_var.set(
                 f"Terminal build {view.terminal.terminal_build} · "

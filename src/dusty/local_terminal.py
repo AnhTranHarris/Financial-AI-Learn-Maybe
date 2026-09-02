@@ -305,6 +305,7 @@ class ReadOnlyTerminalSnapshotReader:
             if terminal is None or account is None or raw_symbols is None:
                 error = mt5.last_error() if hasattr(mt5, "last_error") else "unknown"
                 raise RuntimeError(f"MT5 terminal/account/symbol inventory unavailable: {error}")
+            account_before = _account_summary(account, mt5)
             warnings: list[str] = []
             symbols = tuple(_symbol_option(row) for row in tuple(raw_symbols)[: self._max_symbols])
             if len(raw_symbols) > self._max_symbols:
@@ -320,6 +321,21 @@ class ReadOnlyTerminalSnapshotReader:
                 now,
             )
             version = mt5.version() if hasattr(mt5, "version") else None
+            # Inventory calls take time. Capture the latest balance, and reject
+            # an account switch rather than mixing two accounts in one snapshot.
+            latest_account = mt5.account_info()
+            if (latest_account is None
+                    or account_identity_fingerprint(latest_account) != account_before.identity_fingerprint
+                    or _mode(_attr(latest_account, "trade_mode", None), mt5) != account_before.mode
+                    or str(_attr(latest_account, "currency", "") or "unknown") != account_before.currency):
+                raise RuntimeError("account_changed_during_snapshot_reconnect_required")
+            account = latest_account
+            latest_terminal = mt5.terminal_info()
+            if (latest_terminal is None or any(_attr(terminal, key, None) != _attr(latest_terminal, key, None)
+                                               for key in ("path", "data_path", "build"))):
+                raise RuntimeError("terminal_changed_during_snapshot_reconnect_required")
+            terminal = latest_terminal
+            now = datetime.now(timezone.utc)
             build = _attr(terminal, "build", None)
             if build is None and version and len(version) > 1:
                 build = version[1]
