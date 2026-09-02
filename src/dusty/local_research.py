@@ -31,6 +31,7 @@ from .research_capital import ResearchCapitalSummary, capital_summary_from_repor
 from .research_environment import runtime_provenance
 from .research_evaluation import FixedEvaluationPlan, require_m15_utc, run_fixed_evaluation
 from .broker_cost_observation import observe_recent_costs
+from .prospective_research import ProspectiveRegistry, validate_for_evaluation, screen_result
 from .strategy_catalog import OperatingMode, QualificationBinding
 
 
@@ -251,11 +252,12 @@ def validate_research_selection(selection: RuntimeSelection) -> None:
         raise ValueError("research_selection_not_in_connected_terminal_inventory")
 
 
-def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, start: datetime, end: datetime) -> dict[str, Any]:
+def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, start: datetime, end: datetime,
+                     registration: dict[str, Any] | None = None) -> dict[str, Any]:
     package = resolve_research_package(selection.strategy)
     terminal = selection.terminal
     plan = settings.evaluation_plan(start, end)
-    return {
+    payload = {
         "schema": 3, "mode": "READ_ONLY_HISTORY_SIMULATION", "promotion_eligible": False,
         "cost_provenance": settings.cost_provenance(),
         "evaluation_plan": plan.payload() if plan else None,
@@ -274,10 +276,16 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
         "growth_starting_balance": terminal.account.balance,
         "minimum_lot_test_equity": 100_000.0, "growth_risk_fraction": 0.0025,
     }
+    if registration is not None:
+        validate_for_evaluation(registration, json.loads(_json(payload)), datetime.now(timezone.utc))
+        payload["growth_starting_balance"] = registration["payload"]["request"]["growth_starting_balance"]
+        payload["prospective_registration"] = registration
+    return payload
 
 
 def execute_research(selection: RuntimeSelection, settings: ResearchSettings, directory: Path,
-                     start: datetime, end: datetime, *, reader: SelectedTerminalHistoryReader | None = None) -> dict[str, Any]:
+                     start: datetime, end: datetime, *, reader: SelectedTerminalHistoryReader | None = None,
+                     registration: dict[str, Any] | None = None) -> dict[str, Any]:
     """Testable engine body. Caller provides a new run directory and frozen request."""
     validate_research_selection(selection)
     package = resolve_research_package(selection.strategy)
@@ -286,7 +294,7 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
     if settings.fixed_end is not None:
         settings.bounds(datetime.now(timezone.utc))
     frozen = json.loads((directory / "request.json").read_text(encoding="utf-8"))
-    expected = json.loads(_json(_request_payload(selection, settings, start, end)))
+    expected = json.loads(_json(_request_payload(selection, settings, start, end, registration)))
     if frozen != expected:
         raise ValueError("frozen_request_does_not_match_worker_configuration")
     history_reader = reader or SelectedTerminalHistoryReader()
@@ -295,7 +303,7 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
     hashes = {"bars.json": _atomic_json(directory / "bars.json", [asdict(bar) for bar in bars])}
     config = LaboratoryConfig(
         feature_config=package.features, cognition_policy=package.cognition,
-        growth_starting_equity=selection.terminal.account.balance,
+        growth_starting_equity=expected["growth_starting_balance"],
         commission_per_lot=settings.commission_per_lot,
         spread_price=settings.spread_floor_points * economics.point_size,
         expected_slippage_price=settings.slippage_points * economics.point_size,
@@ -313,6 +321,9 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
               "broker_cost_observation": getattr(history_reader, "cost_observation", None),
               "evaluation": evaluation,
               "economics": asdict(economics), "config": asdict(config), "laboratory": asdict(run)}
+    if registration is not None:
+        report["prospective_registration"] = registration
+        report["prospective_screen"] = screen_result(registration, json.loads(_json(asdict(run))))
     capital = capital_summary_from_report(report, currency=selection.terminal.account.currency,
                                          symbol=selection.symbol.symbol)
     report["capital_summary"] = asdict(capital)
@@ -329,6 +340,10 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
                  f"Recent broker cost observation: {cost_status}; "
                  f"execution deals: {cost['execution_deals'] if cost else 0}. "
                  "Observed costs never replace the frozen simulation inputs.\n")
+    if cost and cost.get("closed_position_evidence"):
+        closed = cost["closed_position_evidence"]
+        cost_text += (f"Closed-position cost evidence: {closed['status']}; supported complete positions: "
+                      f"{len(closed['positions'])}. Observed arithmetic only, not a verified tariff.\n")
     if evaluation is not None:
         parts = evaluation["segments"]
         summary = ("HISTORICAL HOLDOUT COMPLETED — NOT CERTIFIED\n"
@@ -344,6 +359,16 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
                    + cost_text + "\nHOLDOUT DETAILS (preferred balance applies to holdout only):\n" + summary)
     else:
         summary += "\n\n" + cost_text
+    if registration is not None:
+        screen = report["prospective_screen"]
+        summary = ("REGISTERED HOLDOUT COMPLETED — NOT CERTIFIED\n"
+                   f"Plan: {registration['plan_id']}\n"
+                   f"Registered (local UTC clock): {registration['payload']['created_at']}\n"
+                   "Local hash-bound registration; timestamp not independently attested. This is a delayed historical replay, not real-time paper execution.\n"
+                   f"Frozen screen: {'PASSED' if screen['screen_passed'] else 'NOT PASSED'}; "
+                   f"reasons: {', '.join(screen['reasons']) or 'none'}. Trading remains locked.\n"
+                   f"Registered hypothetical capital: {config.growth_starting_equity:,.2f}; "
+                   f"current connection balance: {selection.terminal.account.balance:,.2f}.\n\n" + summary)
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}
@@ -361,7 +386,7 @@ def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar
         f"Minimum-lot simulation: {minimum.trade_count} trades, P&L {minimum.net_pnl:.2f}\n"
         f"Growth simulation: {growth.trade_count} trades, P&L {growth.net_pnl:.2f} "
         f"{selection.terminal.account.currency}, max marked drawdown {growth.max_drawdown_fraction:.2%}\n"
-        f"Hypothetical growth starting balance: {growth.starting_equity:.2f} from the connection snapshot; "
+        f"Hypothetical growth starting balance: {growth.starting_equity:.2f} from the frozen research request; "
         "not a current portfolio allocation.\n"
         f"Broker minimum lot: {capital.minimum_lot:g}; snapshot checked {selection.terminal.captured_at.isoformat()}\n"
         f"{capital.display()}\nGrowth rejection counts: {dict(capital.rejection_counts)}\n"
@@ -380,11 +405,12 @@ def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar
 
 
 def _research_worker(selection: RuntimeSelection, settings: ResearchSettings, directory: Path,
-                     start: datetime, end: datetime, repository: Path) -> None:
+                     start: datetime, end: datetime, repository: Path,
+                     registration: dict[str, Any] | None = None) -> None:
     try:
         if not repository_matches(repository, selection.binding.code_commit):
             raise ValueError("repository_changed_restart_required")
-        result = execute_research(selection, settings, directory, start, end)
+        result = execute_research(selection, settings, directory, start, end, registration=registration)
         if not repository_matches(repository, selection.binding.code_commit):
             raise ValueError("repository_changed_during_research")
     except Exception as exc:
@@ -423,6 +449,34 @@ class LocalResearchRuntime:
         self._research_scope = ""
 
     @property
+    def plans(self) -> ProspectiveRegistry:
+        return ProspectiveRegistry(self.output_directory / "prospective-plans" / "registry.sqlite3")
+
+    def register_plan(self, selection: RuntimeSelection) -> dict[str, Any]:
+        error = self._preflight(selection)
+        if error:
+            raise ValueError(error)
+        settings = self.settings
+        if settings.fixed_end is None or not settings.holdout_days or not settings.cost_source.strip():
+            raise ValueError("registration_requires_fixed_end_holdout_and_cost_note")
+        end = settings.fixed_end
+        start = end - timedelta(days=settings.history_days)
+        request = json.loads(_json(_request_payload(selection, settings, start, end)))
+        receipt = self.plans.register(request, now=datetime.now(timezone.utc))
+        _atomic_json(self.output_directory / "prospective-plans" / (receipt["plan_id"] + ".json"), receipt)
+        return receipt
+
+    def evaluate_plan(self, selection: RuntimeSelection, plan_id: str) -> RuntimeActionResult:
+        try:
+            receipt = self.plans.get(plan_id)
+            fields = dict(receipt["payload"]["request"]["settings"])
+            fields["fixed_end"] = datetime.fromisoformat(fields["fixed_end"])
+            settings = ResearchSettings(**fields)
+        except (OSError, ValueError, KeyError, TypeError):
+            return RuntimeActionResult(False, "registered_plan_unreadable_or_invalid")
+        return self._start(selection, settings, receipt)
+
+    @property
     def active(self) -> bool:
         return self.poll().active
 
@@ -434,29 +488,49 @@ class LocalResearchRuntime:
             return False
 
     def start(self, selection: RuntimeSelection) -> RuntimeActionResult:
+        return self._start(selection, self.settings)
+
+    def _preflight(self, selection: RuntimeSelection) -> str:
         if self.active:
-            return RuntimeActionResult(False, "research_already_active")
+            return "research_already_active"
         if not self.supports(selection):
-            return RuntimeActionResult(False, "strategy_has_no_reviewed_backtest_package")
+            return "strategy_has_no_reviewed_backtest_package"
         if not selection.terminal.account.identity_fingerprint or selection.terminal.account.balance <= 0:
-            return RuntimeActionResult(False, "reconnect_required_for_account_identity_and_positive_balance")
+            return "reconnect_required_for_account_identity_and_positive_balance"
         if not self._code_checker(self.repository, selection.binding.code_commit):
-            return RuntimeActionResult(False, "repository_dirty_or_changed_restart_required")
+            return "repository_dirty_or_changed_restart_required"
+        return ""
+
+    def _start(self, selection: RuntimeSelection, settings: ResearchSettings,
+               registration: dict[str, Any] | None = None) -> RuntimeActionResult:
+        error = self._preflight(selection)
+        if error:
+            return RuntimeActionResult(False, error)
         now = datetime.now(timezone.utc)
         try:
-            start, end = self.settings.bounds(now)
+            start, end = settings.bounds(now)
+            payload = _request_payload(selection, settings, start, end, registration)
         except ValueError as exc:
             return RuntimeActionResult(False, str(exc))
         directory = self.output_directory / uuid4().hex
         try:
             directory.mkdir(parents=True, exist_ok=False)
-            self._request_hash = _atomic_json(directory / "request.json", _request_payload(selection, self.settings, start, end))
+            if registration is not None:
+                current = json.loads(_json(_request_payload(selection, settings, start, end)))
+                self.plans.claim(registration["plan_id"], current=current, now=now, run_id=directory.name)
+            self._request_hash = _atomic_json(directory / "request.json", payload)
             self._research_scope = selection.research_scope
+            args = (selection, settings, directory, start, end, self.repository)
+            if registration is not None:
+                args += (registration,)
             process = self._context.Process(target=_research_worker,
-                args=(selection, self.settings, directory, start, end, self.repository), daemon=True)
+                args=args, daemon=True)
             process.start()
         except Exception as exc:
-            self._view = ResearchJobView("FAILED", f"research_start_failed:{type(exc).__name__}", str(directory))
+            reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            self._view = ResearchJobView("FAILED", f"research_start_failed:{reason}", str(directory))
+            if directory.is_dir():
+                _atomic_json(directory / "result.json", {"state": "FAILED", "message": self._view.message, "promotion_eligible": False})
             return RuntimeActionResult(False, self._view.message)
         self._process = process
         self._started = time.monotonic()
@@ -494,6 +568,8 @@ class LocalResearchRuntime:
                 capital = capital_summary_from_report(report, currency=request["account_currency"],
                                                      symbol=request["symbol"]["symbol"])
             label = "HISTORICAL HOLDOUT ONLY" if capital is not None and report.get("evaluation") else ""
+            if capital is not None and report.get("prospective_registration"):
+                label = "REGISTERED HOLDOUT ONLY — LOCAL CLOCK EVIDENCE"
             self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope, label)
         except (OSError, ValueError, KeyError, TypeError):
             self._view = ResearchJobView("FAILED", "research_worker_failed_or_artifact_integrity_error", str(directory))

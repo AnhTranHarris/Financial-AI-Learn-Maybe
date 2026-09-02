@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import json
 import queue
 import subprocess
 import threading
@@ -137,6 +139,8 @@ class DustyBasicUI:
         ttk.Label(status, textvariable=self._status_var, wraplength=640).pack(anchor="w", pady=2)
         self._results_button = ttk.Button(status, text="Last Research Results", command=self._show_research_result)
         self._results_button.pack(anchor="w", pady=8)
+        self._plans_button = ttk.Button(status, text="Saved Future Plans", command=self._show_plans)
+        self._plans_button.pack(anchor="w", pady=2)
 
     def _poll(self) -> None:
         # All Tk calls, including after(), originate on the Tk thread. Workers only queue data.
@@ -250,7 +254,7 @@ class DustyBasicUI:
             self._ttk.Label(window, text=label).grid(row=index, column=0, padx=12, pady=4, sticky="w")
             self._ttk.Entry(window, textvariable=variable, width=28).grid(row=index, column=1, padx=12, pady=4)
 
-        def launch() -> None:
+        def launch(register: bool = False) -> None:
             try:
                 self._research.settings = ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]),
                     fixed_end=parse_fixed_end(fixed_end.get()), holdout_days=int(holdout.get()), cost_source=source.get().strip())
@@ -260,9 +264,101 @@ class DustyBasicUI:
             window.destroy()
             # Read a fresh balance before freezing a new research request. Account
             # changes fail closed; this thread never logs in or sends orders.
-            self._background(self._application.refresh_account, self._start_after_account_refresh)
+            callback = self._register_after_refresh if register else self._start_after_account_refresh
+            self._background(self._application.refresh_account, callback)
 
         self._ttk.Button(window, text="Run research (no orders)", command=launch).grid(row=8, column=0, columnspan=2, pady=12)
+        self._ttk.Button(window, text="Freeze future holdout (no orders)", command=lambda: launch(True)).grid(
+            row=9, column=0, columnspan=2, pady=6)
+        self._ttk.Label(window, text=(
+            "Freeze requires holdout START in the future and a cost note. No automatic evaluation.\n"
+            "Fixed research screen: at least 20 closed trades, positive net P&L, drawdown <= 2%.\n"
+            "One attempt per plan, including failures. Passing never unlocks Demo/Live."
+        ), padding=12).grid(row=10, column=0, columnspan=2)
+
+    def _register_after_refresh(self, result: Any, error: str | None) -> None:
+        if error:
+            self._show_error(error)
+        elif not self._closing:
+            self._guard(lambda: self._show_plan_receipt(self._application.register_prospective_plan()))
+
+    def _show_plan_receipt(self, receipt: dict) -> None:
+        window = self._tk.Toplevel(self._root)
+        window.title("Frozen future plan — local clock evidence only")
+        body = json.dumps(receipt, sort_keys=True, indent=2)
+        self._ttk.Label(window, text=(
+            "Saved before the holdout according to this PC's clock. No independent timestamp.\n"
+            "Copy and preserve this receipt elsewhere BEFORE the holdout begins.\n"
+            "No orders or automatic timer. After the fixed end, open Saved Future Plans to evaluate."
+        ), padding=12).pack(anchor="w")
+        text = self._tk.Text(window, wrap="word", width=95, height=24)
+        text.pack(fill="both", expand=True, padx=12)
+        text.insert("1.0", body)
+        text.configure(state="disabled")
+
+        def copy() -> None:
+            self._root.clipboard_clear()
+            self._root.clipboard_append(body)
+
+        self._ttk.Button(window, text="Copy receipt", command=copy).pack(pady=10)
+        self._render(self._application.view())
+
+    def _show_plans(self) -> None:
+        if self._research is None or self._busy or self._application.runtime_active:
+            return
+
+        def open_window() -> None:
+            rows = self._research.plans.list_plans()
+            window = self._tk.Toplevel(self._root)
+            window.title("Saved Future Plans — single evaluation attempt")
+            window.transient(self._root)
+            window.grab_set()
+            self._ttk.Label(window, text=(
+                "Select the same terminal, account, symbol and strategy in the main window first.\n"
+                "Registration binds code/runtime, broker specification, costs and starting capital.\n"
+                "Failed/interrupted attempts stay consumed. Last 200 plans shown; older records retained."
+            ), padding=12).pack(anchor="w")
+            labels = {}
+            for row in rows:
+                receipt = row["receipt"]
+                request = receipt["payload"]["request"]
+                state = "ATTEMPTED" if row["run_id"] else (
+                    "WAITING" if datetime.now(timezone.utc) < datetime.fromisoformat(request["end"]) else "READY")
+                label = f"{receipt['plan_id'][:12]} | {request['symbol']['symbol']} | {request['end']} | {state}"
+                labels[label] = row
+            selected = self._tk.StringVar(value=next(iter(labels), ""))
+            box = self._ttk.Combobox(window, textvariable=selected, values=tuple(labels), state="readonly", width=100)
+            box.pack(padx=12, pady=8)
+
+            def inspect() -> None:
+                row = labels.get(selected.get())
+                if row:
+                    window.grab_release()
+                    window.destroy()
+                    self._show_plan_receipt(row["receipt"])
+
+            def evaluate() -> None:
+                row = labels.get(selected.get())
+                if not row:
+                    return
+                if row["run_id"]:
+                    self._show_error("This plan already has an attempt. Inspect its saved run: " + str(
+                        self._research.output_directory / row["run_id"]))
+                    return
+                plan_id = row["receipt"]["plan_id"]
+                window.destroy()
+
+                def refreshed(result: Any, error: str | None) -> None:
+                    if error:
+                        self._show_error(error)
+                    elif not self._closing:
+                        self._guard(lambda: self._finish_action(self._application.start(plan_id=plan_id)))
+
+                self._background(self._application.refresh_account, refreshed)
+
+            self._ttk.Button(window, text="View / copy frozen receipt", command=inspect).pack(pady=6)
+            self._ttk.Button(window, text="Evaluate selected once (no orders)", command=evaluate).pack(pady=10)
+        self._guard(open_window)
 
     def _stop_entries(self) -> None:
         self._guard(lambda: self._finish_action(self._application.stop_new_entries()))
@@ -426,6 +522,7 @@ class DustyBasicUI:
         can_start = view.runtime_configured and gate is not None and gate.available and not view.new_entries_halted and not locked
         self._start_button.configure(state="normal" if can_start else "disabled")
         self._results_button.configure(state="normal" if view.run_directory else "disabled")
+        self._plans_button.configure(state="normal" if self._research is not None and not locked else "disabled")
 
     def _show_research_result(self) -> None:
         view = self._application.view()

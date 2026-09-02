@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M103 plus investment-trust remediation**.
+Current engineering phase: **M0–M104 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -28,6 +28,7 @@ Current engineering phase: **M0–M103 plus investment-trust remediation**.
 - connected, bounded read-only MT5-history research with immutable seed packages and saved results: implemented;
 - broker minimum-lot display, timestamped balance refresh, explanatory sizing thresholds and versioned numerical provenance: implemented;
 - fixed historical development/holdout windows, past-only warm-up, boundary guards and explicit cost-source/observation provenance: implemented;
+- local hash-bound prospective registrations with one-attempt journaling and conservative native closed-position cost reconciliation: implemented; neither is independent timestamp or fee-schedule certification;
 - **live-money write authority: false; the desktop's Demo and Live modes remain locked**.
 
 M75/M85 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 indicator/chart/tester/demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
@@ -50,7 +51,7 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading remains outside the currently authorized implementation, including M103.
+15. Live trading remains outside the currently authorized implementation, including M104.
 16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
 17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
@@ -129,6 +130,7 @@ public strategies / free event context / MT5 history
 - **M101 — connected research correction:** exact reviewed seed packages, selected-terminal history acquisition, two-stage laboratory simulation, cancellable spawned worker, hashed local evidence and visible research results. This is not native Strategy Tester certification or autonomous forecasting.
 - **M102 — sizing transparency and reproducibility:** broker minimum lot, last-checked account balance, read-only refresh before research, sample-derived sizing-only balance estimates, rejection explanations and explicit cross-Python indicator arithmetic. No risk limit or trading gate is relaxed.
 - **M103 — fixed-window evaluation foundation:** optional fixed UTC end and chronological holdout, independent flat-start simulations with past-only indicator warm-up and entry-tail guards, frozen cost notes and separate read-only broker cost observations. Historical data is not asserted to be previously unseen; costs are not automatically verified.
+- **M104 — prospective evidence foundation:** freeze a future holdout before its start, preserve a copyable receipt, bind costs/rules/runtime/capital, and allow one journaled evaluation attempt after the end. Reconcile supported closed-position cash only after bounded full-position history reads. No automatic timers, trading approval, independently trusted timestamp or verified broker tariff is implied.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
@@ -185,6 +187,11 @@ A fixed historical holdout reports development and holdout separately, without p
 or capital carryover. The main sizing estimate applies to the holdout only. Recent broker execution
 costs are recorded separately and never silently replace user assumptions. Neither a source note,
 a historical split nor a profitable result unlocks trading. See [M103 scope and test procedure](docs/m103-fixed-window-evaluation.md).
+
+Start's **Freeze future holdout (no orders)** and **Saved Future Plans** add local pre-window
+registration. Plans bind the exact code/runtime and broker specification; changes invalidate reuse.
+Evaluation remains a delayed historical replay, not a continuously running paper trader. See
+[M104 evidence boundaries and acceptance steps](docs/m104-prospective-evidence.md).
 
 Report requests use an existing local Codex CLI login in an
 ephemeral read-only sandbox. Development requests require an explicit confirmation, a clean Git

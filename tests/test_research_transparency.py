@@ -289,10 +289,11 @@ class AccountAndDisplayTests(unittest.TestCase):
                 self.options.update(kwargs)
         ui = DustyBasicUI.__new__(DustyBasicUI)
         ui._busy = ui._closing = False
+        ui._research = None
         for name in ("terminal", "symbol", "strategy", "mode", "account", "market", "position", "status", "lot", "capital"):
             setattr(ui, f"_{name}_var", Widget())
         for name in ("terminal_box", "symbol_box", "strategy_box", "refresh_button", "connect_button", "report_button",
-                     "development_button", "account_refresh_button", "start_button", "results_button"):
+                     "development_button", "account_refresh_button", "start_button", "results_button", "plans_button"):
             setattr(ui, f"_{name}", Widget())
         ui._mode_buttons = {mode: Widget() for mode in OperatingMode}
         with tempfile.TemporaryDirectory() as root:

@@ -74,6 +74,8 @@ jobs:
         run: python -m unittest discover -s tests -p "test_research_transparency.py" -v
       - name: Fixed-window evaluation and cost evidence gate
         run: python -m unittest discover -s tests -p "test_fixed_evaluation.py" -v
+      - name: Prospective registration and closed-position cost gate
+        run: python -m unittest discover -s tests -p "test_prospective_evidence.py" -v
       - name: Reasoning research category
         run: python tests/suite_group_runner.py reasoning_research
       - name: Curriculum event category

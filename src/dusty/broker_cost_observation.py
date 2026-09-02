@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 import math
 from typing import Any
 
+from .closed_position_costs import observe_closed_positions
+
 
 def observe_recent_costs(mt5: Any, symbol: str, at: datetime) -> dict[str, object]:
     """Bounded recent account history, exact symbol and execution types only.
@@ -29,6 +31,7 @@ def observe_recent_costs(mt5: Any, symbol: str, at: datetime) -> dict[str, objec
     if len(rows) > 10_000:
         result["status"] = "BOUNDED_READ_LIMIT_EXCEEDED"
         return result
+    result["closed_position_evidence"] = observe_closed_positions(mt5, rows, symbol, start, at)
     costs: list[tuple[float, float, float]] = []
     matched = 0
     for row in rows:

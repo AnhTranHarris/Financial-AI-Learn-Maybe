@@ -252,7 +252,19 @@ class LocalDustyApplication:
         self._last_message = f"mode_selected:{mode.value}"
         return self.view()
 
-    def start(self) -> RuntimeActionResult:
+    def register_prospective_plan(self) -> dict:
+        self._require_idle()
+        selection = self._runtime_selection()
+        if (selection is None or self._new_entries_halted or self._selected_mode is not OperatingMode.BACKTEST
+                or not hasattr(self._runtime, "register_plan")):
+            raise ValueError("select_a_read_only_research_package_before_registration")
+        if not next(row for row in self._mode_gates() if row.mode is OperatingMode.BACKTEST).available:
+            raise ValueError("backtest_gate_locked")
+        receipt = self._runtime.register_plan(selection)
+        self._last_message = f"future_plan_registered:{receipt['plan_id']}"
+        return receipt
+
+    def start(self, *, plan_id: str | None = None) -> RuntimeActionResult:
         if self.runtime_active or self._maintenance_active or self._restart_required:
             return RuntimeActionResult(False, "work_active_or_restart_required")
         selection = self._runtime_selection()
@@ -264,6 +276,11 @@ class LocalDustyApplication:
                 result = RuntimeActionResult(False, f"mode_locked:{'|'.join(gate.reasons)}")
             elif self._new_entries_halted:
                 result = RuntimeActionResult(False, "new_entries_halted")
+            elif plan_id is not None:
+                if self._selected_mode is not OperatingMode.BACKTEST or not hasattr(self._runtime, "evaluate_plan"):
+                    result = RuntimeActionResult(False, "registered_research_not_supported")
+                else:
+                    result = self._runtime.evaluate_plan(selection, plan_id)
             else:
                 result = self._runtime.start(selection)
         self._last_message = result.message
