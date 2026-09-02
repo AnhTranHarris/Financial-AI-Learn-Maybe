@@ -138,6 +138,9 @@ default lab results, unchanged original request shape, entry-only authority, no-
 native-manifest rejection, segment boundaries, point-vs-tick stress, exact matrix coverage,
 trade/sizing/ledger reconciliation, frozen-request tampering, failed-matrix publication,
 prospective isolation, spawned completion/polling and Windows Tk confirmation/cancel behavior.
+Mode buttons and Start are disabled at construction; only a rendered backend gate can enable
+them. The Windows test deliberately pauses discovery to check this initial state, then verifies
+that rendering enables eligible Backtest while Demo/Live remain disabled.
 
 The CI matrix remains Windows/Ubuntu on Python 3.11/3.12, with an explicit M105 gate and the
 full suite. CI uses synthetic fixtures, not a native terminal. A real local acceptance run

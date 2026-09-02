@@ -112,6 +112,7 @@ class DustyBasicUI:
                 text=mode.value.title(),
                 value=mode.value,
                 variable=self._mode_var,
+                state="disabled",  # Only a rendered backend gate may enable a mode.
                 command=lambda selected=mode: self._select_mode(selected),
             )
             button.grid(row=0, column=index, padx=(0, 18))
@@ -120,7 +121,7 @@ class DustyBasicUI:
         ttk.Separator(outer).grid(row=5, column=0, columnspan=4, sticky="ew", pady=12)
         controls = ttk.Frame(outer)
         controls.grid(row=6, column=0, columnspan=4, sticky="ew")
-        self._start_button = ttk.Button(controls, text="Start", command=self._start)
+        self._start_button = ttk.Button(controls, text="Start", command=self._start, state="disabled")
         self._start_button.pack(side="left", padx=(0, 8))
         ttk.Button(controls, text="Stop Entries", command=self._stop_entries).pack(side="left", padx=8)
         ttk.Button(controls, text="Emergency Halt", command=self._halt).pack(side="left", padx=8)

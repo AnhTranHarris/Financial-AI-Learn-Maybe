@@ -348,6 +348,13 @@ class ComparisonIntegrationTests(unittest.TestCase):
             calls = []
             ui._background = lambda action, callback: calls.append((action, callback))
             try:
+                # Refresh is deliberately paused: construction itself is fail-closed.
+                self.assertEqual(str(ui._start_button.cget("state")), "disabled")
+                self.assertTrue(all(button.instate(("disabled",)) for button in ui._mode_buttons.values()))
+                ui._render(app.view())
+                self.assertFalse(ui._mode_buttons[OperatingMode.BACKTEST].instate(("disabled",)))
+                self.assertTrue(ui._mode_buttons[OperatingMode.DEMO].instate(("disabled",)))
+                self.assertTrue(ui._mode_buttons[OperatingMode.LIVE].instate(("disabled",)))
                 ui._start()
                 window = next(w for w in ui._root.winfo_children() if isinstance(w, ui._tk.Toplevel))
                 button = next(w for w in window.winfo_children() if isinstance(w, ui._ttk.Button) and "Compare strategies" in w.cget("text"))
