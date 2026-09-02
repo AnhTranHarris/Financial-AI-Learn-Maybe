@@ -9,6 +9,7 @@ from .features import FeatureBar
 from .investment_lab import LaboratoryConfig, LaboratoryRun, run_laboratory_from_bars
 from .markets import InstrumentEconomics
 from .runtime import CompiledStrategy
+from .research_eligibility import EntryPolicy
 
 
 EVALUATION_PROTOCOL = "fixed-history-flat-reset-max-hold-tail-v1"
@@ -61,6 +62,7 @@ class FixedEvaluationPlan:
 def run_fixed_evaluation(
     strategy: CompiledStrategy, bars: Sequence[FeatureBar], *, symbol: str,
     economics: InstrumentEconomics, config: LaboratoryConfig, plan: FixedEvaluationPlan,
+    entry_policy: EntryPolicy = EntryPolicy.SEED,
 ) -> tuple[LaboratoryRun, dict[str, object]]:
     """Each segment starts flat at the same equity, with only past indicator warm-up.
 
@@ -88,6 +90,7 @@ def run_fixed_evaluation(
         run = run_laboratory_from_bars(
             strategy, selected, symbol=symbol, economics=economics, config=config,
             feature_warmup_bars=warmup, entry_cutoff=cutoff,
+            entry_policy=entry_policy,
         )
         if any(not start <= trade.entry_at < cutoff or not trade.entry_at < trade.exit_at < end
                for trade in run.potential_trades):

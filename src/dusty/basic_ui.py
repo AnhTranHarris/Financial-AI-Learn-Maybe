@@ -254,10 +254,29 @@ class DustyBasicUI:
             self._ttk.Label(window, text=label).grid(row=index, column=0, padx=12, pady=4, sticky="w")
             self._ttk.Entry(window, textvariable=variable, width=28).grid(row=index, column=1, padx=12, pady=4)
 
-        def launch(register: bool = False) -> None:
+        def read_settings(comparison: bool = False) -> ResearchSettings:
+            return ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]),
+                fixed_end=parse_fixed_end(fixed_end.get()), holdout_days=int(holdout.get()),
+                cost_source=source.get().strip(), comparison=comparison)
+
+        def preview() -> None:
             try:
-                self._research.settings = ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]),
-                    fixed_end=parse_fixed_end(fixed_end.get()), holdout_days=int(holdout.get()), cost_source=source.get().strip())
+                messagebox.showinfo("Research dates (UTC)", read_settings().window_preview(datetime.now(timezone.utc)), parent=window)
+            except ValueError as exc:
+                messagebox.showerror("Invalid research setting", str(exc), parent=window)
+
+        def launch(register: bool = False, comparison: bool = False) -> None:
+            try:
+                proposed = read_settings(comparison)
+                if not register:
+                    dates = proposed.window_preview(datetime.now(timezone.utc))
+                    if comparison:
+                        dates += ("\n\nCompares BOTH seeds, their trend vetoes and a no-trade control."
+                                  "\nTwo cost assumptions; 20 cases. No automatic winner."
+                                  "\nStress adds 10 broker points of round-trip slippage; not verified fees.")
+                    if not messagebox.askokcancel("Confirm research dates — no orders", dates, parent=window):
+                        return
+                self._research.settings = proposed
             except ValueError as exc:
                 messagebox.showerror("Invalid research setting", str(exc), parent=window)
                 return
@@ -275,6 +294,13 @@ class DustyBasicUI:
             "Fixed research screen: at least 20 closed trades, positive net P&L, drawdown <= 2%.\n"
             "One attempt per plan, including failures. Passing never unlocks Demo/Live."
         ), padding=12).grid(row=10, column=0, columnspan=2)
+        self._ttk.Button(window, text="Preview dates", command=preview).grid(row=11, column=0, pady=6)
+        self._ttk.Button(window, text="Compare strategies (no orders)", command=lambda: launch(comparison=True)).grid(
+            row=11, column=1, pady=6)
+        self._ttk.Label(window, text=(
+            "Comparison requires a past fixed end, nonzero holdout and cost note.\n"
+            "No-trade and trend filters are research controls, not certified strategies."
+        ), padding=12).grid(row=12, column=0, columnspan=2)
 
     def _register_after_refresh(self, result: Any, error: str | None) -> None:
         if error:

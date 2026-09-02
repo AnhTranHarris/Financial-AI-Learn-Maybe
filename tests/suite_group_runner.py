@@ -31,6 +31,7 @@ GROUPS = {
     ),
     "governance_storage": (
         "test_connected_research.py",
+        "test_research_comparison.py",
         "test_capital_governance.py",
         "test_governance_invariants.py",
         "test_journal_learning.py",

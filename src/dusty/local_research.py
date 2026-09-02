@@ -30,6 +30,7 @@ from .reviewed_strategies import resolve_research_package
 from .research_capital import ResearchCapitalSummary, capital_summary_from_report
 from .research_environment import runtime_provenance
 from .research_evaluation import FixedEvaluationPlan, require_m15_utc, run_fixed_evaluation
+from .research_comparison import comparison_contract, comparison_summary, run_research_comparison
 from .broker_cost_observation import observe_recent_costs
 from .prospective_research import ProspectiveRegistry, validate_for_evaluation, screen_result
 from .strategy_catalog import OperatingMode, QualificationBinding
@@ -44,6 +45,7 @@ class ResearchSettings:
     fixed_end: datetime | None = None
     holdout_days: int = 0
     cost_source: str = ""
+    comparison: bool = False
 
     def __post_init__(self) -> None:
         if type(self.history_days) is not int or not 1 <= self.history_days <= 30:
@@ -60,6 +62,22 @@ class ResearchSettings:
         if not isinstance(self.cost_source, str) or len(self.cost_source) > 400 or (
                 self.cost_source and not self.cost_source.isprintable()):
             raise ValueError("cost_source_must_be_one_line_up_to_400_characters")
+        if type(self.comparison) is not bool:
+            raise ValueError("comparison_flag_must_be_boolean")
+        if self.comparison and (self.fixed_end is None or not self.holdout_days or not self.cost_source.strip()):
+            raise ValueError("comparison_requires_fixed_UTC_end_positive_holdout_days_and_cost_note")
+
+    def window_preview(self, now: datetime) -> str:
+        start, end = self.bounds(now)
+        plan = self.evaluation_plan(start, end)
+        if plan is None:
+            return (f"WHOLE-WINDOW EXPLORATION — NO HOLDOUT (holdout days = 0)\n"
+                    f"UTC: {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M}\n"
+                    "This does not test a separate holdout or verify forecasting skill.")
+        return (f"HISTORICAL SPLIT — NOT PROVEN UNSEEN\n"
+                f"Development UTC: {start:%Y-%m-%d %H:%M} to {plan.holdout_start:%Y-%m-%d %H:%M}\n"
+                f"Holdout UTC: {plan.holdout_start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M}\n"
+                "End boundaries are exclusive. No orders or trading qualification.")
 
     def bounds(self, now: datetime) -> tuple[datetime, datetime]:
         if now.utcoffset() != timedelta(0):
@@ -267,7 +285,8 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
         "package_fingerprint": package.fingerprint, "strategy": asdict(package.spec),
         "feature_config": asdict(package.features), "cognition_policy": asdict(package.cognition),
         "symbol": asdict(selection.symbol), "timeframe": "M15", "start": start, "end": end,
-        "settings": asdict(settings), "snapshot_at": terminal.captured_at,
+        "settings": {k: v for k, v in asdict(settings).items() if k != "comparison" or v},
+        "snapshot_at": terminal.captured_at,
         "account_fingerprint": terminal.account.identity_fingerprint,
         "account_currency": terminal.account.currency, "account_mode": terminal.account.mode,
         "terminal_identity_hash": sha256(terminal.installation.identity_key.encode()).hexdigest(),
@@ -276,6 +295,10 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
         "growth_starting_balance": terminal.account.balance,
         "minimum_lot_test_equity": 100_000.0, "growth_risk_fraction": 0.0025,
     }
+    if settings.comparison:
+        if registration is not None:
+            raise ValueError("comparison_cannot_register_or_consume_prospective_plans")
+        payload["comparison_contract"] = comparison_contract()
     if registration is not None:
         validate_for_evaluation(registration, json.loads(_json(payload)), datetime.now(timezone.utc))
         payload["growth_starting_balance"] = registration["payload"]["request"]["growth_starting_balance"]
@@ -321,6 +344,11 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
               "broker_cost_observation": getattr(history_reader, "cost_observation", None),
               "evaluation": evaluation,
               "economics": asdict(economics), "config": asdict(config), "laboratory": asdict(run)}
+    if settings.comparison:
+        if plan is None:
+            raise ValueError("comparison_requires_historical_split")
+        report["comparison"] = run_research_comparison(completed, symbol=selection.symbol.symbol,
+                                                      economics=economics, config=config, plan=plan)
     if registration is not None:
         report["prospective_registration"] = registration
         report["prospective_screen"] = screen_result(registration, json.loads(_json(asdict(run))))
@@ -369,6 +397,9 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
                    f"reasons: {', '.join(screen['reasons']) or 'none'}. Trading remains locked.\n"
                    f"Registered hypothetical capital: {config.growth_starting_equity:,.2f}; "
                    f"current connection balance: {selection.terminal.account.balance:,.2f}.\n\n" + summary)
+    if settings.comparison:
+        summary = (comparison_summary(report["comparison"], selection.terminal.account.currency)
+                   + "\n\nSELECTED SEED BASELINE DETAILS ONLY (not a chosen winner):\n" + summary)
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}
@@ -457,6 +488,8 @@ class LocalResearchRuntime:
         if error:
             raise ValueError(error)
         settings = self.settings
+        if settings.comparison:
+            raise ValueError("comparison_cannot_register_or_consume_prospective_plans")
         if settings.fixed_end is None or not settings.holdout_days or not settings.cost_source.strip():
             raise ValueError("registration_requires_fixed_end_holdout_and_cost_note")
         end = settings.fixed_end
@@ -570,6 +603,8 @@ class LocalResearchRuntime:
             label = "HISTORICAL HOLDOUT ONLY" if capital is not None and report.get("evaluation") else ""
             if capital is not None and report.get("prospective_registration"):
                 label = "REGISTERED HOLDOUT ONLY — LOCAL CLOCK EVIDENCE"
+            if capital is not None and report.get("comparison"):
+                label = "SELECTED SEED HOLDOUT ONLY — COMPARISON SELECTS NO WINNER"
             self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope, label)
         except (OSError, ValueError, KeyError, TypeError):
             self._view = ResearchJobView("FAILED", "research_worker_failed_or_artifact_integrity_error", str(directory))

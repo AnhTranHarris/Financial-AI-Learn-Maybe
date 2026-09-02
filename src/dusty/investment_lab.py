@@ -26,6 +26,7 @@ from .features import (
     compute_standard_features,
 )
 from .forecasting import Forecast
+from .research_eligibility import EntryPolicy, entry_eligibility
 from .markets import InstrumentEconomics
 from .mt5worker import MT5BarRequest, ReadOnlyMT5Worker
 from .risk import AccountRiskSnapshot, RiskAssessment, RiskConstitution, TradeRiskRequest, assess_trade_risk
@@ -550,6 +551,7 @@ def run_laboratory_from_bars(
     health: HealthState = HealthState.HEALTHY,
     feature_warmup_bars: Iterable[FeatureBar] = (),
     entry_cutoff: datetime | None = None,
+    entry_policy: EntryPolicy = EntryPolicy.SEED,
 ) -> LaboratoryRun:
     """Reference chain from completed bars through cognition, two-stage sizing, and MT5 manifests.
 
@@ -559,6 +561,8 @@ def run_laboratory_from_bars(
     Optional past-only warm-up initializes indicators without creating cognition, positions, cash or
     ledger rows outside the scored bars. An entry cutoff can only veto new entries, never modify exits.
     """
+    if not isinstance(entry_policy, EntryPolicy):
+        raise ValueError("unknown_research_entry_policy")
     eligibility = assess_strategy_eligibility(strategy.spec)
     if not eligibility.promotable:
         raise ValueError(f"strategy_not_execution_eligible:{','.join(eligibility.reasons)}")
@@ -572,6 +576,8 @@ def run_laboratory_from_bars(
                                     or not feature_bars[0].at < entry_cutoff <= feature_bars[-1].at):
         raise ValueError("entry_cutoff_must_be_aware_and_inside_scored_bars")
     features = compute_standard_features(warmup + feature_bars, config.feature_config)[len(warmup):]
+    entry_permissions = {vector.at: entry_eligibility(vector, strategy.spec.direction, entry_policy).allowed
+                         for vector in features}
     required = _required_feature_keys(strategy)
     baseline_risk = _baseline_risk(
         config.growth_starting_equity,
@@ -631,6 +637,7 @@ def run_laboratory_from_bars(
         strategy,
         runtime_bars,
         entry_authorizer=lambda row, _: (decisions.get(row.at) is expected_entry
+                                        and entry_permissions[row.at]
                                         and (entry_cutoff is None or row.at < entry_cutoff)),
     )
     frequency = assess_observed_entry_frequency(trade.entry_at for trade in potential)
@@ -685,6 +692,10 @@ def run_laboratory_from_bars(
     )
     spread_bases.update(growth_spread_bases)
     manifest_supported, manifest_reasons = _manifest_support(strategy)
+    if entry_policy is not EntryPolicy.SEED:
+        # The legacy manifest identity is just the base strategy hash, not the veto.
+        manifest_supported = False
+        manifest_reasons += ("research_entry_policy_not_bound_by_native_manifest",)
     if not manifest_supported:
         minimum_manifest = ""
         growth_manifest = ""
