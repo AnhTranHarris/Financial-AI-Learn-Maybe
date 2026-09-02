@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -131,7 +132,9 @@ class RegistrationTests(unittest.TestCase):
 
     def test_corrupt_database_receipt_never_rebinds_identity(self):
         receipt = self.receipt()
-        with sqlite3.connect(self.registry.path) as db:
+        # The SQLite transaction context commits, but does not close the handle.
+        # Explicit closure is required before TemporaryDirectory cleanup on Windows.
+        with closing(sqlite3.connect(self.registry.path)) as db, db:
             db.execute("UPDATE plans SET receipt=?", ('{}',))
         with self.assertRaises(ValueError):
             self.registry.get(receipt["plan_id"])
