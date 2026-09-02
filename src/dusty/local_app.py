@@ -81,6 +81,10 @@ class LocalApplicationView:
     runtime_active: bool
     new_entries_halted: bool
     last_message: str
+    runtime_message: str = ""
+    run_directory: str = ""
+    maintenance_active: bool = False
+    restart_required: bool = False
 
 
 class LocalDustyApplication:
@@ -116,8 +120,31 @@ class LocalDustyApplication:
         self._runtime_active = False
         self._new_entries_halted = False
         self._last_message = "ready"
+        self._maintenance_active = False
+        self._restart_required = False
+
+    @property
+    def runtime_active(self) -> bool:
+        return bool(getattr(self._runtime, "active", self._runtime_active))
+
+    def _require_idle(self) -> None:
+        if self.runtime_active or self._maintenance_active:
+            raise RuntimeError("selection_locked_while_work_is_active")
+        if self._restart_required:
+            raise RuntimeError("restart_required_after_development")
+
+    def begin_development(self) -> None:
+        self._require_idle()
+        self._maintenance_active = True
+
+    def finish_development(self) -> None:
+        self._maintenance_active = False
+        # Even a failed developer process may have changed files before returning.
+        self._restart_required = True
+        self._last_message = "restart_required_after_development"
 
     def refresh_terminals(self) -> LocalApplicationView:
+        self._require_idle()
         self._terminals = self._discovery.discover()
         if self._terminal is not None and all(
             row.identity_key != self._terminal.installation.identity_key for row in self._terminals
@@ -128,6 +155,7 @@ class LocalDustyApplication:
         return self.view()
 
     def connect_terminal(self, identity_key: str) -> LocalApplicationView:
+        self._require_idle()
         installation = next((row for row in self._terminals if row.identity_key == identity_key), None)
         if installation is None:
             raise KeyError("terminal was not discovered")
@@ -139,6 +167,7 @@ class LocalDustyApplication:
         return self.view()
 
     def select_symbol(self, raw_symbol: str) -> LocalApplicationView:
+        self._require_idle()
         if self._terminal is None:
             raise RuntimeError("connect a terminal before selecting a symbol")
         symbol = next((row for row in self._terminal.symbols if row.symbol == raw_symbol), None)
@@ -152,6 +181,7 @@ class LocalDustyApplication:
         return self.view()
 
     def select_strategy(self, strategy_id: str) -> LocalApplicationView:
+        self._require_idle()
         if self._selected_symbol is None:
             raise RuntimeError("select a symbol before selecting a strategy")
         candidates = compatible_strategies(self._catalog, self._selected_symbol)
@@ -163,6 +193,7 @@ class LocalDustyApplication:
         return self.view()
 
     def select_mode(self, mode: OperatingMode) -> LocalApplicationView:
+        self._require_idle()
         gate = next(row for row in self._mode_gates() if row.mode is mode)
         if not gate.available:
             self._last_message = f"mode_locked:{mode.value}:{'|'.join(gate.reasons)}"
@@ -172,6 +203,8 @@ class LocalDustyApplication:
         return self.view()
 
     def start(self) -> RuntimeActionResult:
+        if self.runtime_active or self._maintenance_active or self._restart_required:
+            return RuntimeActionResult(False, "work_active_or_restart_required")
         selection = self._runtime_selection()
         if selection is None:
             result = RuntimeActionResult(False, "terminal_symbol_strategy_selection_incomplete")
@@ -184,7 +217,8 @@ class LocalDustyApplication:
             else:
                 result = self._runtime.start(selection)
         self._last_message = result.message
-        self._runtime_active = result.accepted
+        if result.accepted:
+            self._runtime_active = True
         return result
 
     def stop_new_entries(self) -> RuntimeActionResult:
@@ -196,11 +230,13 @@ class LocalDustyApplication:
     def emergency_halt(self) -> RuntimeActionResult:
         self._new_entries_halted = True
         result = self._runtime.emergency_halt()
-        self._runtime_active = False
+        if result.accepted and not hasattr(self._runtime, "active"):
+            self._runtime_active = False
         self._last_message = result.message
         return result
 
     def view(self) -> LocalApplicationView:
+        job = self._runtime.poll() if hasattr(self._runtime, "poll") else None
         symbols = self._terminal.symbols if self._terminal is not None else ()
         candidates = (
             compatible_strategies(self._catalog, self._selected_symbol)
@@ -216,10 +252,18 @@ class LocalDustyApplication:
             selected_strategy=self._selected_strategy,
             selected_mode=self._selected_mode,
             mode_gates=self._mode_gates(),
-            runtime_configured=self._runtime.configured,
-            runtime_active=self._runtime_active,
+            runtime_configured=self._runtime.configured and (
+                not hasattr(self._runtime, "supports") or (
+                    self._runtime_selection() is not None and self._runtime.supports(self._runtime_selection())
+                )
+            ),
+            runtime_active=self.runtime_active,
             new_entries_halted=self._new_entries_halted,
             last_message=self._last_message,
+            runtime_message=job.message if job else "",
+            run_directory=job.run_directory if job else "",
+            maintenance_active=self._maintenance_active,
+            restart_required=self._restart_required,
         )
 
     def _mode_gates(self) -> tuple[ModeGate, ...]:

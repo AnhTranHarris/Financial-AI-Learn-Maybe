@@ -92,7 +92,7 @@ class ReadOnlyMT5Worker:
             leverage = float(_attr(account, "leverage", 0.0) or 0.0)
             contract_size = float(_attr(info, "trade_contract_size", 0.0) or 0.0)
             point_size = float(_attr(info, "point", 0.0) or 0.0)
-            tick_size = float(_attr(info, "trade_tick_size", 0.0) or point_size or 0.0)
+            tick_size = float(_attr(info, "trade_tick_size", 0.0) or 0.0)
             tick_value = float(_attr(info, "trade_tick_value", 0.0) or 0.0)
             bid = float(_attr(info, "bid", 0.0) or 0.0)
             margin_initial = float(_attr(info, "margin_initial", 0.0) or 0.0)

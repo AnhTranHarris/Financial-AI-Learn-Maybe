@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M100 plus investment-trust remediation**.
+Current engineering phase: **M0–M101 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -25,7 +25,8 @@ Current engineering phase: **M0–M100 plus investment-trust remediation**.
 - probabilistic forecast evaluation and bounded challenger governance: implemented;
 - local Windows MT5 discovery, read-only terminal/account/symbol inventory, strategy/mode gates,
   a bare-bones desktop shell and a least-privilege Codex bridge: implemented;
-- **live-money write authority: permanently false through M100**.
+- connected, bounded read-only MT5-history research with immutable seed packages and saved results: implemented;
+- **live-money write authority: false; the desktop's Demo and Live modes remain locked**.
 
 M75/M85 engineering does **not** mean that a real six-desk demo certification has already occurred. Operational certification requires real local MT5 indicator/chart/tester/demo evidence, the required chaos runs, and six individually passing desk runs. GitHub-hosted CI cannot substitute for those broker-terminal observations.
 
@@ -47,7 +48,7 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading is outside M0–M100.
+15. Live trading remains outside the currently authorized implementation, including M101.
 16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
 17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
@@ -123,6 +124,7 @@ public strategies / free event context / MT5 history
 - **M76–M85 — MT5 indicator, chart and trade intelligence:** durable analytical-tool registry, generated native/custom indicator probes, chart-object semantics, temporal/repainting validation, typed analysis graph, StrategySpecV3 long/short lifecycle, ablation/retirement, native tournament, frozen Demo analysis, pending-order preflight, and firm-mandate certification.
 - **M86–M95 — quant forecasting and bounded autonomous improvement:** typed probabilistic forecasts, point-in-time datasets, broker-native market time, proper scoring/calibration, forecast cognition, immutable challenger refinement, purged walk-forward promotion, append-only Demo forecast evidence, realized-capital opportunity expansion, and exact-head certification.
 - **M96–M100 — local runtime foundation and basic UI:** bounded Windows MT5 discovery, explicit terminal confirmation, read-only account/symbol/order/position/deal inventory, revocable strategy/mode selection gates, sanitized Codex reporting/development, and a disposable one-window desktop shell.
+- **M101 — connected research correction:** exact reviewed seed packages, selected-terminal history acquisition, two-stage laboratory simulation, cancellable spawned worker, hashed local evidence and visible research results. This is not native Strategy Tester certification or autonomous forecasting.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
@@ -137,17 +139,19 @@ bare-bones UI and Codex safety boundary.
 
 ## Bare-bones local UI
 
-The M100 desktop shell is intentionally small. It discovers supported local MT5 executables,
+The desktop shell is intentionally small. It discovers supported local MT5 executables,
 requires the user to connect one explicitly, reads its current account and broker symbol inventory,
 and displays compatible strategies and the Backtest/Demo/Live gates. Discovery is not account
 assignment, a green UI gate is not broker authority, and the shell does not invent an executable
-runtime when no certified runtime coordinator is configured.
+runtime when no coordinator is configured. M101 configures only the read-only history research
+coordinator; it never configures a demo or live order loop.
 
 From an installed development checkout on Windows:
 
-```bash
-pip install -e .
-dusty-dragon --repository .
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e . MetaTrader5
+.\.venv\Scripts\python.exe -m dusty.basic_ui --repository .
 ```
 
 Portable or nonstandard installations can be supplied explicitly without storing credentials:
@@ -157,10 +161,19 @@ dusty-dragon --repository . --terminal "C:\\Trading\\BrokerA\\terminal64.exe"
 ```
 
 A reviewed metadata-only strategy catalog may be supplied with `--catalog`. Catalog loading never
-loads or executes online code. Report requests use an existing local Codex CLI login in an
+loads or executes online code. Without it, two built-in **RESEARCH ONLY** RSI momentum hypotheses
+appear for each symbol. They have no profitability or online-discovery claim. Start asks for a
+bounded history window and explicit cost assumptions, then runs the existing Python laboratory on
+MT5 history. Research Results shows the outcome and saved artifact directory. Demo/Live stay locked
+even after positive simulated P&L. Unsupported currency conversions/nonlinear economics are rejected.
+See [M101 development audit and beginner test steps](docs/m101-connected-research.md).
+
+Report requests use an existing local Codex CLI login in an
 ephemeral read-only sandbox. Development requests require an explicit confirmation, a clean Git
 worktree, an inactive Dusty runtime, and a workspace-write sandbox; Codex receives no MT5 order
-surface or broker credential.
+surface or broker credential from Dusty. Desktop tasks are single-flight; development requires a
+restart afterward. These application controls are not an operating-system security boundary against
+another process or a user changing MT5 independently.
 
 ## M66–M75 safety highlights
 

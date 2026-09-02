@@ -198,6 +198,7 @@ class AccountSummary:
     margin_free: float
     trade_allowed: bool
     expert_trading_allowed: bool
+    identity_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         if not self.server.strip() or not self.currency.strip() or not self.login_hint.strip():
@@ -497,7 +498,17 @@ def _account_summary(row: Any, module: Any) -> AccountSummary:
         margin_free=float(_attr(row, "margin_free", 0.0) or 0.0),
         trade_allowed=bool(_attr(row, "trade_allowed", False)),
         expert_trading_allowed=bool(_attr(row, "trade_expert", False)),
+        identity_fingerprint=account_identity_fingerprint(row),
     )
+
+
+def account_identity_fingerprint(row: Any) -> str:
+    """Bind the full login and server without retaining a login in research artifacts."""
+    login = str(_attr(row, "login", "") or "")
+    server = str(_attr(row, "server", "") or "")
+    if not login or not server:
+        return ""
+    return sha256(json.dumps([server, login], separators=(",", ":")).encode()).hexdigest()
 
 
 def _symbol_option(row: Any) -> BrokerSymbolOption:

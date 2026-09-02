@@ -47,6 +47,20 @@ class FakeMT5:
 
 
 class MT5SymbolSnapshotTests(unittest.TestCase):
+    def test_missing_trade_tick_size_does_not_fall_back_to_point(self) -> None:
+        module = FakeMT5()
+        original = module.symbol_info
+        def missing_tick(symbol):
+            row = original(symbol)
+            row.trade_tick_size = 0
+            return row
+        module.symbol_info = missing_tick
+        market = MarketIdentity.of(raw_symbol="EURUSD.a", economic_underlier="EURUSD",
+                                   asset_class=AssetClass.FX, instrument_type=InstrumentType.SPOT)
+        with self.assertRaisesRegex(ValueError, "tick_size"):
+            ReadOnlyMT5Worker(module).symbol_snapshot("terminal64.exe", market)
+        self.assertEqual(module.shutdown_count, 1)
+
     def test_snapshot_preserves_raw_symbol_and_reads_broker_units(self) -> None:
         module = FakeMT5()
         market = MarketIdentity.of(
