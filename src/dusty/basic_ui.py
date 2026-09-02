@@ -16,6 +16,7 @@ from .codex_bridge import (
 )
 from .local_app import LocalDustyApplication
 from .local_research import LocalResearchRuntime, ResearchSettings
+from .research_evaluation import parse_fixed_end
 from .local_terminal import ReadOnlyTerminalSnapshotReader, WindowsMT5Discovery
 from .reviewed_strategies import reviewed_research_packages
 from .strategy_catalog import OperatingMode, load_strategy_catalog
@@ -224,7 +225,9 @@ class DustyBasicUI:
         self._ttk.Label(window, text=(
             "M15 research hypothesis only. No broker orders.\n"
             "Costs are assumptions, NOT verified broker fees.\n"
-            "Swaps/fees are incomplete; results never unlock trading."
+            "Swaps/fees are incomplete; results never unlock trading.\n"
+            "Optional: fixed UTC end + holdout days for a chronological split.\n"
+            "Historical holdout data is NOT proven previously unseen."
         ), padding=12).grid(row=0, column=0, columnspan=2)
         settings = self._research.settings
         variables = []
@@ -236,10 +239,21 @@ class DustyBasicUI:
             variables.append(variable)
             self._ttk.Label(window, text=label).grid(row=index, column=0, padx=12, pady=4, sticky="w")
             self._ttk.Entry(window, textvariable=variable, width=16).grid(row=index, column=1, padx=12, pady=4)
+        fixed_end = self._tk.StringVar(value=settings.fixed_end.strftime("%Y-%m-%d %H:%M") if settings.fixed_end else "")
+        holdout = self._tk.StringVar(value=str(settings.holdout_days))
+        source = self._tk.StringVar(value=settings.cost_source)
+        for index, label, variable in (
+            (5, "Fixed end UTC (YYYY-MM-DD HH:MM; blank = rolling)", fixed_end),
+            (6, "Holdout days (0 = exploratory; less than history days)", holdout),
+            (7, "Cost source / assumptions note (no credentials)", source),
+        ):
+            self._ttk.Label(window, text=label).grid(row=index, column=0, padx=12, pady=4, sticky="w")
+            self._ttk.Entry(window, textvariable=variable, width=28).grid(row=index, column=1, padx=12, pady=4)
 
         def launch() -> None:
             try:
-                self._research.settings = ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]))
+                self._research.settings = ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]),
+                    fixed_end=parse_fixed_end(fixed_end.get()), holdout_days=int(holdout.get()), cost_source=source.get().strip())
             except ValueError as exc:
                 messagebox.showerror("Invalid research setting", str(exc), parent=window)
                 return
@@ -248,7 +262,7 @@ class DustyBasicUI:
             # changes fail closed; this thread never logs in or sends orders.
             self._background(self._application.refresh_account, self._start_after_account_refresh)
 
-        self._ttk.Button(window, text="Run research (no orders)", command=launch).grid(row=5, column=0, columnspan=2, pady=12)
+        self._ttk.Button(window, text="Run research (no orders)", command=launch).grid(row=8, column=0, columnspan=2, pady=12)
 
     def _stop_entries(self) -> None:
         self._guard(lambda: self._finish_action(self._application.stop_new_entries()))
@@ -369,8 +383,12 @@ class DustyBasicUI:
             f"Broker minimum lot: {symbol.volume_min:g} lots · Step: {symbol.volume_step:g} · {symbol.symbol}"
             if symbol and symbol.volume_min > 0 else "Broker minimum lot: unavailable — select a symbol with valid broker economics"
         )
-        self._capital_var.set(view.capital_summary.display() if view.capital_summary else
-                             "Preferred balance (risk sizing only): unavailable — complete research for this selection")
+        capital_text = "Preferred balance (risk sizing only): unavailable — complete research for this selection"
+        if view.capital_summary is not None:
+            capital_text = view.capital_summary.display()
+            if view.capital_label:
+                capital_text = f"{view.capital_label}\n{capital_text}"
+        self._capital_var.set(capital_text)
 
         if view.terminal is None:
             self._account_var.set("No terminal connected")

@@ -548,12 +548,16 @@ def run_laboratory_from_bars(
     session_resolver: SessionResolver | None = None,
     event_block_resolver: EventBlockResolver | None = None,
     health: HealthState = HealthState.HEALTHY,
+    feature_warmup_bars: Iterable[FeatureBar] = (),
+    entry_cutoff: datetime | None = None,
 ) -> LaboratoryRun:
     """Reference chain from completed bars through cognition, two-stage sizing, and MT5 manifests.
 
     This is deliberately a single-symbol, single-position laboratory. It proves semantic wiring;
     portfolio concurrency remains owned by the separate portfolio/backtest layers. Bar-level spread is
     always labeled as historical/proxy evidence; native tick/tester execution is the final authority.
+    Optional past-only warm-up initializes indicators without creating cognition, positions, cash or
+    ledger rows outside the scored bars. An entry cutoff can only veto new entries, never modify exits.
     """
     eligibility = assess_strategy_eligibility(strategy.spec)
     if not eligibility.promotable:
@@ -561,7 +565,13 @@ def run_laboratory_from_bars(
     feature_bars = tuple(bars)
     if not symbol.strip() or not feature_bars:
         raise ValueError("laboratory requires symbol and completed bars")
-    features = compute_standard_features(feature_bars, config.feature_config)
+    warmup = tuple(feature_warmup_bars)
+    if warmup and warmup[-1].at >= feature_bars[0].at:
+        raise ValueError("feature_warmup_must_precede_scored_bars")
+    if entry_cutoff is not None and (entry_cutoff.tzinfo is None or entry_cutoff.utcoffset() is None
+                                    or not feature_bars[0].at < entry_cutoff <= feature_bars[-1].at):
+        raise ValueError("entry_cutoff_must_be_aware_and_inside_scored_bars")
+    features = compute_standard_features(warmup + feature_bars, config.feature_config)[len(warmup):]
     required = _required_feature_keys(strategy)
     baseline_risk = _baseline_risk(
         config.growth_starting_equity,
@@ -620,7 +630,8 @@ def run_laboratory_from_bars(
     potential = generate_runtime_trades(
         strategy,
         runtime_bars,
-        entry_authorizer=lambda row, _: decisions.get(row.at) is expected_entry,
+        entry_authorizer=lambda row, _: (decisions.get(row.at) is expected_entry
+                                        and (entry_cutoff is None or row.at < entry_cutoff)),
     )
     frequency = assess_observed_entry_frequency(trade.entry_at for trade in potential)
     if not frequency.promotable:

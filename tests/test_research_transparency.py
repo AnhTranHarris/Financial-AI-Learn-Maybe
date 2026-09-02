@@ -149,7 +149,7 @@ class NumericalPolicyTests(unittest.TestCase):
             _atomic_json(directory / "request.json", request)
             result = execute_research(selected, ResearchSettings(), directory, START, END, reader=FixtureReader())
             report = json.loads((directory / "report.json").read_text())
-            self.assertEqual(request["schema"], 2)
+            self.assertEqual(request["schema"], 3)
             self.assertEqual(request["runtime"], report["runtime"])
             self.assertEqual(report["capital_summary"]["minimum_lot"], selected.symbol.volume_min)
             self.assertIn("Growth rejection counts:", result["message"])
@@ -323,6 +323,19 @@ class AccountAndDisplayTests(unittest.TestCase):
                 self.assertEqual(str(ui._account_refresh_button.cget("state")), "normal")
                 self.assertEqual(str(ui._mode_buttons[OperatingMode.DEMO].cget("state")), "disabled")
                 self.assertEqual(str(ui._mode_buttons[OperatingMode.LIVE].cget("state")), "disabled")
+                ui._research = SimpleNamespace(settings=ResearchSettings())
+                ui._root.deiconify()
+                ui._root.update_idletasks()
+                ui._start()
+                dialogs = [child for child in ui._root.winfo_children() if isinstance(child, ui._tk.Toplevel)]
+                self.assertEqual(len(dialogs), 1)
+                labels = [str(child.cget("text")) for child in dialogs[0].winfo_children()
+                          if isinstance(child, ui._ttk.Label)]
+                self.assertTrue(any("Fixed end UTC" in label for label in labels))
+                self.assertTrue(any("Holdout days" in label for label in labels))
+                self.assertTrue(any("Cost source" in label for label in labels))
+                dialogs[0].grab_release()
+                dialogs[0].destroy()
             finally:
                 ui._root.destroy()
 

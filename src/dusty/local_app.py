@@ -102,6 +102,7 @@ class LocalApplicationView:
     maintenance_active: bool = False
     restart_required: bool = False
     capital_summary: ResearchCapitalSummary | None = None
+    capital_label: str = ""
 
 
 class LocalDustyApplication:
@@ -317,6 +318,7 @@ class LocalDustyApplication:
             maintenance_active=self._maintenance_active,
             restart_required=self._restart_required,
             capital_summary=capital,
+            capital_label=getattr(job, "capital_label", "") if capital is not None else "",
         )
 
     def _mode_gates(self) -> tuple[ModeGate, ...]:

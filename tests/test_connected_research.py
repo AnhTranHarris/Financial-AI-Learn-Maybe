@@ -285,8 +285,9 @@ class ResearchEvidenceTests(unittest.TestCase):
         for reader in (FixtureReader(), WideSpreadReader()):
             with tempfile.TemporaryDirectory() as root:
                 directory = Path(root)
-                _atomic_json(directory / "request.json", _request_payload(selection(), ResearchSettings(), START, END))
-                execute_research(selection(), ResearchSettings(), directory, START, END, reader=reader)
+                selected = selection()
+                _atomic_json(directory / "request.json", _request_payload(selected, ResearchSettings(), START, END))
+                execute_research(selected, ResearchSettings(), directory, START, END, reader=reader)
                 lab = json.loads((directory / "report.json").read_text())["laboratory"]
                 pnls.append(lab["minimum_lot_backtest"]["net_pnl"])
                 if isinstance(reader, WideSpreadReader):

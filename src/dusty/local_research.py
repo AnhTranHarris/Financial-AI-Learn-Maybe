@@ -29,6 +29,8 @@ from .mt5worker import MT5Bar, _field
 from .reviewed_strategies import resolve_research_package
 from .research_capital import ResearchCapitalSummary, capital_summary_from_report
 from .research_environment import runtime_provenance
+from .research_evaluation import FixedEvaluationPlan, require_m15_utc, run_fixed_evaluation
+from .broker_cost_observation import observe_recent_costs
 from .strategy_catalog import OperatingMode, QualificationBinding
 
 
@@ -38,6 +40,9 @@ class ResearchSettings:
     commission_per_lot: float = 0.0  # round trip, account currency, explicitly unverified
     slippage_points: float = 0.0  # total round-trip adverse price allowance
     spread_floor_points: float = 0.0
+    fixed_end: datetime | None = None
+    holdout_days: int = 0
+    cost_source: str = ""
 
     def __post_init__(self) -> None:
         if type(self.history_days) is not int or not 1 <= self.history_days <= 30:
@@ -45,6 +50,37 @@ class ResearchSettings:
         values = (self.commission_per_lot, self.slippage_points, self.spread_floor_points)
         if any(isinstance(v, bool) or not math.isfinite(v) or v < 0 for v in values):
             raise ValueError("research_costs_must_be_finite_and_nonnegative")
+        if self.fixed_end is not None:
+            require_m15_utc(self.fixed_end)
+        if type(self.holdout_days) is not int or not 0 <= self.holdout_days < self.history_days:
+            raise ValueError("holdout_days_must_be_zero_or_less_than_history_days")
+        if self.holdout_days and self.fixed_end is None:
+            raise ValueError("holdout_requires_a_fixed_UTC_end")
+        if not isinstance(self.cost_source, str) or len(self.cost_source) > 400 or (
+                self.cost_source and not self.cost_source.isprintable()):
+            raise ValueError("cost_source_must_be_one_line_up_to_400_characters")
+
+    def bounds(self, now: datetime) -> tuple[datetime, datetime]:
+        if now.utcoffset() != timedelta(0):
+            raise ValueError("research_clock_requires_UTC")
+        end = self.fixed_end or now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+        if end > now:
+            raise ValueError("fixed_end_is_in_the_future_wait_until_window_completes")
+        return end - timedelta(days=self.history_days), end
+
+    def evaluation_plan(self, start: datetime, end: datetime) -> FixedEvaluationPlan | None:
+        if self.fixed_end is not None and (end != self.fixed_end or start != end - timedelta(days=self.history_days)):
+            raise ValueError("research_window_differs_from_fixed_settings")
+        return FixedEvaluationPlan(start, end - timedelta(days=self.holdout_days), end) if self.holdout_days else None
+
+    def cost_provenance(self) -> dict[str, object]:
+        return {"status": "USER_ASSUMPTIONS_NOT_VERIFIED", "source_note": self.cost_source or "NOT_PROVIDED",
+                "commission_round_trip_per_lot": self.commission_per_lot,
+                "slippage_round_trip_points": self.slippage_points, "spread_floor_points": self.spread_floor_points,
+                "zero_commission_assumed": self.commission_per_lot == 0,
+                "zero_slippage_assumed": self.slippage_points == 0,
+                "spread_basis": "max(configured_floor,availability_bar_proxy_times_point)",
+                "fees_and_swaps_complete": False, "verified_broker_schedule": False}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +90,7 @@ class ResearchJobView:
     run_directory: str = ""
     capital_summary: ResearchCapitalSummary | None = None
     research_scope: str = ""
+    capital_label: str = ""
 
     @property
     def active(self) -> bool:
@@ -103,6 +140,7 @@ class SelectedTerminalHistoryReader:
 
     def __init__(self, module: Any | None = None) -> None:
         self._module = module
+        self.cost_observation: dict[str, object] | None = None
 
     def read(self, selection: RuntimeSelection, start: datetime, end: datetime) -> tuple[tuple[MT5Bar, ...], InstrumentEconomics]:
         if end <= start or end - start > timedelta(days=30):
@@ -154,6 +192,7 @@ class SelectedTerminalHistoryReader:
                 *(int(_field(row, name, index)) for index, name in enumerate(("tick_volume", "spread", "real_volume"), 5)),
             ) for row in rows)
             validate_history(bars, start, end)
+            self.cost_observation = observe_recent_costs(mt5, symbol.symbol, datetime.now(timezone.utc))
             self._verify(mt5, selection)
             return bars, economics
         finally:
@@ -215,8 +254,12 @@ def validate_research_selection(selection: RuntimeSelection) -> None:
 def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, start: datetime, end: datetime) -> dict[str, Any]:
     package = resolve_research_package(selection.strategy)
     terminal = selection.terminal
+    plan = settings.evaluation_plan(start, end)
     return {
-        "schema": 2, "mode": "READ_ONLY_HISTORY_SIMULATION", "promotion_eligible": False,
+        "schema": 3, "mode": "READ_ONLY_HISTORY_SIMULATION", "promotion_eligible": False,
+        "cost_provenance": settings.cost_provenance(),
+        "evaluation_plan": plan.payload() if plan else None,
+        "evaluation_plan_fingerprint": plan.fingerprint if plan else None,
         "runtime": runtime_provenance(), "research_scope": selection.research_scope,
         "code_commit": selection.binding.code_commit, "binding": selection.binding.fingerprint,
         "package_fingerprint": package.fingerprint, "strategy": asdict(package.spec),
@@ -238,7 +281,16 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
     """Testable engine body. Caller provides a new run directory and frozen request."""
     validate_research_selection(selection)
     package = resolve_research_package(selection.strategy)
-    bars, economics = (reader or SelectedTerminalHistoryReader()).read(selection, start, end)
+    plan = settings.evaluation_plan(start, end)
+    # Validate the caller's declared plan against the ex-ante, hashed request before acquisition.
+    if settings.fixed_end is not None:
+        settings.bounds(datetime.now(timezone.utc))
+    frozen = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+    expected = json.loads(_json(_request_payload(selection, settings, start, end)))
+    if frozen != expected:
+        raise ValueError("frozen_request_does_not_match_worker_configuration")
+    history_reader = reader or SelectedTerminalHistoryReader()
+    bars, economics = history_reader.read(selection, start, end)
     validate_history(bars, start, end)
     hashes = {"bars.json": _atomic_json(directory / "bars.json", [asdict(bar) for bar in bars])}
     config = LaboratoryConfig(
@@ -249,9 +301,17 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
         expected_slippage_price=settings.slippage_points * economics.point_size,
     )
     completed = completed_feature_bars_from_mt5(bars)
-    run = run_laboratory_from_bars(package.compiled, completed, symbol=selection.symbol.symbol,
-                                   economics=economics, config=config)
-    report = {"schema": 2, "runtime": runtime_provenance(),
+    evaluation = None
+    if plan is not None:
+        run, evaluation = run_fixed_evaluation(package.compiled, completed, symbol=selection.symbol.symbol,
+                                              economics=economics, config=config, plan=plan)
+    else:
+        run = run_laboratory_from_bars(package.compiled, completed, symbol=selection.symbol.symbol,
+                                      economics=economics, config=config)
+    report = {"schema": 3, "runtime": runtime_provenance(),
+              "cost_provenance": settings.cost_provenance(),
+              "broker_cost_observation": getattr(history_reader, "cost_observation", None),
+              "evaluation": evaluation,
               "economics": asdict(economics), "config": asdict(config), "laboratory": asdict(run)}
     capital = capital_summary_from_report(report, currency=selection.terminal.account.currency,
                                          symbol=selection.symbol.symbol)
@@ -263,6 +323,27 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
         decision = trace.decision.value
         reasons[decision] = reasons.get(decision, 0) + 1
     summary = _summary(run, selection, bars, reasons, capital)
+    cost = report["broker_cost_observation"]
+    cost_status = cost["status"] if cost else "NO_NATIVE_COST_OBSERVATION"
+    cost_text = (f"Cost inputs: USER ASSUMPTIONS — NOT VERIFIED. Source note: {settings.cost_source or 'not provided'}\n"
+                 f"Recent broker cost observation: {cost_status}; "
+                 f"execution deals: {cost['execution_deals'] if cost else 0}. "
+                 "Observed costs never replace the frozen simulation inputs.\n")
+    if evaluation is not None:
+        parts = evaluation["segments"]
+        summary = ("HISTORICAL HOLDOUT COMPLETED — NOT CERTIFIED\n"
+                   "Prior exposure UNKNOWN: this is not proof of untouched out-of-sample data.\n"
+                   f"Fixed UTC acquisition: {start.isoformat()} to {end.isoformat()}\n"
+                   f"Holdout starts: {plan.holdout_start.isoformat()} (availability time)\n"
+                   + "\n".join(f"{name.title()}: {part['observed_bars']} observed bars; "
+                       f"minimum-lot P&L {part['minimum_lot_net_pnl']:.2f}; growth {part['growth_trades']} trades, "
+                       f"P&L {part['growth_net_pnl']:.2f} {selection.terminal.account.currency}; "
+                       f"drawdown {part['growth_drawdown']:.2%}." for name, part in parts.items())
+                   + "\nIndependent flat-start simulations; no capital/position carryover or parameter tuning. "
+                   f"The last {package.spec.exit_plan.max_hold_steps} observations of each segment prohibit new entries.\n"
+                   + cost_text + "\nHOLDOUT DETAILS (preferred balance applies to holdout only):\n" + summary)
+    else:
+        summary += "\n\n" + cost_text
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}
@@ -275,7 +356,8 @@ def _summary(run: LaboratoryRun, selection: RuntimeSelection, bars: tuple[MT5Bar
     return (
         f"RESEARCH COMPLETED — NOT CERTIFIED\n{selection.symbol.symbol} / M15 / {selection.strategy.title}\n"
         f"Actual history: {bars[0].at.isoformat()} to {bars[-1].at.isoformat()}\n"
-        f"{len(bars)} source bars; {run.bar_count} confirmed bars; {gap_count} gaps (not filled).\n"
+        f"{len(bars)} source bars; {len(bars)-1} confirmed in acquisition; "
+        f"{run.bar_count} analyzed in this stage; {gap_count} acquisition gaps (not filled).\n"
         f"Minimum-lot simulation: {minimum.trade_count} trades, P&L {minimum.net_pnl:.2f}\n"
         f"Growth simulation: {growth.trade_count} trades, P&L {growth.net_pnl:.2f} "
         f"{selection.terminal.account.currency}, max marked drawdown {growth.max_drawdown_fraction:.2%}\n"
@@ -361,8 +443,10 @@ class LocalResearchRuntime:
         if not self._code_checker(self.repository, selection.binding.code_commit):
             return RuntimeActionResult(False, "repository_dirty_or_changed_restart_required")
         now = datetime.now(timezone.utc)
-        end = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
-        start = end - timedelta(days=self.settings.history_days)
+        try:
+            start, end = self.settings.bounds(now)
+        except ValueError as exc:
+            return RuntimeActionResult(False, str(exc))
         directory = self.output_directory / uuid4().hex
         try:
             directory.mkdir(parents=True, exist_ok=False)
@@ -409,7 +493,8 @@ class LocalResearchRuntime:
                 report = json.loads((directory / "report.json").read_text(encoding="utf-8"))
                 capital = capital_summary_from_report(report, currency=request["account_currency"],
                                                      symbol=request["symbol"]["symbol"])
-            self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope)
+            label = "HISTORICAL HOLDOUT ONLY" if capital is not None and report.get("evaluation") else ""
+            self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope, label)
         except (OSError, ValueError, KeyError, TypeError):
             self._view = ResearchJobView("FAILED", "research_worker_failed_or_artifact_integrity_error", str(directory))
         return self._view
