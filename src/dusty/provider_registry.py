@@ -22,6 +22,15 @@ class ProviderHealth(str, Enum):
     INSTALLED = "installed"
 
 
+def _exact_revision(value: str | None, label: str) -> None:
+    if value is None:
+        return
+    if len(value) != 40 or any(
+        character not in "0123456789abcdefABCDEF" for character in value
+    ):
+        raise ValueError(f"{label}_must_be_exact_git_sha")
+
+
 @dataclass(frozen=True)
 class ProviderSpec:
     provider_id: str
@@ -32,6 +41,9 @@ class ProviderSpec:
     directory_name: str
     model_revision: str | None = None
     runtime_version: str | None = None
+    source_revision: str | None = None
+    tokenizer_id: str | None = None
+    tokenizer_revision: str | None = None
     capabilities: tuple[str, ...] = ("forecast", "research_evidence")
     mode: ProviderMode = ProviderMode.RESEARCH_ONLY
     broker_write_authority: bool = False
@@ -44,13 +56,13 @@ class ProviderSpec:
             raise ValueError("forecast_contractors_must_be_research_only")
         if self.broker_write_authority or self.promotion_authority:
             raise ValueError("forecast_contractors_cannot_receive_trading_or_promotion_authority")
-        if self.model_revision is not None and (
-            len(self.model_revision) != 40
-            or any(character not in "0123456789abcdefABCDEF" for character in self.model_revision)
-        ):
-            raise ValueError("provider_model_revision_must_be_exact_git_sha")
+        _exact_revision(self.model_revision, "provider_model_revision")
+        _exact_revision(self.source_revision, "provider_source_revision")
+        _exact_revision(self.tokenizer_revision, "provider_tokenizer_revision")
         if self.runtime_version is not None and not self.runtime_version.strip():
             raise ValueError("provider_runtime_version_cannot_be_blank")
+        if (self.tokenizer_id is None) != (self.tokenizer_revision is None):
+            raise ValueError("provider_tokenizer_identity_must_be_complete")
 
 
 @dataclass(frozen=True)
@@ -73,6 +85,9 @@ class ProviderSnapshot:
             "model_id": self.spec.model_id,
             "model_revision": self.spec.model_revision,
             "runtime_version": self.spec.runtime_version,
+            "source_revision": self.spec.source_revision,
+            "tokenizer_id": self.spec.tokenizer_id,
+            "tokenizer_revision": self.spec.tokenizer_revision,
             "license_id": self.spec.license_id,
             "capabilities": list(self.spec.capabilities),
             "mode": self.spec.mode.value,
@@ -102,14 +117,22 @@ FORECAST_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         display_name="Kronos-small",
         kind=ProviderKind.FORECAST,
         model_id="NeoQuasar/Kronos-small",
+        model_revision="901c26c1332695a2a8f243eb2f37243a37bea320",
+        runtime_version="source@67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+        source_revision="67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+        tokenizer_id="NeoQuasar/Kronos-Tokenizer-base",
+        tokenizer_revision="0e0117387f39004a9016484a186a908917e22426",
         license_id="MIT",
         directory_name="Kronos",
+        capabilities=("forecast", "research_evidence", "ohlc_kline"),
     ),
     ProviderSpec(
         provider_id="timesfm-2.5",
         display_name="TimesFM 2.5",
         kind=ProviderKind.FORECAST,
         model_id="google/timesfm-2.5-200m-transformers",
+        model_revision="5a9806b9b291fad9233b5249d88263f1846304d3",
+        runtime_version="transformers==5.16.1",
         license_id="Apache-2.0",
         directory_name="TimesFM25",
     ),
