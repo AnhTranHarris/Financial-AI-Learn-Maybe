@@ -7,6 +7,7 @@ Dusty's core interpreter. Keep imports at module scope standard-library only so
 Dusty's own test environment never needs torch/chronos installed.
 """
 
+import argparse
 from datetime import datetime
 from hashlib import sha256
 from importlib import metadata
@@ -82,13 +83,21 @@ def _validate_request(request: Any) -> dict[str, Any]:
             raise ValueError(f"request_identity_mismatch:{key}")
     symbol = request.get("symbol")
     timeframe = request.get("timeframe")
-    if not isinstance(symbol, str) or not symbol.strip() or not isinstance(timeframe, str) or not timeframe.strip():
+    if (
+        not isinstance(symbol, str)
+        or not symbol.strip()
+        or not isinstance(timeframe, str)
+        or not timeframe.strip()
+    ):
         raise ValueError("request_symbol_or_timeframe_invalid")
     horizon = request.get("horizon_steps")
     if type(horizon) is not int or not 1 <= horizon <= MAX_HORIZON_STEPS:
         raise ValueError("request_horizon_out_of_bounds")
     context = request.get("context")
-    if not isinstance(context, list) or not MIN_CONTEXT_OBSERVATIONS <= len(context) <= MAX_CONTEXT_OBSERVATIONS:
+    if (
+        not isinstance(context, list)
+        or not MIN_CONTEXT_OBSERVATIONS <= len(context) <= MAX_CONTEXT_OBSERVATIONS
+    ):
         raise ValueError("request_context_length_out_of_bounds")
     context_sha = request.get("context_sha256")
     if context_sha != _payload_sha256(tuple(context)):
@@ -102,22 +111,31 @@ def _validate_request(request: Any) -> dict[str, Any]:
         close = row["close"]
         if previous_at is not None and at <= previous_at:
             raise ValueError("request_context_timestamps_not_strictly_increasing")
-        if isinstance(close, bool) or not isinstance(close, (int, float)) or not isfinite(close) or close <= 0:
+        if (
+            isinstance(close, bool)
+            or not isinstance(close, (int, float))
+            or not isfinite(close)
+            or close <= 0
+        ):
             raise ValueError("request_context_close_invalid")
         previous_at = at
 
     as_of = _aware_timestamp(request.get("as_of"), "request_as_of")
     if as_of != previous_at:
         raise ValueError("request_as_of_must_equal_last_completed_observation")
-    # Return the validated request unchanged so its SHA-256 identity is stable.
     return dict(request)
 
 
-def _extract_last_horizon_quantiles(tensor: Any, horizon_steps: int) -> tuple[float, float, float]:
+def _extract_last_horizon_quantiles(
+    tensor: Any, horizon_steps: int
+) -> tuple[float, float, float]:
     values = tensor.detach().cpu()
     if values.ndim == 3 and values.shape[0] == 1:
         values = values[0]
-    if values.ndim != 2 or tuple(values.shape) != (horizon_steps, len(QUANTILE_LEVELS)):
+    if values.ndim != 2 or tuple(values.shape) != (
+        horizon_steps,
+        len(QUANTILE_LEVELS),
+    ):
         raise ValueError(f"unexpected_chronos_quantile_shape:{tuple(values.shape)}")
     p10, p50, p90 = (float(value) for value in values[-1].tolist())
     if any(not isfinite(value) or value <= 0 for value in (p10, p50, p90)):
@@ -127,25 +145,35 @@ def _extract_last_horizon_quantiles(tensor: Any, horizon_steps: int) -> tuple[fl
     return p10, p50, p90
 
 
-def _run(request: dict[str, Any]) -> dict[str, object]:
+def _load_runtime() -> tuple[Any, Any, str]:
     installed_version = metadata.version("chronos-forecasting")
     if installed_version != RUNTIME_VERSION:
         raise RuntimeError(
-            f"chronos_runtime_version_mismatch:expected={RUNTIME_VERSION}:actual={installed_version}"
+            "chronos_runtime_version_mismatch:"
+            f"expected={RUNTIME_VERSION}:actual={installed_version}"
         )
 
-    # Heavy provider imports intentionally happen only inside the provider process.
     import torch
     from chronos import BaseChronosPipeline
 
     torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
-    closes = [float(row["close"]) for row in request["context"]]
     pipeline = BaseChronosPipeline.from_pretrained(
         MODEL_ID,
         revision=MODEL_REVISION,
         device_map="cpu",
         local_files_only=True,
     )
+    return torch, pipeline, installed_version
+
+
+def _run_loaded(
+    request: dict[str, Any],
+    *,
+    torch: Any,
+    pipeline: Any,
+    installed_version: str,
+) -> dict[str, object]:
+    closes = [float(row["close"]) for row in request["context"]]
     quantiles, _point = pipeline.predict_quantiles(
         [torch.tensor(closes, dtype=torch.float32)],
         prediction_length=int(request["horizon_steps"]),
@@ -174,21 +202,83 @@ def _run(request: dict[str, Any]) -> dict[str, object]:
     }
 
 
-def main() -> int:
+def _run(request: dict[str, Any]) -> dict[str, object]:
+    torch, pipeline, installed_version = _load_runtime()
+    return _run_loaded(
+        request,
+        torch=torch,
+        pipeline=pipeline,
+        installed_version=installed_version,
+    )
+
+
+def _ready_event(installed_version: str) -> dict[str, object]:
+    return {
+        "event": "ready",
+        "protocol": PROTOCOL,
+        "provider_id": PROVIDER_ID,
+        "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
+        "provider_version": installed_version,
+    }
+
+
+def _write_stdout(payload: object) -> None:
+    sys.stdout.write(_canonical_json(payload))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _write_error(exc: Exception) -> None:
+    sys.stderr.write(f"{type(exc).__name__}: {exc}\n")
+    sys.stderr.flush()
+
+
+def _run_one_shot() -> int:
     try:
         raw = sys.stdin.read()
         if not raw.strip():
             raise ValueError("empty_provider_request")
         request = _validate_request(json.loads(raw))
         response = _run(request)
-        sys.stdout.write(_canonical_json(response))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        _write_stdout(response)
         return 0
     except Exception as exc:
-        sys.stderr.write(f"{type(exc).__name__}: {exc}\n")
-        sys.stderr.flush()
+        _write_error(exc)
         return 2
+
+
+def _run_persistent() -> int:
+    try:
+        torch, pipeline, installed_version = _load_runtime()
+        _write_stdout(_ready_event(installed_version))
+    except Exception as exc:
+        _write_error(exc)
+        return 2
+
+    for raw in sys.stdin:
+        if not raw.strip():
+            continue
+        try:
+            request = _validate_request(json.loads(raw))
+            response = _run_loaded(
+                request,
+                torch=torch,
+                pipeline=pipeline,
+                installed_version=installed_version,
+            )
+            _write_stdout(response)
+        except Exception as exc:
+            _write_error(exc)
+            return 2
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--persistent", action="store_true")
+    args = parser.parse_args(argv)
+    return _run_persistent() if args.persistent else _run_one_shot()
 
 
 if __name__ == "__main__":
