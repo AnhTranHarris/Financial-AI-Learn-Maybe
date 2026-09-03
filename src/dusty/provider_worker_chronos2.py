@@ -7,6 +7,7 @@ Dusty's core interpreter. Keep imports at module scope standard-library only so
 Dusty's own test environment never needs torch/chronos installed.
 """
 
+from datetime import datetime
 from hashlib import sha256
 from importlib import metadata
 import json
@@ -26,6 +27,23 @@ QUANTILE_LEVELS = (0.1, 0.5, 0.9)
 MIN_CONTEXT_OBSERVATIONS = 32
 MAX_CONTEXT_OBSERVATIONS = 2048
 MAX_HORIZON_STEPS = 64
+REQUEST_FIELDS = frozenset(
+    {
+        "protocol",
+        "provider_id",
+        "model_id",
+        "model_revision",
+        "runtime_version",
+        "symbol",
+        "timeframe",
+        "as_of",
+        "horizon_steps",
+        "target",
+        "quantile_levels",
+        "context_sha256",
+        "context",
+    }
+)
 
 
 def _canonical_json(payload: object) -> str:
@@ -36,9 +54,20 @@ def _payload_sha256(payload: object) -> str:
     return sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def _aware_timestamp(value: object, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label}_invalid")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label}_must_be_timezone_aware")
+    return parsed
+
+
 def _validate_request(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise TypeError("request_must_be_object")
+    if set(request) != REQUEST_FIELDS:
+        raise ValueError("request_schema_has_missing_or_unexpected_fields")
     expected = {
         "protocol": PROTOCOL,
         "provider_id": PROVIDER_ID,
@@ -61,24 +90,27 @@ def _validate_request(request: Any) -> dict[str, Any]:
     context = request.get("context")
     if not isinstance(context, list) or not MIN_CONTEXT_OBSERVATIONS <= len(context) <= MAX_CONTEXT_OBSERVATIONS:
         raise ValueError("request_context_length_out_of_bounds")
+    context_sha = request.get("context_sha256")
+    if context_sha != _payload_sha256(tuple(context)):
+        raise ValueError("request_context_sha256_mismatch")
+
     normalized_context: list[dict[str, object]] = []
-    previous_at = ""
+    previous_at: datetime | None = None
     for row in context:
         if not isinstance(row, dict) or set(row) != {"at", "close"}:
             raise ValueError("request_context_row_schema_invalid")
-        at = row["at"]
+        at = _aware_timestamp(row["at"], "request_context_timestamp")
         close = row["close"]
-        if not isinstance(at, str) or not at or (previous_at and at <= previous_at):
+        if previous_at is not None and at <= previous_at:
             raise ValueError("request_context_timestamps_not_strictly_increasing")
         if isinstance(close, bool) or not isinstance(close, (int, float)) or not isfinite(close) or close <= 0:
             raise ValueError("request_context_close_invalid")
         previous_at = at
-        normalized_context.append({"at": at, "close": float(close)})
-    if request.get("as_of") != normalized_context[-1]["at"]:
+        normalized_context.append({"at": str(row["at"]), "close": float(close)})
+
+    as_of = _aware_timestamp(request.get("as_of"), "request_as_of")
+    if as_of != previous_at:
         raise ValueError("request_as_of_must_equal_last_completed_observation")
-    context_sha = request.get("context_sha256")
-    if context_sha != _payload_sha256(tuple(normalized_context)):
-        raise ValueError("request_context_sha256_mismatch")
     normalized = dict(request)
     normalized["context"] = normalized_context
     return normalized
