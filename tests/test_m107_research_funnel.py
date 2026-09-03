@@ -75,13 +75,16 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
                                    require_positive_net_pnl=False),
                 acquire=acquire,
             )
+            cached_raw, cached_economics = decode_acquisition(second)
 
         self.assertEqual(calls, 1)
         self.assertFalse(first.cache_hit)
         self.assertTrue(second.cache_hit)
+        self.assertEqual(cached_raw, self.raw)
+        self.assertEqual(cached_economics, self.economics)
         self.assertEqual(
             tuple(name for name, _ in first.outputs),
-            ("acquisition", "features", "challengers", "cheap-screen", "diagnostics", "fidelity-queue"),
+            ("acquisition", "features", "challengers", "cheap_screen", "diagnostics", "fidelity_queue"),
         )
         self.assertEqual(len(first.output_map()["challengers"]["candidates"]), 3)
 
@@ -110,7 +113,7 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
                 acquire=lambda: (self.raw, self.economics),
             )
         outputs = result.output_map()
-        cases = outputs["cheap-screen"]["cases"]
+        cases = outputs["cheap_screen"]["cases"]
         self.assertEqual(len(cases), 3)
         for case in cases:
             self.assertEqual(set(case["scenarios"]), {"configured", "stress"})
@@ -146,7 +149,7 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
                 policy=permissive,
                 acquire=lambda: (self.raw, self.economics),
             )
-        queue = result.output_map()["fidelity-queue"]
+        queue = result.output_map()["fidelity_queue"]
         self.assertEqual(queue["status"], "BUDGET_BLOCKED_TOO_MANY_SURVIVORS")
         self.assertEqual(queue["proposals"], [])
         self.assertFalse(queue["ranking_performed"])
