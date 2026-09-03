@@ -18,6 +18,7 @@ from .codex_bridge import (
 )
 from .local_app import LocalDustyApplication
 from .local_research import LocalResearchRuntime, ResearchSettings
+from .provider_registry import ProviderRegistry
 from .research_evaluation import parse_fixed_end
 from .research_diagnosis import TRADE_DETAILS_SEPARATOR
 from .local_terminal import ReadOnlyTerminalSnapshotReader, WindowsMT5Discovery
@@ -35,6 +36,7 @@ class DustyBasicUI:
         *,
         code_commit: str,
         research: LocalResearchRuntime | None = None,
+        providers: ProviderRegistry | None = None,
     ) -> None:
         import tkinter as tk
         from tkinter import ttk
@@ -45,6 +47,7 @@ class DustyBasicUI:
         self._codex = codex
         self._code_commit = code_commit
         self._research = research
+        self._providers = providers
         self._events: queue.Queue = queue.Queue()
         self._busy = False
         self._closing = False
@@ -63,7 +66,9 @@ class DustyBasicUI:
         self._position_var = tk.StringVar(value="Positions: —   Orders: —   Recent deals: —")
         self._lot_var = tk.StringVar(value="Broker minimum lot: select a symbol")
         self._capital_var = tk.StringVar(value="Preferred balance (risk sizing only): run research first")
+        self._provider_status_var = tk.StringVar(value="Forecast contractors: discovery unavailable")
         self._build()
+        self._refresh_provider_status()
         self._root.protocol("WM_DELETE_WINDOW", self._close)
         self._root.after(100, self._poll)
         self._refresh()
@@ -138,6 +143,9 @@ class DustyBasicUI:
         ttk.Label(status, textvariable=self._position_var).pack(anchor="w", pady=2)
         ttk.Label(status, textvariable=self._lot_var, wraplength=730).pack(anchor="w", pady=2)
         ttk.Label(status, textvariable=self._capital_var, wraplength=730).pack(anchor="w", pady=6)
+        ttk.Label(status, textvariable=self._provider_status_var, wraplength=730).pack(anchor="w", pady=2)
+        self._providers_button = ttk.Button(status, text="Forecast Contractors", command=self._show_providers)
+        self._providers_button.pack(anchor="w", pady=4)
         ttk.Label(status, textvariable=self._status_var, wraplength=640).pack(anchor="w", pady=2)
         self._results_button = ttk.Button(status, text="Last Research Results", command=self._show_research_result)
         self._results_button.pack(anchor="w", pady=8)
@@ -337,6 +345,53 @@ class DustyBasicUI:
 
         self._ttk.Button(window, text="Copy receipt", command=copy).pack(pady=10)
         self._render(self._application.view())
+
+    def _refresh_provider_status(self) -> None:
+        if self._providers is None:
+            self._provider_status_var.set("Forecast contractors: discovery unavailable")
+            return
+        snapshots = self._providers.discover()
+        installed = sum(snapshot.selectable for snapshot in snapshots)
+        self._provider_status_var.set(
+            f"Forecast contractors: {installed}/{len(snapshots)} installed · discovery only; no model started"
+        )
+
+    def _show_providers(self) -> None:
+        if self._providers is None:
+            self._show_error("Forecast contractor discovery is not configured.")
+            return
+        self._refresh_provider_status()
+        window = self._tk.Toplevel(self._root)
+        window.title("Forecast contractors — read-only discovery")
+        window.transient(self._root)
+        frame = self._ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        self._ttk.Label(
+            frame,
+            text=(
+                "Dusty only checks isolated provider directories here. No model process is started.\n"
+                "Providers remain RESEARCH_ONLY with no broker-write or promotion authority.\n"
+                "Installed means the isolated Python executable exists; runtime model health is not yet certified."
+            ),
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 10))
+        headings = ("Provider", "Health", "Model", "License", "Location")
+        for column, heading in enumerate(headings):
+            self._ttk.Label(frame, text=heading).grid(row=1, column=column, sticky="w", padx=(0, 14), pady=4)
+        for row_index, snapshot in enumerate(self._providers.discover(), start=2):
+            values = (
+                snapshot.spec.display_name,
+                snapshot.health.value.upper(),
+                snapshot.spec.model_id,
+                snapshot.spec.license_id,
+                str(snapshot.root),
+            )
+            for column, value in enumerate(values):
+                self._ttk.Label(frame, text=value, wraplength=360 if column == 4 else 220).grid(
+                    row=row_index, column=column, sticky="w", padx=(0, 14), pady=4
+                )
+        self._ttk.Button(frame, text="Refresh discovery", command=self._refresh_provider_status).grid(
+            row=6, column=0, sticky="w", pady=(12, 0)
+        )
 
     def _show_plans(self) -> None:
         if self._research is None or self._busy or self._application.runtime_active:
@@ -675,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--catalog", type=Path, help="reviewed non-executable strategy catalog JSON")
     parser.add_argument("--repository", type=Path, default=Path.cwd(), help="Dusty Git repository")
     parser.add_argument("--research-directory", type=Path, help="local artifacts outside the Git repository")
+    parser.add_argument("--provider-root", type=Path, help="optional isolated provider root; defaults to ~/DustyProviders")
     args = parser.parse_args(argv)
     repository = args.repository.resolve()
     if Path(__file__).resolve() != repository / "src" / "dusty" / "basic_ui.py":
@@ -692,7 +748,13 @@ def main(argv: list[str] | None = None) -> int:
         code_commit=commit,
         runtime=research,
     )
-    DustyBasicUI(application, CodexCLIReporter(repository), code_commit=commit, research=research).run()
+    DustyBasicUI(
+        application,
+        CodexCLIReporter(repository),
+        code_commit=commit,
+        research=research,
+        providers=ProviderRegistry(args.provider_root),
+    ).run()
     return 0
 
 
