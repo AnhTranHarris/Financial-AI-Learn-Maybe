@@ -133,11 +133,20 @@ def _serialize_source_bars(rows: tuple[MT5Bar, ...]) -> list[dict[str, Any]]:
     return [asdict(row) for row in rows]
 
 
+def _as_datetime(value: Any) -> datetime:
+    """Normalize fresh in-process datetimes and JSON-resumed ISO timestamps identically."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    raise ValueError("funnel_timestamp_must_be_datetime_or_iso_string")
+
+
 def _source_bars(payload: Mapping[str, Any]) -> tuple[MT5Bar, ...]:
     rows = []
     for raw in payload["source_bars"]:
         values = dict(raw)
-        values["at"] = datetime.fromisoformat(values["at"])
+        values["at"] = _as_datetime(values["at"])
         rows.append(MT5Bar(**values))
     return tuple(rows)
 
@@ -146,9 +155,9 @@ def _feature_bars(payload: Mapping[str, Any]) -> tuple[FeatureBar, ...]:
     rows = []
     for raw in payload["feature_bars"]:
         values = dict(raw)
-        values["at"] = datetime.fromisoformat(values["at"])
+        values["at"] = _as_datetime(values["at"])
         if values.get("source_open_at") is not None:
-            values["source_open_at"] = datetime.fromisoformat(values["source_open_at"])
+            values["source_open_at"] = _as_datetime(values["source_open_at"])
         rows.append(FeatureBar(**values))
     return tuple(rows)
 
@@ -405,7 +414,7 @@ class UnifiedResearchFunnel:
                 * economics.point_size / economics.tick_size * economics.tick_value
             )
             rows = []
-            for case in outputs["cheap-screen"]["cases"]:
+            for case in outputs["cheap_screen"]["cases"]:
                 configured = case["scenarios"]["configured"]["segments"]
                 stress = case["scenarios"]["stress"]["segments"]
                 for segment in ("development", "holdout"):
@@ -447,7 +456,7 @@ class UnifiedResearchFunnel:
             }
 
         def fidelity_stage(outputs: Mapping[str, Any]) -> dict[str, Any]:
-            survivors = outputs["cheap-screen"]["survivor_ids"]
+            survivors = outputs["cheap_screen"]["survivor_ids"]
             by_id = {row["candidate_id"]: row for row in outputs["challengers"]["candidates"]}
             if len(survivors) > policy.screen.max_native_candidates:
                 return {
@@ -487,9 +496,9 @@ class UnifiedResearchFunnel:
             ResearchStage("acquisition", "1", acquisition_stage),
             ResearchStage("features", "1", feature_stage),
             ResearchStage("challengers", "1", challenger_stage),
-            ResearchStage("cheap-screen", "1", cheap_screen_stage),
+            ResearchStage("cheap_screen", "1", cheap_screen_stage),
             ResearchStage("diagnostics", "1", diagnostic_stage),
-            ResearchStage("fidelity-queue", "1", fidelity_stage),
+            ResearchStage("fidelity_queue", "1", fidelity_stage),
         )
         return self._cycle.run(identity, stages)
 
@@ -503,9 +512,9 @@ def compact_funnel_report(result: ResearchCycleResult) -> dict[str, Any]:
         "cache_hit": result.cache_hit,
         "reused_stages": list(result.reused_stages),
         "challengers": outputs["challengers"],
-        "cheap_screen": outputs["cheap-screen"],
+        "cheap_screen": outputs["cheap_screen"],
         "diagnostics": outputs["diagnostics"],
-        "fidelity_queue": outputs["fidelity-queue"],
+        "fidelity_queue": outputs["fidelity_queue"],
         "promotion_eligible": False,
         "selected_winner": None,
     }
