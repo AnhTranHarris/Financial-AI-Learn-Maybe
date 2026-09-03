@@ -84,7 +84,7 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
         self.assertEqual(cached_economics, self.economics)
         self.assertEqual(
             tuple(name for name, _ in first.outputs),
-            ("acquisition", "features", "challengers", "cheap_screen", "diagnostics", "fidelity_queue"),
+            ("acquisition", "features", "challengers", "cheapscreen", "diagnostics", "fidelityqueue"),
         )
         self.assertEqual(len(first.output_map()["challengers"]["candidates"]), 3)
 
@@ -113,7 +113,7 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
                 acquire=lambda: (self.raw, self.economics),
             )
         outputs = result.output_map()
-        cases = outputs["cheap_screen"]["cases"]
+        cases = outputs["cheapscreen"]["cases"]
         self.assertEqual(len(cases), 3)
         for case in cases:
             self.assertEqual(set(case["scenarios"]), {"configured", "stress"})
@@ -149,7 +149,7 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
                 policy=permissive,
                 acquire=lambda: (self.raw, self.economics),
             )
-        queue = result.output_map()["fidelity_queue"]
+        queue = result.output_map()["fidelityqueue"]
         self.assertEqual(queue["status"], "BUDGET_BLOCKED_TOO_MANY_SURVIVORS")
         self.assertEqual(queue["proposals"], [])
         self.assertFalse(queue["ranking_performed"])
@@ -167,6 +167,8 @@ class UnifiedResearchFunnelTests(unittest.TestCase):
         report = compact_funnel_report(result)
         self.assertNotIn("acquisition", report)
         self.assertNotIn("features", report)
+        self.assertIn("cheap_screen", report)
+        self.assertIn("fidelity_queue", report)
         self.assertIsNone(report["selected_winner"])
         self.assertFalse(report["promotion_eligible"])
 
