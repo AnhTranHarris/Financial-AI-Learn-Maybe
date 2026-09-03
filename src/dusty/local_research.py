@@ -32,6 +32,7 @@ from .research_environment import runtime_provenance
 from .research_evaluation import FixedEvaluationPlan, require_m15_utc, run_fixed_evaluation
 from .research_comparison import comparison_contract, comparison_summary, run_research_comparison
 from .research_diagnosis import DIAGNOSIS_PROTOCOL, TRADE_DETAILS_SEPARATOR
+from .research_campaign import campaign_contract, run_forecast_campaign, campaign_summary
 from .broker_cost_observation import observe_recent_costs
 from .prospective_research import ProspectiveRegistry, validate_for_evaluation, screen_result
 from .strategy_catalog import OperatingMode, QualificationBinding
@@ -47,6 +48,7 @@ class ResearchSettings:
     holdout_days: int = 0
     cost_source: str = ""
     comparison: bool = False
+    campaign: bool = False
 
     def __post_init__(self) -> None:
         if type(self.history_days) is not int or not 1 <= self.history_days <= 30:
@@ -67,9 +69,24 @@ class ResearchSettings:
             raise ValueError("comparison_flag_must_be_boolean")
         if self.comparison and (self.fixed_end is None or not self.holdout_days or not self.cost_source.strip()):
             raise ValueError("comparison_requires_fixed_UTC_end_positive_holdout_days_and_cost_note")
+        if type(self.campaign) is not bool:
+            raise ValueError("campaign_flag_must_be_boolean")
+        if self.campaign:
+            if self.comparison or self.fixed_end is None or not self.holdout_days or not self.cost_source.strip():
+                raise ValueError("campaign_requires_fixed_end_holdout_cost_note_and_no_comparison_flag")
+            campaign_contract(self.fixed_end-timedelta(days=self.history_days), self.fixed_end, self.holdout_days)
 
     def window_preview(self, now: datetime) -> str:
         start, end = self.bounds(now)
+        if self.campaign:
+            contract = campaign_contract(start, end, self.holdout_days)
+            return ("FITTED FORECAST CAMPAIGN — HISTORICAL RESEARCH ONLY\n"
+                    f"Acquisition: {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC\n"
+                    + "\n".join(f"{f['id']}: {f['start']:%Y-%m-%d %H:%M} to {f['end']:%Y-%m-%d %H:%M} UTC"
+                                for f in contract["folds"])
+                    + "\nPast-only expanding training, frozen coefficients within each fold."
+                    "\n30 cases, one symbol, independent capital resets, two cost assumptions."
+                    "\nNo automatic winner, retries, prospective-plan changes or broker orders.")
         plan = self.evaluation_plan(start, end)
         if plan is None:
             return (f"WHOLE-WINDOW EXPLORATION — NO HOLDOUT (holdout days = 0)\n"
@@ -286,7 +303,7 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
         "package_fingerprint": package.fingerprint, "strategy": asdict(package.spec),
         "feature_config": asdict(package.features), "cognition_policy": asdict(package.cognition),
         "symbol": asdict(selection.symbol), "timeframe": "M15", "start": start, "end": end,
-        "settings": {k: v for k, v in asdict(settings).items() if k != "comparison" or v},
+        "settings": {k: v for k, v in asdict(settings).items() if k not in ("comparison", "campaign") or v},
         "snapshot_at": terminal.captured_at,
         "account_fingerprint": terminal.account.identity_fingerprint,
         "account_currency": terminal.account.currency, "account_mode": terminal.account.mode,
@@ -301,6 +318,10 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
             raise ValueError("comparison_cannot_register_or_consume_prospective_plans")
         payload["comparison_contract"] = comparison_contract()
         payload["diagnostic_protocol"] = DIAGNOSIS_PROTOCOL
+    if settings.campaign:
+        if registration is not None:
+            raise ValueError("campaign_cannot_register_or_consume_prospective_plans")
+        payload["campaign_contract"] = campaign_contract(start, end, settings.holdout_days)
     if registration is not None:
         validate_for_evaluation(registration, json.loads(_json(payload)), datetime.now(timezone.utc))
         payload["growth_starting_balance"] = registration["payload"]["request"]["growth_starting_balance"]
@@ -351,6 +372,20 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
             raise ValueError("comparison_requires_historical_split")
         report["comparison"] = run_research_comparison(completed, symbol=selection.symbol.symbol,
                                                       economics=economics, config=config, plan=plan)
+    if settings.campaign:
+        case_hashes = {}
+
+        def checkpoint(queue, case):
+            if case is not None:
+                filename = case["id"] + ".json"
+                case_hashes[filename] = _atomic_json(directory / filename, case)
+            _atomic_json(directory / "queue.json", {"queue": queue, "case_sha256": case_hashes,
+                "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
+                "promotion_eligible": False})
+
+        report["campaign"] = run_forecast_campaign(completed, symbol=selection.symbol.symbol,
+            economics=economics, config=config, contract=campaign_contract(start, end, settings.holdout_days),
+            checkpoint=checkpoint)
     if registration is not None:
         report["prospective_registration"] = registration
         report["prospective_screen"] = screen_result(registration, json.loads(_json(asdict(run))))
@@ -404,6 +439,9 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
         overview, _, details = compared.partition(TRADE_DETAILS_SEPARATOR)
         summary = (overview + "\n\nSELECTED SEED BASELINE DETAILS ONLY (not a chosen winner):\n" + summary
                    + TRADE_DETAILS_SEPARATOR + details)
+    if settings.campaign:
+        summary = (campaign_summary(report["campaign"], selection.terminal.account.currency)
+                   + "\n\nSELECTED SEED BASELINE ONLY — NOT A CAMPAIGN WINNER:\n" + summary)
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}
@@ -452,6 +490,7 @@ def _research_worker(selection: RuntimeSelection, settings: ResearchSettings, di
         # Do not persist raw vendor exception strings (may contain login/path details).
         message = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         result = {"state": "FAILED", "message": message, "promotion_eligible": False}
+        _seal_campaign_queue(directory, "FAILED")
     _atomic_json(directory / "result.json", result)
 
 
@@ -492,7 +531,7 @@ class LocalResearchRuntime:
         if error:
             raise ValueError(error)
         settings = self.settings
-        if settings.comparison:
+        if settings.comparison or settings.campaign:
             raise ValueError("comparison_cannot_register_or_consume_prospective_plans")
         if settings.fixed_end is None or not settings.holdout_days or not settings.cost_source.strip():
             raise ValueError("registration_requires_fixed_end_holdout_and_cost_note")
@@ -582,6 +621,16 @@ class LocalResearchRuntime:
         if process.is_alive():
             if time.monotonic() - self._started > self.timeout_seconds and not self._cancel_reason:
                 self._cancel("research_timeout")
+            elif not self._cancel_reason:
+                try:
+                    progress = json.loads((Path(self._view.run_directory) / "queue.json").read_text(encoding="utf-8"))
+                    queue = progress["queue"]
+                    if progress["request_sha256"] == self._request_hash and len(queue) == 30:
+                        done = sum(row["state"] == "COMPLETED" for row in queue)
+                        self._view = ResearchJobView("RUNNING", f"Forecast campaign: {done}/30 cases completed; no orders",
+                                                     self._view.run_directory)
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass  # Progress is advisory; final artifacts must pass the full hash checks.
             return self._view
         process.join(timeout=0)
         exitcode = process.exitcode
@@ -593,6 +642,7 @@ class LocalResearchRuntime:
             self._view = ResearchJobView(state, self._cancel_reason, str(directory))
             # A completion racing cancellation is superseded, never reported as a pass.
             _atomic_json(directory / "result.json", {"state": state, "message": self._cancel_reason, "promotion_eligible": False})
+            _seal_campaign_queue(directory, state)
             return self._view
         try:
             result = read_research_result(directory, expected_request_hash=self._request_hash)
@@ -609,9 +659,12 @@ class LocalResearchRuntime:
                 label = "REGISTERED HOLDOUT ONLY — LOCAL CLOCK EVIDENCE"
             if capital is not None and report.get("comparison"):
                 label = "SELECTED SEED HOLDOUT ONLY — COMPARISON SELECTS NO WINNER"
+            if capital is not None and report.get("campaign"):
+                label = "SELECTED SEED BASELINE ONLY — CAMPAIGN SELECTS NO WINNER"
             self._view = ResearchJobView(result["state"], result["message"], str(directory), capital, self._research_scope, label)
         except (OSError, ValueError, KeyError, TypeError):
             self._view = ResearchJobView("FAILED", "research_worker_failed_or_artifact_integrity_error", str(directory))
+            _seal_campaign_queue(directory, "FAILED")
         return self._view
 
     def _cancel(self, reason: str) -> RuntimeActionResult:
@@ -628,6 +681,21 @@ class LocalResearchRuntime:
 
     def emergency_halt(self) -> RuntimeActionResult:
         return self._cancel("research_halted_by_user")
+
+
+def _seal_campaign_queue(directory: Path, state: str) -> None:
+    """Keep completed case evidence; never resume or relabel unfinished work as passed."""
+    try:
+        path = directory / "queue.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for row in payload["queue"]:
+            if row["state"] == "RUNNING":
+                row["state"] = state
+            elif row["state"] == "PENDING":
+                row["state"] = "NOT_RUN"
+        _atomic_json(path, payload)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # Missing/corrupt checkpoints cannot create a successful result.
 
 
 def read_research_result(directory: Path, *, expected_request_hash: str | None = None) -> dict[str, Any]:

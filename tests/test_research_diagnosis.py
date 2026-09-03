@@ -306,7 +306,8 @@ class DiagnosticIntegrationTests(unittest.TestCase):
                 ui._show_research_result()
                 window = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel))
                 book = next(w for w in window.winfo_children() if isinstance(w, ttk.Notebook))
-                texts = [next(w for w in frame.winfo_children() if isinstance(w, tk.Text)) for frame in book.winfo_children()]
+                texts = [next(w for w in frame.winfo_children() if isinstance(w, tk.Text))
+                         for frame in book.winfo_children()[:2]]
                 self.assertIn("Reading history", texts[0].get("1.0", "end"))
                 current.runtime_message = "COMPLETED"+TRADE_DETAILS_SEPARATOR+"Trade cash details"
                 callbacks.pop(0)()

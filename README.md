@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M106 plus investment-trust remediation**.
+Current engineering phase: **M0–M110 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -52,7 +52,7 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading remains outside the currently authorized implementation, including M106.
+15. Live trading remains outside the currently authorized implementation, including M107–M110.
 16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
 17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
@@ -134,6 +134,7 @@ public strategies / free event context / MT5 history
 - **M104 — prospective evidence foundation:** freeze a future holdout before its start, preserve a copyable receipt, bind costs/rules/runtime/capital, and allow one journaled evaluation attempt after the end. Reconcile supported closed-position cash only after bounded full-position history reads. No automatic timers, trading approval, independently trusted timestamp or verified broker tariff is implied.
 - **M105 — research comparison and abstention:** compare both frozen seeds, their completed-bar trend vetoes and a no-trade control across two cost assumptions and two historical segments. Retain all 20 cases, their cash ledgers, sizing and veto reasons. Preview/confirm dates; zero holdout is explicitly whole-window research. Demo/Live remain locked.
 - **M106 — post-run trade diagnosis:** record entry features/rules, exit reasons, rejected growth entries and reconciled price/cost cash for all comparison trades. Separate direct cost stress at baseline sizes from sizing/selection effects. Read-only results have Summary and Trade diagnosis tabs and refresh during research. No strategy or risk-rule changes; no causal or profitability certification.
+- **M107–M110 — one integrated research release:** a locally fitted, frozen-per-fold return forecast; chronological scoring against training-mean and no-change baselines; a 30-case, three-fold queue with checkpoints; and a Cases & trades browser with rounded display and full-precision saved evidence. Forecasts can veto seed entries but cannot override risk. No foundation-model downloads, automatic winner, prospective-plan migration, or trading authority.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
@@ -204,6 +205,12 @@ Install M105 separately; do not silently migrate or rebind the old receipt.
 
 M106 adds a **Trade diagnosis** tab to comparison results. Follow the
 [M106 boundaries and safe update instructions](docs/m106-trade-diagnosis.md).
+
+The [M107–M110 bundled update](docs/m107-m110-forecast-campaign.md) adds **Run forecast campaign**
+to the assumption sheet and **Cases & trades** to results. It uses the existing read-only MT5 worker.
+One past fixed-end acquisition drives all 30 cases; no repeated manual runs are needed. Existing
+future receipts remain bound to their original installation, code and runtime; never overwrite that
+environment to run this bundle.
 The original M104 environment and future receipt remain separate and untouched.
 
 Report requests use an existing local Codex CLI login in an

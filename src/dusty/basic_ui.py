@@ -256,10 +256,10 @@ class DustyBasicUI:
             self._ttk.Label(window, text=label).grid(row=index, column=0, padx=12, pady=4, sticky="w")
             self._ttk.Entry(window, textvariable=variable, width=28).grid(row=index, column=1, padx=12, pady=4)
 
-        def read_settings(comparison: bool = False) -> ResearchSettings:
+        def read_settings(comparison: bool = False, campaign: bool = False) -> ResearchSettings:
             return ResearchSettings(int(variables[0].get()), *(float(v.get()) for v in variables[1:]),
                 fixed_end=parse_fixed_end(fixed_end.get()), holdout_days=int(holdout.get()),
-                cost_source=source.get().strip(), comparison=comparison)
+                cost_source=source.get().strip(), comparison=comparison, campaign=campaign)
 
         def preview() -> None:
             try:
@@ -267,9 +267,9 @@ class DustyBasicUI:
             except ValueError as exc:
                 messagebox.showerror("Invalid research setting", str(exc), parent=window)
 
-        def launch(register: bool = False, comparison: bool = False) -> None:
+        def launch(register: bool = False, comparison: bool = False, campaign: bool = False) -> None:
             try:
-                proposed = read_settings(comparison)
+                proposed = read_settings(comparison, campaign)
                 if not register:
                     dates = proposed.window_preview(datetime.now(timezone.utc))
                     if comparison:
@@ -303,6 +303,13 @@ class DustyBasicUI:
             "Comparison requires a past fixed end, nonzero holdout and cost note.\n"
             "No-trade and trend filters are research controls, not certified strategies."
         ), padding=12).grid(row=12, column=0, columnspan=2)
+        self._ttk.Button(window, text="Run forecast campaign (30 cases; no orders)",
+                         command=lambda: launch(campaign=True)).grid(row=13, column=0, columnspan=2, pady=6)
+        self._ttk.Label(window, text=(
+            "Campaign: history days must be at least 3 × holdout days + 2 (maximum 30).\n"
+            "Example: 28 history days, 7 days per test fold, past fixed UTC end and cost note.\n"
+            "Fits a small local model; no downloads. Keeps all 30 cases; never selects a winner."
+        ), padding=12).grid(row=14, column=0, columnspan=2)
 
     def _register_after_refresh(self, result: Any, error: str | None) -> None:
         if error:
@@ -557,6 +564,8 @@ class DustyBasicUI:
         run_directory = view.run_directory
         window = self._tk.Toplevel(self._root)
         window.title("Research evidence — not trading certification")
+        window.geometry("1100x750")
+        window.minsize(750, 500)
         notebook = self._ttk.Notebook(window)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
         widgets = []
@@ -569,6 +578,8 @@ class DustyBasicUI:
             scroll.pack(side="right", fill="y")
             text.pack(side="left", fill="both", expand=True)
             widgets.append(text)
+        from .research_viewer import CaseExplorer
+        explorer = CaseExplorer(notebook, run_directory)
         last_message = None
         timer = None
 
@@ -585,6 +596,7 @@ class DustyBasicUI:
                 overview, separator, details = current.runtime_message.partition(TRADE_DETAILS_SEPARATOR)
                 messages = (f"{overview}\n\nSaved locally:\n{run_directory}", details if separator else
                             "Trade diagnosis is available after an M106 strategy comparison completes.\n"
+                            "For a forecast campaign, select Cases & trades.\n"
                             "While research is running, this window updates automatically.")
                 for text, message in zip(widgets, messages, strict=True):
                     text.configure(state="normal")
@@ -592,6 +604,8 @@ class DustyBasicUI:
                     text.insert("1.0", message)
                     text.configure(state="disabled")
                 last_message = current.runtime_message
+            if not current.runtime_active:
+                explorer.load()
             if current.runtime_active:
                 timer = window.after(250, refresh)
 

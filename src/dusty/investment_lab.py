@@ -552,6 +552,7 @@ def run_laboratory_from_bars(
     feature_warmup_bars: Iterable[FeatureBar] = (),
     entry_cutoff: datetime | None = None,
     entry_policy: EntryPolicy = EntryPolicy.SEED,
+    require_forecasts: bool = False,
 ) -> LaboratoryRun:
     """Reference chain from completed bars through cognition, two-stage sizing, and MT5 manifests.
 
@@ -585,6 +586,12 @@ def run_laboratory_from_bars(
         config.risk_constitution,
     )
     forecast_map = forecasts_by_time or {}
+    if type(require_forecasts) is not bool:
+        raise ValueError("require_forecasts_must_be_boolean")
+    for bar in feature_bars:
+        for forecast in forecast_map.get(bar.at, ()):
+            if forecast.at != bar.at or not math.isclose(forecast.origin, bar.close, rel_tol=1e-12):
+                raise ValueError("forecast_timestamp_or_origin_mismatch")
     decisions: dict[datetime, Decision] = {}
     traces: list[CognitionTrace] = []
     runtime_bars: list[RuntimeBar] = []
@@ -638,6 +645,7 @@ def run_laboratory_from_bars(
         runtime_bars,
         entry_authorizer=lambda row, _: (decisions.get(row.at) is expected_entry
                                         and entry_permissions[row.at]
+                                        and (not require_forecasts or bool(forecast_map.get(row.at)))
                                         and (entry_cutoff is None or row.at < entry_cutoff)),
     )
     frequency = assess_observed_entry_frequency(trade.entry_at for trade in potential)
@@ -696,6 +704,9 @@ def run_laboratory_from_bars(
         # The legacy manifest identity is just the base strategy hash, not the veto.
         manifest_supported = False
         manifest_reasons += ("research_entry_policy_not_bound_by_native_manifest",)
+    if forecasts_by_time is not None or require_forecasts:
+        manifest_supported = False
+        manifest_reasons += ("research_forecast_not_bound_by_native_manifest",)
     if not manifest_supported:
         minimum_manifest = ""
         growth_manifest = ""

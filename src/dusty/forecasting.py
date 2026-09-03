@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from statistics import fmean
+from math import isfinite
 from typing import Iterable
 
 from .core import EvidenceItem
@@ -24,14 +25,17 @@ class Forecast:
             raise ValueError("forecast provider is required")
         if self.at.tzinfo is None or self.at.utcoffset() is None:
             raise ValueError("forecast timestamp must be timezone-aware")
-        if self.horizon_steps < 1:
+        if type(self.horizon_steps) is not int or self.horizon_steps < 1:
             raise ValueError("horizon_steps must be positive")
-        if self.origin <= 0:
-            raise ValueError("origin must be positive")
+        if any(isinstance(v, bool) or not isfinite(v) or v <= 0 for v in (self.origin, self.point)):
+            raise ValueError("forecast prices must be finite and positive")
         if (self.lower is None) != (self.upper is None):
             raise ValueError("forecast interval requires both lower and upper")
         if self.lower is not None and not self.lower <= self.point <= self.upper:
             raise ValueError("forecast point must lie inside interval")
+        if self.lower is not None and any(isinstance(v, bool) or not isfinite(v) or v <= 0
+                                          for v in (self.lower, self.upper)):
+            raise ValueError("forecast interval must be finite and positive")
 
     @property
     def predicted_return(self) -> float:
