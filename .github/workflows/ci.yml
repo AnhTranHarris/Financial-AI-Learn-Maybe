@@ -78,12 +78,13 @@ jobs:
         run: python -m unittest discover -s tests -p "test_prospective_evidence.py" -v
       - name: Research comparison and entry-abstention gate
         run: python -m unittest discover -s tests -p "test_research_comparison.py" -v
-      - name: Research acceleration diagnostics and elapsed-holding gate
+      - name: Research acceleration diagnostics elapsed-holding and challengers gate
         run: |
           python -m unittest discover -s tests -p "test_research_cycle.py" -v
           python -m unittest discover -s tests -p "test_elapsed_holding.py" -v
           python -m unittest discover -s tests -p "test_research_diagnostics.py" -v
           python -m unittest discover -s tests -p "test_m106_comparison_attribution.py" -v
+          python -m unittest discover -s tests -p "test_m106_challengers.py" -v
       - name: Reasoning research category
         run: python tests/suite_group_runner.py reasoning_research
       - name: Curriculum event category

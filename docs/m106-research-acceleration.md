@@ -9,7 +9,7 @@ The latest research audit showed that Dusty can reproduce and reconcile large hi
 - a cost stress can appear to improve P&L because the higher assumed cost changes position size or later occupancy;
 - an entry-veto forecast can appear selective because it suppresses activity, even when it blocks many profitable baseline trades.
 
-The ten-repository architecture review identified reusable operational patterns worth adopting now: one authoritative research cycle, durable checkpoint/resume behavior, content-addressed experiment identity, verified cache reuse, cheap diagnostic attribution, and later bounded challenger evolution. Dusty copies those patterns rather than importing the external frameworks.
+The ten-repository architecture review identified reusable operational patterns worth adopting now: one authoritative research cycle, durable checkpoint/resume behavior, content-addressed experiment identity, verified cache reuse, cheap diagnostic attribution, and bounded challenger evolution. Dusty copies those patterns rather than importing the external frameworks.
 
 ## Content-addressed research cycle
 
@@ -77,6 +77,22 @@ Higher costs therefore cannot receive credit for an apparent P&L improvement mer
 
 The automatic comparison integration also verifies that the no-trade control remains zero in every component.
 
+## Bounded V2 challenger evolution
+
+M106 extends the existing M40–M42 bounded self-development architecture instead of adding a second RD-Agent-style subsystem.
+
+`dusty.research_challengers` creates deterministic, one-factor-at-a-time `StrategySpecV2` research challengers from a frozen reviewed parent. Supported first-generation research mutations cover:
+
+- one explicitly targeted entry threshold;
+- elapsed/step exit horizon as one coherent semantic factor;
+- cooldown steps;
+- RSI feature period;
+- forecast-neutral threshold.
+
+The generator never sees market results, never ranks candidates, never changes production code, and marks every draft `promotion_eligible=False`. Mutation order is canonicalized, duplicate and no-op candidates are removed, ambiguous clause targets fail closed, and a candidate budget overflow raises an error instead of silently truncating the research plan.
+
+This deliberately avoids a Cartesian parameter explosion. One challenger changes one semantic factor so later attribution can say what was changed and why. Any broader evolutionary search must earn its complexity through evidence.
+
 ## Deliberate boundaries
 
 M106 does **not**:
@@ -85,13 +101,14 @@ M106 does **not**:
 - place, modify, or close orders;
 - infer broker session hours from missing bars;
 - select a forecast model;
-- optimize a direction threshold;
+- optimize a direction threshold from outcomes;
+- rank or promote generated challengers;
 - change risk limits;
 - declare a winner;
 - create Demo or Live authority;
 - self-modify Dusty application code.
 
-The acceleration infrastructure is intended for later wiring of frozen data acquisition, point-in-time feature construction, forecast generation, seed and filtered strategy simulation, matched-exposure controls, cost stress, research attribution, cheap-to-expensive screening, and bounded challenger generation.
+The acceleration infrastructure is intended for later wiring of frozen data acquisition, point-in-time feature construction, forecast generation, seed and filtered strategy simulation, matched-exposure controls, cost stress, research attribution, cheap-to-expensive screening, and bounded challenger evaluation.
 
 ## Resume and cache semantics
 
@@ -99,7 +116,7 @@ A cache hit is intentionally strict. It requires the same request, code commit, 
 
 Changing stage semantics requires a stage-version change. Changing Dusty code requires a new request `code_commit`. Either action creates a different experiment identity.
 
-## QC and certified checkpoint
+## QC and certified checkpoints
 
 Dedicated tests cover:
 
@@ -113,8 +130,12 @@ Dedicated tests cover:
 - audited forecast-bias/veto attribution;
 - exact cost-versus-exposure decomposition;
 - automatic matched-exposure attribution for all five comparison candidates across development and holdout;
-- no-trade control invariants.
+- no-trade control invariants;
+- deterministic, order-independent one-factor V2 challenger generation;
+- mutation isolation, candidate-budget enforcement, no-op deduplication, and ambiguous-target rejection.
 
 Functional checkpoint `b192c7f016671cb11a1fcf3b8c5dbfdf292b7a41` passed GitHub Actions run #384 on Windows and Ubuntu with Python 3.11 and 3.12, including the full unittest suite.
+
+Challenger checkpoint `162028a378909bf7c2ef260112b34acbfe38c97d` passed GitHub Actions run #386 on the same four-platform matrix, including the full unittest suite.
 
 M105 remains untouched on its prior branch. M106 work is isolated on `carson/m106-research-acceleration`.
