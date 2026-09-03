@@ -192,33 +192,35 @@ class DustyProviderUI(DustyBasicUI):
         def test_selected() -> None:
             try:
                 self._provider_manager.select(selected.get())
-                states = self._provider_manager.start_selected()
             except ValueError as exc:
                 messagebox.showerror("Forecast contractors", str(exc), parent=window)
-                return
-            if not any(state.value == "ready" for state in states.values()):
-                self._refresh_provider_status()
-                messagebox.showerror(
-                    "Forecast contractors",
-                    "No selected contractor reached READY. Inspect the process states.",
-                    parent=window,
-                )
                 return
             bars = _smoke_bars()
             future = tuple(
                 bars[-1].at + timedelta(minutes=15 * (index + 1))
                 for index in range(16)
             )
-            self._background(
-                lambda: self._provider_manager.forecast_selected(
+
+            def start_and_test() -> Any:
+                states = self._provider_manager.start_selected()
+                if not any(state.value == "ready" for state in states.values()):
+                    rendered = ", ".join(
+                        f"{provider_id}={state.value}"
+                        for provider_id, state in states.items()
+                    )
+                    raise RuntimeError(
+                        "no_selected_contractor_reached_ready:" + rendered
+                    )
+                return self._provider_manager.forecast_selected(
                     bars,
                     symbol="EURUSD",
                     timeframe="M15",
                     horizon_steps=16,
                     future_times=future,
-                ),
-                test_complete,
-            )
+                )
+
+            self._refresh_provider_status()
+            self._background(start_and_test, test_complete)
 
         controls = self._ttk.Frame(frame)
         controls.grid(row=7, column=0, columnspan=6, sticky="ew", pady=(14, 0))
