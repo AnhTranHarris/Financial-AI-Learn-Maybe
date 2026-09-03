@@ -242,7 +242,10 @@ class CampaignTests(unittest.TestCase):
 class CampaignLifecycleTests(unittest.TestCase):
     def test_cancel_timeout_and_crash_seal_the_whole_queue(self):
         for action, state in (("cancel", "CANCELLED"), ("timeout", "TIMED_OUT"), ("crash", "FAILED")):
-            with self.subTest(action=action), tempfile.TemporaryDirectory() as root:
+            # Disk/fsync latency is not the timeout trigger under test. Advance
+            # elapsed time explicitly below, including on a slow Windows runner.
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as root, \
+                    patch("dusty.local_research.time.monotonic", return_value=100.0):
                 context = FakeContext()
                 runtime = LocalResearchRuntime(Path(root)/"repo", output_directory=Path(root)/"out",
                     settings=settings(), context=context, code_checker=lambda *_: True, timeout_seconds=1)

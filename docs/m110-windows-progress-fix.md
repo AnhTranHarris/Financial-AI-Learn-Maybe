@@ -51,6 +51,11 @@ the same open handle. Linux skips that Windows-specific check explicitly. The
 existing real spawned campaign, artifact integrity, cancellation-race and UI tests
 also remain in the full suite. These are software checks, not trading certification.
 
+The first patch CI run also exposed a test-only timing assumption: the fake-worker
+cancellation test used a one-second real timeout during disk setup. That clock is
+now controlled and advanced explicitly for the timeout case. The real worker and
+its production timeout are unchanged; the test no longer depends on disk speed.
+
 ## Installation boundary
 
 Use the separate `DustyDragon-M105` development folder and its existing virtual
