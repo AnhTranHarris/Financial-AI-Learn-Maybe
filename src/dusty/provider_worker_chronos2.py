@@ -94,7 +94,6 @@ def _validate_request(request: Any) -> dict[str, Any]:
     if context_sha != _payload_sha256(tuple(context)):
         raise ValueError("request_context_sha256_mismatch")
 
-    normalized_context: list[dict[str, object]] = []
     previous_at: datetime | None = None
     for row in context:
         if not isinstance(row, dict) or set(row) != {"at", "close"}:
@@ -106,14 +105,12 @@ def _validate_request(request: Any) -> dict[str, Any]:
         if isinstance(close, bool) or not isinstance(close, (int, float)) or not isfinite(close) or close <= 0:
             raise ValueError("request_context_close_invalid")
         previous_at = at
-        normalized_context.append({"at": str(row["at"]), "close": float(close)})
 
     as_of = _aware_timestamp(request.get("as_of"), "request_as_of")
     if as_of != previous_at:
         raise ValueError("request_as_of_must_equal_last_completed_observation")
-    normalized = dict(request)
-    normalized["context"] = normalized_context
-    return normalized
+    # Return the validated request unchanged so its SHA-256 identity is stable.
+    return dict(request)
 
 
 def _extract_last_horizon_quantiles(tensor: Any, horizon_steps: int) -> tuple[float, float, float]:
