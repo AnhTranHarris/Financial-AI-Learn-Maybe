@@ -30,6 +30,8 @@ class ProviderSpec:
     model_id: str
     license_id: str
     directory_name: str
+    model_revision: str | None = None
+    runtime_version: str | None = None
     capabilities: tuple[str, ...] = ("forecast", "research_evidence")
     mode: ProviderMode = ProviderMode.RESEARCH_ONLY
     broker_write_authority: bool = False
@@ -42,6 +44,13 @@ class ProviderSpec:
             raise ValueError("forecast_contractors_must_be_research_only")
         if self.broker_write_authority or self.promotion_authority:
             raise ValueError("forecast_contractors_cannot_receive_trading_or_promotion_authority")
+        if self.model_revision is not None and (
+            len(self.model_revision) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in self.model_revision)
+        ):
+            raise ValueError("provider_model_revision_must_be_exact_git_sha")
+        if self.runtime_version is not None and not self.runtime_version.strip():
+            raise ValueError("provider_runtime_version_cannot_be_blank")
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,8 @@ class ProviderSnapshot:
             "display_name": self.spec.display_name,
             "kind": self.spec.kind.value,
             "model_id": self.spec.model_id,
+            "model_revision": self.spec.model_revision,
+            "runtime_version": self.spec.runtime_version,
             "license_id": self.spec.license_id,
             "capabilities": list(self.spec.capabilities),
             "mode": self.spec.mode.value,
@@ -81,6 +92,8 @@ FORECAST_PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         display_name="Amazon Chronos-2",
         kind=ProviderKind.FORECAST,
         model_id="amazon/chronos-2",
+        model_revision="29ec3766d36d6f73f0696f85560a422f50e8498c",
+        runtime_version="2.3.1",
         license_id="Apache-2.0",
         directory_name="Chronos2",
     ),
@@ -115,8 +128,8 @@ class ProviderRegistry:
 
     Discovery deliberately does not import provider packages or start model
     processes. A provider becomes merely INSTALLED when its isolated Python
-    executable is present. Runtime model health belongs to a later adapter
-    layer and must fail independently of Dusty's deterministic core.
+    executable is present. Runtime model health belongs to an adapter layer
+    and must fail independently of Dusty's deterministic core.
     """
 
     def __init__(
