@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from dusty.features import FeatureBar
 from dusty.provider_forecast_adapter import (
@@ -229,17 +227,22 @@ class IsolatedChronosAdapterTests(unittest.TestCase):
     def test_worker_request_validator_rejects_tampering_before_model_import(self):
         with tempfile.TemporaryDirectory() as temporary:
             registry = installed_registry(Path(temporary))
-            request = build_chronos2_request(
-                bars(),
-                symbol="EURUSD",
-                timeframe="M15",
-                horizon_steps=16,
-                snapshot=registry.snapshot(CHRONOS2_PROVIDER_ID),
+            snapshot = registry.snapshot(CHRONOS2_PROVIDER_ID)
+
+            unexpected = build_chronos2_request(
+                bars(), symbol="EURUSD", timeframe="M15", horizon_steps=16, snapshot=snapshot
             )
-            self.assertEqual(_validate_request(request)["provider_id"], CHRONOS2_PROVIDER_ID)
-            request["context"][-1]["close"] = 999.0
+            unexpected["account"] = "must-never-cross-provider-boundary"
+            with self.assertRaisesRegex(ValueError, "request_schema_has_missing_or_unexpected_fields"):
+                _validate_request(unexpected)
+
+            tampered = build_chronos2_request(
+                bars(), symbol="EURUSD", timeframe="M15", horizon_steps=16, snapshot=snapshot
+            )
+            self.assertEqual(_validate_request(tampered)["provider_id"], CHRONOS2_PROVIDER_ID)
+            tampered["context"][-1]["close"] = 999.0
             with self.assertRaisesRegex(ValueError, "request_context_sha256_mismatch"):
-                _validate_request(request)
+                _validate_request(tampered)
 
     def test_invalid_context_or_horizon_is_a_core_contract_error(self):
         with tempfile.TemporaryDirectory() as temporary:
