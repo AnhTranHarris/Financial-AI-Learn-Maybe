@@ -16,6 +16,7 @@ from .core import Decision
 from .features import FeatureBar, compute_standard_features
 from .investment_lab import LaboratoryConfig
 from .markets import InstrumentEconomics
+from .research_diagnostics import MatchedExposureAttribution, decompose_stressed_result
 from .research_eligibility import EntryPolicy, entry_eligibility
 from .research_evaluation import FixedEvaluationPlan, run_fixed_evaluation
 from .reviewed_strategies import reviewed_research_packages
@@ -75,6 +76,59 @@ def _screen(metrics: dict, screen: dict, *, control: bool) -> dict:
     return {"limited_screen_passed": not reasons, "reasons": reasons, "promotion_eligible": False}
 
 
+def _matched_cost_attributions(cases: Sequence[dict], contract: dict,
+                               economics: InstrumentEconomics) -> list[dict]:
+    """Hold original approved volume fixed to isolate pure cost drag from re-sizing."""
+    scenarios = contract["cost_scenarios"]
+    configured = next(row for row in scenarios if row["additional_round_trip_slippage_points"] == 0)
+    stressed = tuple(row for row in scenarios if row["additional_round_trip_slippage_points"] > 0)
+    index = {(case["candidate_id"], case["cost_scenario"], case["segment"]): case for case in cases}
+    results: list[dict] = []
+    for candidate in contract["candidates"]:
+        for segment in ("development", "holdout"):
+            baseline = index[(candidate["id"], configured["id"], segment)]
+            approved_volume = sum(
+                trace["sizing"]["approved_volume"]
+                for trace in baseline["growth_sizing"]
+                if trace["approved"] and trace["sizing"] is not None
+            )
+            for stress in stressed:
+                actual = index[(candidate["id"], stress["id"], segment)]
+                extra_points = (
+                    stress["additional_round_trip_slippage_points"]
+                    - configured["additional_round_trip_slippage_points"]
+                )
+                extra_cost_per_lot = extra_points * economics.point_size / economics.tick_size * economics.tick_value
+                original_net = baseline["metrics"]["growth_net_pnl"]
+                same_exposure_net = original_net - extra_cost_per_lot * approved_volume
+                attribution = MatchedExposureAttribution(
+                    trade_count=baseline["metrics"]["growth_trades"],
+                    original_net_pnl=original_net,
+                    stressed_net_pnl_same_exposure=same_exposure_net,
+                    additional_cost_effect=same_exposure_net - original_net,
+                )
+                decomposition = decompose_stressed_result(
+                    attribution,
+                    actual["metrics"]["growth_net_pnl"],
+                )
+                results.append({
+                    "candidate_id": candidate["id"],
+                    "segment": segment,
+                    "configured_cost_scenario": configured["id"],
+                    "stressed_cost_scenario": stress["id"],
+                    "original_growth_trades": attribution.trade_count,
+                    "original_approved_volume_lots": approved_volume,
+                    "additional_cost_per_lot": extra_cost_per_lot,
+                    "original_net_pnl": decomposition.original_net_pnl,
+                    "stressed_net_pnl_same_exposure": attribution.stressed_net_pnl_same_exposure,
+                    "additional_cost_effect_same_exposure": decomposition.additional_cost_effect_same_exposure,
+                    "exposure_or_sequence_effect": decomposition.exposure_or_sequence_effect,
+                    "actual_stressed_net_pnl": decomposition.actual_stressed_net_pnl,
+                    "actual_total_change": decomposition.total_change,
+                })
+    return results
+
+
 def run_research_comparison(bars: Sequence[FeatureBar], *, symbol: str, economics: InstrumentEconomics,
                             config: LaboratoryConfig, plan: FixedEvaluationPlan) -> dict:
     if (isinstance(economics.point_size, bool) or not math.isfinite(economics.point_size)
@@ -125,13 +179,17 @@ def run_research_comparison(bars: Sequence[FeatureBar], *, symbol: str, economic
                 cases.append(case)
     if len(cases) != contract["expected_cases"] or len({c["case_fingerprint"] for c in cases}) != len(cases):
         raise ValueError("incomplete_or_duplicate_comparison_matrix")
+    matched_cost = _matched_cost_attributions(cases, contract, economics)
     return {"contract": contract, "contract_fingerprint": _fingerprint(contract), "cases": cases,
             "data_fingerprint": data_fingerprint,
-            "entry_eligibility": eligibility, "deployment_decision": "ABSTAIN_UNQUALIFIED",
+            "entry_eligibility": eligibility,
+            "matched_exposure_cost_attribution": matched_cost,
+            "deployment_decision": "ABSTAIN_UNQUALIFIED",
             "promotion_eligible": False, "selected_winner": None,
             "limitations": ["historical_prior_exposure_unknown", "repeated_trials_not_independent",
                             "no_multiple_testing_adjusted_confidence", "trend_veto_not_a_trained_forecast",
-                            "cost_inputs_unverified_stress_is_hypothetical", "growth_resizing_confounds_cost_comparison",
+                            "cost_inputs_unverified_stress_is_hypothetical",
+                            "actual_stress_result_can_change_sizing_matched_exposure_attribution_is_separate",
                             "short_margin_uses_current_long_margin_proxy", "bar_gaps_not_filled_or_calendar_verified",
                             "native_indicator_and_execution_parity_missing", "no_demo_or_live_authority"]}
 
@@ -149,7 +207,8 @@ def comparison_summary(report: dict, currency: str) -> str:
                      f"vetoed setup signals {case['blocked_cognition_signals_before_tail']}.\n"
                      f"  Limited screen: {', '.join(case['screen']['reasons']) or 'passed; still unqualified'}")
     lines.extend(["", "Stress adds 10 broker points of total round-trip slippage to YOUR assumptions; not a fee estimate.",
-                  "Resizing and occupancy can change trades and P&L. This is not a fixed-volume cost attribution.",
+                  "Matched-exposure attribution now freezes the original approved lots before applying the stress;",
+                  "the residual separately reports the effect of re-sizing/rejections rather than calling it cost drag.",
                   "Trend alignment is an untrained entry veto, not proof of forecasting skill.",
                   "No-trade control earns zero before interest/opportunity cost. No orders sent."])
     return "\n".join(lines)
