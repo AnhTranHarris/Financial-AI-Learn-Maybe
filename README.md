@@ -8,7 +8,7 @@ The project is designed to **learn → reason → test → falsify → remember 
 
 ## Authority state
 
-Current engineering phase: **M0–M105 plus investment-trust remediation**.
+Current engineering phase: **M0–M106 plus investment-trust remediation**.
 
 - deterministic reasoning core: implemented;
 - point-in-time evidence and research memory: implemented;
@@ -52,7 +52,7 @@ The investment-trust remediation likewise does not manufacture native MT5 eviden
 12. A crash after an ambiguous broker send is reconciled from broker state; the intent is never blindly resubmitted.
 13. Open-position supervision outranks research and training under resource pressure.
 14. Dusty never autonomously pays for data.
-15. Live trading remains outside the currently authorized implementation, including M105.
+15. Live trading remains outside the currently authorized implementation, including M106.
 16. Analytical tools are versioned dependencies; invalid, repainting, future-dependent, drifted, or semantically unknown tools cannot be rescued by attractive performance.
 17. A deployed Champion is immutable. Tool modification or removal creates a new challenger and repeats native/backtest/demo certification.
 
@@ -133,6 +133,7 @@ public strategies / free event context / MT5 history
 - **M103 — fixed-window evaluation foundation:** optional fixed UTC end and chronological holdout, independent flat-start simulations with past-only indicator warm-up and entry-tail guards, frozen cost notes and separate read-only broker cost observations. Historical data is not asserted to be previously unseen; costs are not automatically verified.
 - **M104 — prospective evidence foundation:** freeze a future holdout before its start, preserve a copyable receipt, bind costs/rules/runtime/capital, and allow one journaled evaluation attempt after the end. Reconcile supported closed-position cash only after bounded full-position history reads. No automatic timers, trading approval, independently trusted timestamp or verified broker tariff is implied.
 - **M105 — research comparison and abstention:** compare both frozen seeds, their completed-bar trend vetoes and a no-trade control across two cost assumptions and two historical segments. Retain all 20 cases, their cash ledgers, sizing and veto reasons. Preview/confirm dates; zero holdout is explicitly whole-window research. Demo/Live remain locked.
+- **M106 — post-run trade diagnosis:** record entry features/rules, exit reasons, rejected growth entries and reconciled price/cost cash for all comparison trades. Separate direct cost stress at baseline sizes from sizing/selection effects. Read-only results have Summary and Trade diagnosis tabs and refresh during research. No strategy or risk-rule changes; no causal or profitability certification.
 
 See [`docs/m66-m75.md`](docs/m66-m75.md) for the M66–M75 phase in detail.
 
@@ -200,6 +201,10 @@ cost note. It adds no order access and never selects a deployable winner. See
 [M105 comparison contract and side-by-side installation](docs/m105-research-abstention.md).
 If an M104 future plan is already frozen, preserve that checkout AND its virtual environment.
 Install M105 separately; do not silently migrate or rebind the old receipt.
+
+M106 adds a **Trade diagnosis** tab to comparison results. Follow the
+[M106 boundaries and safe update instructions](docs/m106-trade-diagnosis.md).
+The original M104 environment and future receipt remain separate and untouched.
 
 Report requests use an existing local Codex CLI login in an
 ephemeral read-only sandbox. Development requests require an explicit confirmation, a clean Git

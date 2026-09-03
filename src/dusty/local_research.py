@@ -31,6 +31,7 @@ from .research_capital import ResearchCapitalSummary, capital_summary_from_repor
 from .research_environment import runtime_provenance
 from .research_evaluation import FixedEvaluationPlan, require_m15_utc, run_fixed_evaluation
 from .research_comparison import comparison_contract, comparison_summary, run_research_comparison
+from .research_diagnosis import DIAGNOSIS_PROTOCOL, TRADE_DETAILS_SEPARATOR
 from .broker_cost_observation import observe_recent_costs
 from .prospective_research import ProspectiveRegistry, validate_for_evaluation, screen_result
 from .strategy_catalog import OperatingMode, QualificationBinding
@@ -299,6 +300,7 @@ def _request_payload(selection: RuntimeSelection, settings: ResearchSettings, st
         if registration is not None:
             raise ValueError("comparison_cannot_register_or_consume_prospective_plans")
         payload["comparison_contract"] = comparison_contract()
+        payload["diagnostic_protocol"] = DIAGNOSIS_PROTOCOL
     if registration is not None:
         validate_for_evaluation(registration, json.loads(_json(payload)), datetime.now(timezone.utc))
         payload["growth_starting_balance"] = registration["payload"]["request"]["growth_starting_balance"]
@@ -398,8 +400,10 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
                    f"Registered hypothetical capital: {config.growth_starting_equity:,.2f}; "
                    f"current connection balance: {selection.terminal.account.balance:,.2f}.\n\n" + summary)
     if settings.comparison:
-        summary = (comparison_summary(report["comparison"], selection.terminal.account.currency)
-                   + "\n\nSELECTED SEED BASELINE DETAILS ONLY (not a chosen winner):\n" + summary)
+        compared = comparison_summary(report["comparison"], selection.terminal.account.currency)
+        overview, _, details = compared.partition(TRADE_DETAILS_SEPARATOR)
+        summary = (overview + "\n\nSELECTED SEED BASELINE DETAILS ONLY (not a chosen winner):\n" + summary
+                   + TRADE_DETAILS_SEPARATOR + details)
     return {"state": "COMPLETED", "message": summary, "promotion_eligible": False,
             "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
             "artifact_sha256": hashes, "completed_at": datetime.now(timezone.utc)}

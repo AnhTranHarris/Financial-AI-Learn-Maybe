@@ -18,6 +18,8 @@ from .investment_lab import LaboratoryConfig
 from .markets import InstrumentEconomics
 from .research_eligibility import EntryPolicy, entry_eligibility
 from .research_evaluation import FixedEvaluationPlan, run_fixed_evaluation
+from .research_diagnosis import (DIAGNOSIS_PROTOCOL, TRADE_DETAILS_SEPARATOR, attribute_cost_pair,
+                                diagnose_case, diagnosis_summary)
 from .reviewed_strategies import reviewed_research_packages
 
 
@@ -87,6 +89,7 @@ def run_research_comparison(bars: Sequence[FeatureBar], *, symbol: str, economic
     eligibility = {}
     for (package, policy), candidate in zip(_candidates(), contract["candidates"], strict=True):
         vectors = compute_standard_features(rows, package.features)
+        vectors_by_at = {vector.at: vector for vector in vectors}
         permissions = {vector.at: entry_eligibility(vector, package.spec.direction, policy) for vector in vectors}
         eligibility[candidate["id"]] = [asdict(permissions[vector.at]) for vector in vectors
                                          if plan.start <= vector.at < plan.end]
@@ -122,10 +125,17 @@ def run_research_comparison(bars: Sequence[FeatureBar], *, symbol: str, economic
                         "screen": _screen(metrics, contract["screen"], control=policy is EntryPolicy.NO_TRADE)}
                 for key in ("potential_trades", "growth_sizing", "minimum_lot_backtest", "growth_backtest"):
                     case[key] = details[key]
+                case["diagnosis"] = diagnose_case(case, strategy=package.compiled, policy=policy,
+                                                  vectors=vectors_by_at, bars=rows, economics=economics)
                 cases.append(case)
     if len(cases) != contract["expected_cases"] or len({c["case_fingerprint"] for c in cases}) != len(cases):
         raise ValueError("incomplete_or_duplicate_comparison_matrix")
+    indexed = {(c["candidate_id"], c["segment"], c["cost_scenario"]): c for c in cases}
+    attribution = [attribute_cost_pair(indexed[c["id"], segment, "configured"],
+                                       indexed[c["id"], segment, "stress-plus-10-points"])
+                   for c in contract["candidates"] for segment in ("development", "holdout")]
     return {"contract": contract, "contract_fingerprint": _fingerprint(contract), "cases": cases,
+            "diagnostic_protocol": DIAGNOSIS_PROTOCOL, "cost_attribution": attribution,
             "data_fingerprint": data_fingerprint,
             "entry_eligibility": eligibility, "deployment_decision": "ABSTAIN_UNQUALIFIED",
             "promotion_eligible": False, "selected_winner": None,
@@ -149,7 +159,8 @@ def comparison_summary(report: dict, currency: str) -> str:
                      f"vetoed setup signals {case['blocked_cognition_signals_before_tail']}.\n"
                      f"  Limited screen: {', '.join(case['screen']['reasons']) or 'passed; still unqualified'}")
     lines.extend(["", "Stress adds 10 broker points of total round-trip slippage to YOUR assumptions; not a fee estimate.",
-                  "Resizing and occupancy can change trades and P&L. This is not a fixed-volume cost attribution.",
+                  "The matrix above re-sizes positions. Separate fixed-volume cost attribution follows below.",
                   "Trend alignment is an untrained entry veto, not proof of forecasting skill.",
                   "No-trade control earns zero before interest/opportunity cost. No orders sent."])
-    return "\n".join(lines)
+    return ("\n".join(lines) + "\n\n" + diagnosis_summary(report, currency)
+            + TRADE_DETAILS_SEPARATOR + diagnosis_summary(report, currency, details=True))

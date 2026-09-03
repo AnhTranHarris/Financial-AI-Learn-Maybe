@@ -19,6 +19,7 @@ from .codex_bridge import (
 from .local_app import LocalDustyApplication
 from .local_research import LocalResearchRuntime, ResearchSettings
 from .research_evaluation import parse_fixed_end
+from .research_diagnosis import TRADE_DETAILS_SEPARATOR
 from .local_terminal import ReadOnlyTerminalSnapshotReader, WindowsMT5Discovery
 from .reviewed_strategies import reviewed_research_packages
 from .strategy_catalog import OperatingMode, load_strategy_catalog
@@ -553,12 +554,54 @@ class DustyBasicUI:
 
     def _show_research_result(self) -> None:
         view = self._application.view()
+        run_directory = view.run_directory
         window = self._tk.Toplevel(self._root)
         window.title("Research evidence — not trading certification")
-        text = self._tk.Text(window, wrap="word", width=100, height=30)
-        text.pack(fill="both", expand=True, padx=10, pady=10)
-        text.insert("1.0", f"{view.runtime_message}\n\nSaved locally:\n{view.run_directory}")
-        text.configure(state="disabled")
+        notebook = self._ttk.Notebook(window)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        widgets = []
+        for title in ("Summary", "Trade diagnosis"):
+            frame = self._ttk.Frame(notebook)
+            notebook.add(frame, text=title)
+            text = self._tk.Text(frame, wrap="word", width=100, height=30, state="disabled")
+            scroll = self._ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+            text.configure(yscrollcommand=scroll.set)
+            scroll.pack(side="right", fill="y")
+            text.pack(side="left", fill="both", expand=True)
+            widgets.append(text)
+        last_message = None
+        timer = None
+
+        def refresh() -> None:
+            nonlocal last_message, timer
+            timer = None
+            if self._closing or not window.winfo_exists():
+                return
+            current = self._application.view()
+            # A viewer belongs to its original run, never silently switches evidence.
+            if current.run_directory != run_directory:
+                return
+            if current.runtime_message != last_message:
+                overview, separator, details = current.runtime_message.partition(TRADE_DETAILS_SEPARATOR)
+                messages = (f"{overview}\n\nSaved locally:\n{run_directory}", details if separator else
+                            "Trade diagnosis is available after an M106 strategy comparison completes.\n"
+                            "While research is running, this window updates automatically.")
+                for text, message in zip(widgets, messages, strict=True):
+                    text.configure(state="normal")
+                    text.delete("1.0", "end")
+                    text.insert("1.0", message)
+                    text.configure(state="disabled")
+                last_message = current.runtime_message
+            if current.runtime_active:
+                timer = window.after(250, refresh)
+
+        def close() -> None:
+            if timer is not None:
+                window.after_cancel(timer)
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", close)
+        refresh()
 
     def _close(self) -> None:
         from tkinter import messagebox
