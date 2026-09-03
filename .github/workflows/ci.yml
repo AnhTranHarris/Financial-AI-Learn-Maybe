@@ -68,6 +68,8 @@ jobs:
         run: python -m unittest discover -s tests -p "test_m95.py" -v
       - name: Local runtime and basic UI gate
         run: python -m unittest discover -s tests -p "test_local_runtime_ui.py" -v
+      - name: Isolated forecast provider adapter gate
+        run: python -m unittest discover -s tests -p "test_provider_forecast_adapter.py" -v
       - name: Connected research gate
         run: python -m unittest discover -s tests -p "test_connected_research.py" -v
       - name: Sizing transparency and cross-version numerics gate
