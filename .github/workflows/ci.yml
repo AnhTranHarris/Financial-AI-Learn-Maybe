@@ -85,6 +85,10 @@ jobs:
           python -m unittest discover -s tests -p "test_research_diagnostics.py" -v
           python -m unittest discover -s tests -p "test_m106_comparison_attribution.py" -v
           python -m unittest discover -s tests -p "test_m106_challengers.py" -v
+      - name: Unified research funnel gate
+        run: |
+          python -m unittest discover -s tests -p "test_m107_research_funnel.py" -v
+          python -m unittest discover -s tests -p "test_m107_local_funnel_adapter.py" -v
       - name: Reasoning research category
         run: python tests/suite_group_runner.py reasoning_research
       - name: Curriculum event category
