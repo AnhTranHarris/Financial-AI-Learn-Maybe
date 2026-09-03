@@ -74,6 +74,8 @@ jobs:
         run: python -m unittest discover -s tests -p "test_provider_process.py" -v
       - name: Persistent Chronos service gate
         run: python -m unittest discover -s tests -p "test_provider_forecast_service.py" -v
+      - name: Multi-provider contractor and selection gate
+        run: python -m unittest discover -s tests -p "test_provider_multi.py" -v
       - name: Connected research gate
         run: python -m unittest discover -s tests -p "test_connected_research.py" -v
       - name: Sizing transparency and cross-version numerics gate
