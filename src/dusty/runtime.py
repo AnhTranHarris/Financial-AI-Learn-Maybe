@@ -279,7 +279,10 @@ def generate_runtime_trades(
     manifest parity. ``exit_stop_price`` records the final tightened stop for audit. If stop and target
     are both touched inside one bar, stop wins. An optional entry_authorizer can only veto a rule-matched
     entry; it cannot create an entry when strategy rules fail. Cooldown is enforced after each completed
-    trade. Scaling remains an explicit compile-time rejection until quantity-aware runtime semantics exist.
+    trade. ``max_hold_steps`` remains an observation-count ceiling; an explicit ``max_elapsed_minutes``
+    additionally caps real elapsed exposure. A gap never fabricates an exit inside missing data: the
+    elapsed ceiling exits only at the first actually observed bar after the limit. Scaling remains an
+    explicit compile-time rejection until quantity-aware runtime semantics exist.
     """
     rows = tuple(bars)
     if tuple(sorted(rows, key=lambda row: row.at)) != rows:
@@ -327,6 +330,11 @@ def generate_runtime_trades(
             reason, exit_price = "target", target_price or bar.close
         elif held_steps >= compiled.spec.exit_plan.max_hold_steps:
             reason, exit_price = "max_hold", bar.market_price
+        elif (
+            compiled.spec.exit_plan.max_elapsed_minutes is not None
+            and (bar.at - entry_bar.at).total_seconds() >= compiled.spec.exit_plan.max_elapsed_minutes * 60
+        ):
+            reason, exit_price = "max_elapsed_hold", bar.market_price
         if reason:
             trades.append(
                 RuntimeTrade(
