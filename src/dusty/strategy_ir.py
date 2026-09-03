@@ -50,12 +50,17 @@ class ExitPlan:
     trailing_rule: str = "off"
     breakeven_rule: str = "off"
     max_hold_steps: int = 1
+    max_elapsed_minutes: int | None = None
 
     def __post_init__(self) -> None:
         if not self.stop_rule.strip():
             raise ValueError("every strategy requires an initial stop rule")
         if self.max_hold_steps < 1:
             raise ValueError("max_hold_steps must be positive")
+        if self.max_elapsed_minutes is not None and (
+            type(self.max_elapsed_minutes) is not int or self.max_elapsed_minutes < 1
+        ):
+            raise ValueError("max_elapsed_minutes must be a positive integer or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,17 +127,21 @@ class StrategySpecV2:
             json.dumps(group, sort_keys=True, separators=(",", ":")): group for group in groups
         }
         canonical_groups = [encoded_groups[key] for key in sorted(encoded_groups)]
+        exit_payload: dict[str, object] = {
+            "stop_rule": self.exit_plan.stop_rule,
+            "target_rule": self.exit_plan.target_rule,
+            "trailing_rule": self.exit_plan.trailing_rule,
+            "breakeven_rule": self.exit_plan.breakeven_rule,
+            "max_hold_steps": self.exit_plan.max_hold_steps,
+        }
+        # Keep legacy hashes stable unless elapsed-time semantics are explicitly enabled.
+        if self.exit_plan.max_elapsed_minutes is not None:
+            exit_payload["max_elapsed_minutes"] = self.exit_plan.max_elapsed_minutes
         payload = {
             "schema_version": self.schema_version,
             "direction": self.direction.value,
             "entry_groups": canonical_groups,
-            "exit_plan": {
-                "stop_rule": self.exit_plan.stop_rule,
-                "target_rule": self.exit_plan.target_rule,
-                "trailing_rule": self.exit_plan.trailing_rule,
-                "breakeven_rule": self.exit_plan.breakeven_rule,
-                "max_hold_steps": self.exit_plan.max_hold_steps,
-            },
+            "exit_plan": exit_payload,
             "decision_timeframe_minutes": self.decision_timeframe_minutes,
             "intended_horizon_minutes": self.intended_horizon_minutes,
             "session_filters": sorted(self.session_filters),
