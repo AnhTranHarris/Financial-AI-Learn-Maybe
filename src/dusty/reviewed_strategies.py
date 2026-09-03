@@ -49,6 +49,9 @@ def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
 
     Universal catalog visibility means 'may research', never 'suitable for deployment'.
     Broker economics and permissions are separately checked by the research adapter.
+    The four-hour research horizon is enforced both as sixteen observed M15 steps and
+    as four elapsed hours so a market/data gap cannot silently turn a day trade into
+    multi-day exposure. Missing bars still never fabricate an executable exit.
     """
     return tuple(
         ReviewedResearchPackage(
@@ -59,7 +62,7 @@ def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
                     Clause("rsi", RuleOp.GE, low), Clause("rsi", RuleOp.LE, high),
                     Clause("return_1", RuleOp.GT if side is TradeSide.LONG else RuleOp.LT, 0.0),
                 )),),
-                exit_plan=ExitPlan("atr:2", "rr:2", max_hold_steps=16),
+                exit_plan=ExitPlan("atr:2", "rr:2", max_hold_steps=16, max_elapsed_minutes=240),
                 decision_timeframe_minutes=15, intended_horizon_minutes=240, cooldown_steps=4,
             ),
             f"RESEARCH ONLY: RSI momentum {side.value} (M15)",
