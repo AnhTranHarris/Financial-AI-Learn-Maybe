@@ -36,19 +36,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     failed = False
     try:
+        before = perf_counter()
+        startup_states = manager.start_selected()
+        startup_elapsed = round(perf_counter() - before, 3)
+        pids = manager.pids()
         for provider_id in manager.selected_provider_ids:
-            before = perf_counter()
-            worker = manager._workers[provider_id]
-            state = worker.start()
+            state = startup_states[provider_id]
             print(
                 canonical_json(
                     {
                         "event": "startup",
                         "provider_id": provider_id,
                         "state": state.value,
-                        "pid": worker.pid,
-                        "elapsed_seconds": round(perf_counter() - before, 3),
-                        "error": "" if state is ProviderWorkerState.READY else worker.error,
+                        "pid": pids[provider_id],
+                        "all_selected_startup_seconds": startup_elapsed,
                     }
                 ),
                 flush=True,
