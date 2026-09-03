@@ -87,6 +87,7 @@ class IsolatedJsonLineWorker:
         self._process: subprocess.Popen[str] | None = None
         self._stdout_queue: Queue[str | None] = Queue()
         self._stderr_lines: deque[str] = deque(maxlen=stderr_line_limit)
+        self._stdout_thread: Thread | None = None
         self._stderr_thread: Thread | None = None
 
     @property
@@ -101,7 +102,7 @@ class IsolatedJsonLineWorker:
             }
             and process.poll() is not None
         ):
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
         return self._state
 
@@ -129,6 +130,8 @@ class IsolatedJsonLineWorker:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env=self.environment,
             )
@@ -139,15 +142,17 @@ class IsolatedJsonLineWorker:
         self._process = process
         if process.stdin is None or process.stdout is None or process.stderr is None:
             self._terminate()
+            self._close_streams()
             self._state = ProviderWorkerState.FAILED
             return self._state, None
 
-        Thread(
+        self._stdout_thread = Thread(
             target=_pump_stdout,
             args=(process.stdout, self._stdout_queue),
             daemon=True,
             name="dusty-provider-stdout",
-        ).start()
+        )
+        self._stdout_thread.start()
         self._stderr_thread = Thread(
             target=_pump_stderr,
             args=(process.stderr, self._stderr_lines),
@@ -160,7 +165,7 @@ class IsolatedJsonLineWorker:
             line = self._stdout_queue.get(timeout=self.startup_timeout_seconds)
         except Empty:
             self._terminate()
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         if line is None:
@@ -168,7 +173,7 @@ class IsolatedJsonLineWorker:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         self._state = ProviderWorkerState.READY
@@ -179,7 +184,7 @@ class IsolatedJsonLineWorker:
             return self.state, None
         process = self._process
         if process is None or process.stdin is None or process.poll() is not None:
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         self._state = ProviderWorkerState.BUSY
@@ -190,22 +195,22 @@ class IsolatedJsonLineWorker:
         except (BrokenPipeError, OSError) as exc:
             self._stderr_lines.append(f"{type(exc).__name__}: {exc}")
             self._terminate()
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         try:
             line = self._stdout_queue.get(timeout=self.request_timeout_seconds)
         except Empty:
             self._terminate()
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         if line is None:
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         if process.poll() is not None:
-            self._join_stderr()
+            self._join_readers()
             self._state = self._failure_state()
             return self._state, None
         self._state = ProviderWorkerState.READY
@@ -228,8 +233,11 @@ class IsolatedJsonLineWorker:
                 process.wait(timeout=self.shutdown_timeout_seconds)
             except subprocess.TimeoutExpired:
                 self._terminate()
-        self._join_stderr()
+        self._join_readers()
+        self._close_streams()
         self._process = None
+        self._stdout_thread = None
+        self._stderr_thread = None
         self._state = ProviderWorkerState.STOPPED
         return self._state
 
@@ -243,9 +251,21 @@ class IsolatedJsonLineWorker:
             return ProviderWorkerState.RESOURCE_BLOCKED
         return ProviderWorkerState.FAILED
 
-    def _join_stderr(self) -> None:
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=1)
+    def _join_readers(self) -> None:
+        for thread in (self._stdout_thread, self._stderr_thread):
+            if thread is not None:
+                thread.join(timeout=1)
+
+    def _close_streams(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
     def _terminate(self) -> None:
         process = self._process
