@@ -17,7 +17,8 @@ from dusty.features import FeatureBar
 from dusty.forecasting import Forecast
 from dusty.investment_lab import LaboratoryConfig, run_laboratory_from_bars
 from dusty.local_research import (LocalResearchRuntime, ResearchSettings, _atomic_json, _json,
-    _request_payload, _seal_campaign_queue, execute_research, read_research_result)
+    _publish_campaign_progress, _read_campaign_progress, _request_payload,
+    _seal_campaign_queue, execute_research, read_research_result)
 from dusty.research_campaign import campaign_contract, run_forecast_campaign
 from dusty.research_viewer import case_label, case_overview, trade_detail, trade_values, load_case_report
 from dusty.reviewed_strategies import reviewed_research_packages
@@ -248,7 +249,7 @@ class CampaignLifecycleTests(unittest.TestCase):
                 self.assertTrue(runtime.start(selection()).accepted)
                 path = Path(runtime.poll().run_directory)
                 queue = [{"state": "COMPLETED"}, {"state": "RUNNING"}] + [{"state": "PENDING"} for _ in range(28)]
-                _atomic_json(path/"queue.json", {"queue": queue, "request_sha256": runtime._request_hash,
+                _publish_campaign_progress(path, {"queue": queue, "request_sha256": runtime._request_hash,
                                                 "case_sha256": {}, "promotion_eligible": False})
                 self.assertIn("1/30", runtime.poll().message)
                 if action == "cancel":
@@ -259,7 +260,7 @@ class CampaignLifecycleTests(unittest.TestCase):
                 else:
                     context.process.alive = False
                 self.assertEqual(runtime.poll().state, state)
-                saved = json.loads((path/"queue.json").read_text())["queue"]
+                saved = _read_campaign_progress(path)["queue"]
                 self.assertEqual(saved[0]["state"], "COMPLETED")
                 self.assertEqual(saved[1]["state"], state)
                 self.assertTrue(all(r["state"] == "NOT_RUN" for r in saved[2:]))
@@ -283,10 +284,16 @@ class CampaignLifecycleTests(unittest.TestCase):
             runtime.start(selection())
             path = Path(runtime.poll().run_directory)
             try:
-                _atomic_json(path/"queue.json", {"queue": [{"state": "COMPLETED"} for _ in range(30)],
+                _publish_campaign_progress(path, {"queue": [{"state": "COMPLETED"} for _ in range(30)],
                                                 "request_sha256": "forged"})
                 self.assertNotIn("30/30", runtime.poll().message)
                 self.assertEqual(runtime.poll().state, "RUNNING")
+                _publish_campaign_progress(path, {"queue": [{"state": "COMPLETED"} for _ in range(30)],
+                                                "request_sha256": runtime._request_hash})
+                self.assertIn("30/30", runtime.poll().message)
+                self.assertEqual(runtime.poll().state, "RUNNING")
+                runtime._process.alive = False
+                self.assertEqual(runtime.poll().state, "FAILED")  # No verified final artifacts.
             finally:
                 runtime.emergency_halt()
                 runtime.poll()
@@ -344,7 +351,9 @@ class CampaignLifecycleTests(unittest.TestCase):
             result = execute_research(selected, settings(), path, START, END, reader=FullWindowReader())
             _atomic_json(path/"result.json", result)
             self.assertEqual(read_research_result(path)["state"], "COMPLETED")
-            queue = json.loads((path/"queue.json").read_text())
+            queue = _read_campaign_progress(path)
+            self.assertEqual(len(list(path.glob("queue-*.json"))), 61)
+            self.assertFalse((path/"queue.json").exists())
             self.assertEqual(len(queue["case_sha256"]), 30)
             for filename, digest in queue["case_sha256"].items():
                 self.assertEqual(sha256((path/filename).read_bytes()).hexdigest(), digest)
@@ -360,10 +369,10 @@ class CampaignLifecycleTests(unittest.TestCase):
     def test_queue_seal_preserves_completed_cash_never_resumes(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
-            _atomic_json(path/"queue.json", {"queue": [{"state": s} for s in ("COMPLETED", "RUNNING", "PENDING")],
+            _publish_campaign_progress(path, {"queue": [{"state": s} for s in ("COMPLETED", "RUNNING", "PENDING")],
                                             "case_sha256": {"case-000.json": "a"*64}})
             _seal_campaign_queue(path, "CANCELLED")
-            result = json.loads((path/"queue.json").read_text())
+            result = _read_campaign_progress(path)
             self.assertEqual([r["state"] for r in result["queue"]], ["COMPLETED", "CANCELLED", "NOT_RUN"])
             self.assertEqual(result["case_sha256"], {"case-000.json": "a"*64})
 

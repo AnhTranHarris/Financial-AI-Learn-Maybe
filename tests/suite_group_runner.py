@@ -34,6 +34,7 @@ GROUPS = {
         "test_research_comparison.py",
         "test_research_diagnosis.py",
         "test_forecast_campaign.py",
+        "test_research_progress.py",
         "test_capital_governance.py",
         "test_governance_invariants.py",
         "test_journal_learning.py",

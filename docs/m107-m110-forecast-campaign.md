@@ -5,6 +5,9 @@ The four labels identify delivered engineering components, not four certificatio
 The ordinary seed and M105/M106 comparison semantics remain unchanged. This release does not
 modify, migrate, evaluate or rebind old prospective receipts.
 
+The [Windows progress-file patch](m110-windows-progress-fix.md) removes a reader/writer
+replacement conflict found during local installation, without changing this research protocol.
+
 ## Delivered scope
 
 | Component | Implemented | Not claimed |

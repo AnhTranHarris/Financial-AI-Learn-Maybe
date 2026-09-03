@@ -155,6 +155,46 @@ def _atomic_json(path: Path, value: Any) -> str:
     return sha256(content).hexdigest()
 
 
+# A 30-case campaign publishes 61 normal updates. Leave room for failure/sealing,
+# but never grow an unbounded journal or retry/resume a consumed research run.
+_CAMPAIGN_PROGRESS_LIMIT = 64
+
+
+def _campaign_progress_paths(directory: Path) -> list[Path]:
+    paths = sorted(directory.glob("queue-[0-9][0-9][0-9].json"))
+    if paths and int(paths[-1].stem[-3:]) >= _CAMPAIGN_PROGRESS_LIMIT:
+        raise ValueError("campaign_progress_limit_exceeded")
+    return paths
+
+
+def _publish_campaign_progress(directory: Path, payload: dict[str, Any]) -> Path:
+    """Single-writer, immutable snapshots: never replace a file a poller can hold.
+
+    The worker owns publication while alive; the coordinator may seal only after
+    joining it. Each fsynced temporary is published to a new numbered destination.
+    Readers ignore temporary files. Genuine write failures propagate; no permission
+    changes, retries, mutable latest pointer, or checkpoint pruning are needed.
+    """
+    paths = _campaign_progress_paths(directory)
+    sequence = int(paths[-1].stem[-3:]) + 1 if paths else 0
+    if sequence >= _CAMPAIGN_PROGRESS_LIMIT:
+        raise ValueError("campaign_progress_limit_exceeded")
+    path = directory / f"queue-{sequence:03d}.json"
+    _atomic_json(path, payload)
+    return path
+
+
+def _read_campaign_progress(directory: Path) -> dict[str, Any]:
+    """Read only the latest complete snapshot; it never authorizes completion."""
+    paths = _campaign_progress_paths(directory)
+    if not paths:
+        raise FileNotFoundError("campaign_progress_not_published")
+    payload = json.loads(paths[-1].read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_campaign_progress")
+    return payload
+
+
 def repository_matches(repository: Path, commit: str) -> bool:
     """Refuse to label modified code as an exact reviewed commit."""
     try:
@@ -379,7 +419,7 @@ def execute_research(selection: RuntimeSelection, settings: ResearchSettings, di
             if case is not None:
                 filename = case["id"] + ".json"
                 case_hashes[filename] = _atomic_json(directory / filename, case)
-            _atomic_json(directory / "queue.json", {"queue": queue, "case_sha256": case_hashes,
+            _publish_campaign_progress(directory, {"queue": queue, "case_sha256": case_hashes,
                 "request_sha256": sha256((directory / "request.json").read_bytes()).hexdigest(),
                 "promotion_eligible": False})
 
@@ -623,7 +663,7 @@ class LocalResearchRuntime:
                 self._cancel("research_timeout")
             elif not self._cancel_reason:
                 try:
-                    progress = json.loads((Path(self._view.run_directory) / "queue.json").read_text(encoding="utf-8"))
+                    progress = _read_campaign_progress(Path(self._view.run_directory))
                     queue = progress["queue"]
                     if progress["request_sha256"] == self._request_hash and len(queue) == 30:
                         done = sum(row["state"] == "COMPLETED" for row in queue)
@@ -686,14 +726,17 @@ class LocalResearchRuntime:
 def _seal_campaign_queue(directory: Path, state: str) -> None:
     """Keep completed case evidence; never resume or relabel unfinished work as passed."""
     try:
-        path = directory / "queue.json"
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = _read_campaign_progress(directory)
+        changed = False
         for row in payload["queue"]:
             if row["state"] == "RUNNING":
                 row["state"] = state
+                changed = True
             elif row["state"] == "PENDING":
                 row["state"] = "NOT_RUN"
-        _atomic_json(path, payload)
+                changed = True
+        if changed:
+            _publish_campaign_progress(directory, payload)
     except (OSError, ValueError, KeyError, TypeError):
         pass  # Missing/corrupt checkpoints cannot create a successful result.
 
