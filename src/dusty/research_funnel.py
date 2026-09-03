@@ -83,15 +83,20 @@ class FunnelScreenPolicy:
     def __post_init__(self) -> None:
         if type(self.minimum_closed_trades) is not int or self.minimum_closed_trades < 1:
             raise ValueError("funnel_minimum_closed_trades_must_be_positive_integer")
-        if (isinstance(self.maximum_marked_drawdown, bool)
-                or not math.isfinite(self.maximum_marked_drawdown)
-                or self.maximum_marked_drawdown < 0):
+        if (
+            isinstance(self.maximum_marked_drawdown, bool)
+            or not math.isfinite(self.maximum_marked_drawdown)
+            or self.maximum_marked_drawdown < 0
+        ):
             raise ValueError("funnel_maximum_drawdown_must_be_finite_and_nonnegative")
-        if any(type(value) is not bool for value in (
-            self.require_positive_net_pnl,
-            self.require_development_pass,
-            self.require_stress_pass,
-        )):
+        if any(
+            type(value) is not bool
+            for value in (
+                self.require_positive_net_pnl,
+                self.require_development_pass,
+                self.require_stress_pass,
+            )
+        ):
             raise ValueError("funnel_screen_switches_must_be_boolean")
         if type(self.max_native_candidates) is not int or self.max_native_candidates < 1:
             raise ValueError("funnel_native_candidate_budget_must_be_positive_integer")
@@ -117,16 +122,19 @@ def first_generation_challenger_plan(parent: ReviewedResearchPackage) -> Challen
         threshold = ResearchMutation(MutationKind.ENTRY_THRESHOLD, 42.5, "rsi", RuleOp.LE)
     else:  # pragma: no cover - current research packages are directional
         raise ValueError("funnel_requires_directional_parent")
-    return ChallengerPlan((
-        threshold,
-        ResearchMutation(MutationKind.EXIT_HORIZON_MINUTES, 180),
-        ResearchMutation(MutationKind.EXIT_HORIZON_MINUTES, 300),
-        ResearchMutation(MutationKind.COOLDOWN_STEPS, 0),
-        ResearchMutation(MutationKind.COOLDOWN_STEPS, 8),
-        ResearchMutation(MutationKind.RSI_PERIOD, 10),
-        ResearchMutation(MutationKind.RSI_PERIOD, 21),
-        ResearchMutation(MutationKind.FORECAST_NEUTRAL_RETURN, 0.0002),
-    ), max_candidates=8)
+    return ChallengerPlan(
+        (
+            threshold,
+            ResearchMutation(MutationKind.EXIT_HORIZON_MINUTES, 180),
+            ResearchMutation(MutationKind.EXIT_HORIZON_MINUTES, 300),
+            ResearchMutation(MutationKind.COOLDOWN_STEPS, 0),
+            ResearchMutation(MutationKind.COOLDOWN_STEPS, 8),
+            ResearchMutation(MutationKind.RSI_PERIOD, 10),
+            ResearchMutation(MutationKind.RSI_PERIOD, 21),
+            ResearchMutation(MutationKind.FORECAST_NEUTRAL_RETURN, 0.0002),
+        ),
+        max_candidates=8,
+    )
 
 
 def _serialize_source_bars(rows: tuple[MT5Bar, ...]) -> list[dict[str, Any]]:
@@ -166,7 +174,9 @@ def _economics(payload: Mapping[str, Any]) -> InstrumentEconomics:
     return InstrumentEconomics(**dict(payload["economics"]))
 
 
-def decode_acquisition(result: ResearchCycleResult) -> tuple[tuple[MT5Bar, ...], InstrumentEconomics]:
+def decode_acquisition(
+    result: ResearchCycleResult,
+) -> tuple[tuple[MT5Bar, ...], InstrumentEconomics]:
     """Recover verified acquisition output for the legacy report path without another MT5 read."""
     acquisition = result.output_map()["acquisition"]
     return _source_bars(acquisition), _economics(acquisition)
@@ -201,7 +211,8 @@ def _laboratory_config(
         growth_starting_equity=policy.growth_starting_equity,
         growth_risk_fraction=policy.growth_risk_fraction,
         spread_price=policy.spread_floor_points * economics.point_size,
-        expected_slippage_price=(policy.slippage_points + additional_slippage_points) * economics.point_size,
+        expected_slippage_price=(policy.slippage_points + additional_slippage_points)
+        * economics.point_size,
         commission_per_lot=policy.commission_per_lot,
         max_evidence_items=policy.max_evidence_items,
     )
@@ -230,7 +241,9 @@ def _approved_volume_from_run(run: Any) -> float:
     return total
 
 
-def _segment_screen(metrics: Mapping[str, Any], policy: FunnelScreenPolicy) -> dict[str, Any]:
+def _segment_screen(
+    metrics: Mapping[str, Any], policy: FunnelScreenPolicy
+) -> dict[str, Any]:
     reasons: list[str] = []
     if metrics["growth_trades"] < policy.minimum_closed_trades:
         reasons.append("insufficient_closed_trades")
@@ -241,7 +254,9 @@ def _segment_screen(metrics: Mapping[str, Any], policy: FunnelScreenPolicy) -> d
     return {"passed": not reasons, "reasons": reasons}
 
 
-def _combined_pass(scenarios: Mapping[str, Any], policy: FunnelScreenPolicy) -> tuple[bool, list[str]]:
+def _combined_pass(
+    scenarios: Mapping[str, Any], policy: FunnelScreenPolicy
+) -> tuple[bool, list[str]]:
     required = [("configured", "holdout")]
     if policy.require_development_pass:
         required.append(("configured", "development"))
@@ -249,12 +264,17 @@ def _combined_pass(scenarios: Mapping[str, Any], policy: FunnelScreenPolicy) -> 
         required.append(("stress", "holdout"))
         if policy.require_development_pass:
             required.append(("stress", "development"))
-    failures = [f"{scenario}:{segment}" for scenario, segment in required
-                if not scenarios[scenario]["segments"][segment]["screen"]["passed"]]
+    failures = [
+        f"{scenario}:{segment}"
+        for scenario, segment in required
+        if not scenarios[scenario]["segments"][segment]["screen"]["passed"]
+    ]
     return not failures, failures
 
 
-def _candidate_manifest(parent: ReviewedResearchPackage, challenger_plan: ChallengerPlan) -> list[dict[str, Any]]:
+def _candidate_manifest(
+    parent: ReviewedResearchPackage, challenger_plan: ChallengerPlan
+) -> list[dict[str, Any]]:
     return [
         {
             "candidate_id": candidate_id,
@@ -286,26 +306,38 @@ class UnifiedResearchFunnel:
         if not callable(acquire):
             raise ValueError("funnel_requires_acquisition_runner")
         identity = dict(request)
-        if not isinstance(identity.get("code_commit"), str) or not identity["code_commit"].strip():
+        if not isinstance(identity.get("code_commit"), str) or not identity[
+            "code_commit"
+        ].strip():
             raise ValueError("funnel_requires_code_commit")
-        identity.update({
-            "funnel_protocol": FUNNEL_PROTOCOL,
-            "parent_package_fingerprint": parent.fingerprint,
-            "challenger_plan_fingerprint": challenger_plan.fingerprint,
-            "evaluation_plan": evaluation_plan.payload(),
-            "evaluation_plan_fingerprint": evaluation_plan.fingerprint,
-            "funnel_policy": asdict(policy),
-        })
+        identity.update(
+            {
+                "funnel_protocol": FUNNEL_PROTOCOL,
+                "parent_package_fingerprint": parent.fingerprint,
+                "challenger_plan_fingerprint": challenger_plan.fingerprint,
+                "evaluation_plan": evaluation_plan.payload(),
+                "evaluation_plan_fingerprint": evaluation_plan.fingerprint,
+                "funnel_policy": asdict(policy),
+            }
+        )
 
         def acquisition_stage(_: Mapping[str, Any]) -> dict[str, Any]:
             source, economics = acquire()
             if not source:
                 raise ValueError("funnel_acquisition_returned_no_bars")
-            if tuple(sorted(source, key=lambda row: row.at)) != source or len({row.at for row in source}) != len(source):
+            if tuple(sorted(source, key=lambda row: row.at)) != source or len(
+                {row.at for row in source}
+            ) != len(source):
                 raise ValueError("funnel_acquisition_requires_unique_chronological_bars")
-            if any(row.at.minute % 15 or row.at.second or row.at.microsecond for row in source):
+            if any(
+                row.at.minute % 15 or row.at.second or row.at.microsecond
+                for row in source
+            ):
                 raise ValueError("funnel_acquisition_requires_M15_source_bars")
-            if any(not evaluation_plan.start <= row.at <= evaluation_plan.end for row in source):
+            if any(
+                not evaluation_plan.start <= row.at <= evaluation_plan.end
+                for row in source
+            ):
                 raise ValueError("funnel_acquisition_outside_frozen_evaluation_window")
             serialized = _serialize_source_bars(source)
             return {
@@ -346,8 +378,18 @@ class UnifiedResearchFunnel:
             economics = _economics(outputs["acquisition"])
             manifest = outputs["challengers"]["candidates"]
             packages = _candidate_packages(parent, challenger_plan)
-            expected = {(row[0], row[1].fingerprint, row[1].spec.strategy_hash) for row in packages}
-            observed = {(row["candidate_id"], row["package_fingerprint"], row["strategy_hash"]) for row in manifest}
+            expected = {
+                (row[0], row[1].fingerprint, row[1].spec.strategy_hash)
+                for row in packages
+            }
+            observed = {
+                (
+                    row["candidate_id"],
+                    row["package_fingerprint"],
+                    row["strategy_hash"],
+                )
+                for row in manifest
+            }
             if observed != expected:
                 raise ValueError("funnel_candidate_manifest_drift")
             cases = []
@@ -389,20 +431,26 @@ class UnifiedResearchFunnel:
                         "segments": segments,
                     }
                 passed, failures = _combined_pass(scenarios, policy.screen)
-                cases.append({
-                    "candidate_id": candidate_id,
-                    "package_fingerprint": package.fingerprint,
-                    "strategy_hash": package.spec.strategy_hash,
-                    "mutation": mutation,
-                    "scenarios": scenarios,
-                    "combined_screen_passed": passed,
-                    "combined_screen_failures": failures,
-                    "promotion_eligible": False,
-                })
+                cases.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "package_fingerprint": package.fingerprint,
+                        "strategy_hash": package.spec.strategy_hash,
+                        "mutation": mutation,
+                        "scenarios": scenarios,
+                        "combined_screen_passed": passed,
+                        "combined_screen_failures": failures,
+                        "promotion_eligible": False,
+                    }
+                )
             return {
                 "screen_policy": asdict(policy.screen),
                 "cases": cases,
-                "survivor_ids": sorted(row["candidate_id"] for row in cases if row["combined_screen_passed"]),
+                "survivor_ids": sorted(
+                    row["candidate_id"]
+                    for row in cases
+                    if row["combined_screen_passed"]
+                ),
                 "ranking_performed": False,
                 "promotion_eligible": False,
             }
@@ -411,10 +459,12 @@ class UnifiedResearchFunnel:
             economics = _economics(outputs["acquisition"])
             extra_cost_per_lot = (
                 policy.additional_round_trip_slippage_points
-                * economics.point_size / economics.tick_size * economics.tick_value
+                * economics.point_size
+                / economics.tick_size
+                * economics.tick_value
             )
             rows = []
-            for case in outputs["cheap_screen"]["cases"]:
+            for case in outputs["cheapscreen"]["cases"]:
                 configured = case["scenarios"]["configured"]["segments"]
                 stress = case["scenarios"]["stress"]["segments"]
                 for segment in ("development", "holdout"):
@@ -428,24 +478,28 @@ class UnifiedResearchFunnel:
                         trade_count=original["growth_trades"],
                         original_net_pnl=original["growth_net_pnl"],
                         stressed_net_pnl_same_exposure=same_exposure,
-                        additional_cost_effect=same_exposure - original["growth_net_pnl"],
+                        additional_cost_effect=same_exposure
+                        - original["growth_net_pnl"],
                     )
                     decomposition = decompose_stressed_result(
-                        attribution,
-                        actual["growth_net_pnl"],
+                        attribution, actual["growth_net_pnl"]
                     )
-                    rows.append({
-                        "candidate_id": case["candidate_id"],
-                        "segment": segment,
-                        "approved_volume_lots_frozen": original["approved_volume_lots"],
-                        "additional_cost_per_lot": extra_cost_per_lot,
-                        "original_net_pnl": decomposition.original_net_pnl,
-                        "stressed_net_pnl_same_exposure": attribution.stressed_net_pnl_same_exposure,
-                        "additional_cost_effect_same_exposure": decomposition.additional_cost_effect_same_exposure,
-                        "exposure_or_sequence_effect": decomposition.exposure_or_sequence_effect,
-                        "actual_stressed_net_pnl": decomposition.actual_stressed_net_pnl,
-                        "actual_total_change": decomposition.total_change,
-                    })
+                    rows.append(
+                        {
+                            "candidate_id": case["candidate_id"],
+                            "segment": segment,
+                            "approved_volume_lots_frozen": original[
+                                "approved_volume_lots"
+                            ],
+                            "additional_cost_per_lot": extra_cost_per_lot,
+                            "original_net_pnl": decomposition.original_net_pnl,
+                            "stressed_net_pnl_same_exposure": attribution.stressed_net_pnl_same_exposure,
+                            "additional_cost_effect_same_exposure": decomposition.additional_cost_effect_same_exposure,
+                            "exposure_or_sequence_effect": decomposition.exposure_or_sequence_effect,
+                            "actual_stressed_net_pnl": decomposition.actual_stressed_net_pnl,
+                            "actual_total_change": decomposition.total_change,
+                        }
+                    )
             return {
                 "matched_exposure_cost_attribution": rows,
                 "forecast_veto_attribution": {
@@ -456,8 +510,10 @@ class UnifiedResearchFunnel:
             }
 
         def fidelity_stage(outputs: Mapping[str, Any]) -> dict[str, Any]:
-            survivors = outputs["cheap_screen"]["survivor_ids"]
-            by_id = {row["candidate_id"]: row for row in outputs["challengers"]["candidates"]}
+            survivors = outputs["cheapscreen"]["survivor_ids"]
+            by_id = {
+                row["candidate_id"]: row for row in outputs["challengers"]["candidates"]
+            }
             if len(survivors) > policy.screen.max_native_candidates:
                 return {
                     "status": "BUDGET_BLOCKED_TOO_MANY_SURVIVORS",
@@ -484,7 +540,11 @@ class UnifiedResearchFunnel:
                 for candidate_id in survivors
             ]
             return {
-                "status": "READY_FOR_OPEN_PRICES_VALIDATION" if proposals else "NO_CANDIDATE_PASSED_PYTHON_SCREEN",
+                "status": (
+                    "READY_FOR_OPEN_PRICES_VALIDATION"
+                    if proposals
+                    else "NO_CANDIDATE_PASSED_PYTHON_SCREEN"
+                ),
                 "survivor_count": len(survivors),
                 "native_candidate_budget": policy.screen.max_native_candidates,
                 "proposals": proposals,
@@ -496,9 +556,9 @@ class UnifiedResearchFunnel:
             ResearchStage("acquisition", "1", acquisition_stage),
             ResearchStage("features", "1", feature_stage),
             ResearchStage("challengers", "1", challenger_stage),
-            ResearchStage("cheap_screen", "1", cheap_screen_stage),
+            ResearchStage("cheapscreen", "1", cheap_screen_stage),
             ResearchStage("diagnostics", "1", diagnostic_stage),
-            ResearchStage("fidelity_queue", "1", fidelity_stage),
+            ResearchStage("fidelityqueue", "1", fidelity_stage),
         )
         return self._cycle.run(identity, stages)
 
@@ -512,9 +572,9 @@ def compact_funnel_report(result: ResearchCycleResult) -> dict[str, Any]:
         "cache_hit": result.cache_hit,
         "reused_stages": list(result.reused_stages),
         "challengers": outputs["challengers"],
-        "cheap_screen": outputs["cheap_screen"],
+        "cheap_screen": outputs["cheapscreen"],
         "diagnostics": outputs["diagnostics"],
-        "fidelity_queue": outputs["fidelity_queue"],
+        "fidelity_queue": outputs["fidelityqueue"],
         "promotion_eligible": False,
         "selected_winner": None,
     }
