@@ -193,10 +193,7 @@ def build_chronos2_request(
     if snapshot.spec.model_revision is None or snapshot.spec.runtime_version is None:
         raise ValueError("chronos2_provider_identity_is_not_pinned")
     rows = _rows(bars)
-    context = tuple(
-        {"at": bar.at.isoformat(), "close": bar.close}
-        for bar in rows
-    )
+    context = tuple({"at": bar.at.isoformat(), "close": bar.close} for bar in rows)
     context_sha = payload_sha256(context)
     return {
         "protocol": PROTOCOL,
@@ -244,8 +241,8 @@ def _child_environment(source: Mapping[str, str] | None = None) -> dict[str, str
     return environment
 
 
-def _bounded_error(value: str, *, limit: int = 1000) -> str:
-    rendered = " ".join(value.strip().split())
+def _bounded_error(value: str | None, *, limit: int = 1000) -> str:
+    rendered = " ".join((value or "").strip().split())
     return rendered[:limit] if rendered else "no_provider_error_text"
 
 
@@ -301,6 +298,8 @@ class Chronos2ForecastAdapter:
                 input=request_text,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout_seconds,
                 env=_child_environment(),
                 check=False,
@@ -311,7 +310,7 @@ class Chronos2ForecastAdapter:
             return self._unavailable(f"provider_launch_failed:{type(exc).__name__}:{exc}")
         if completed.returncode != 0:
             return self._unavailable(f"provider_process_failed:{_bounded_error(completed.stderr)}")
-        response_text = completed.stdout.strip()
+        response_text = (completed.stdout or "").strip()
         if not response_text:
             return self._unavailable("provider_empty_response")
         try:
@@ -358,7 +357,10 @@ class Chronos2ForecastAdapter:
         if not isinstance(quantiles, dict):
             raise TypeError("response_quantiles_must_be_object")
         p10, p50, p90 = (quantiles.get(key) for key in ("p10", "p50", "p90"))
-        if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (origin, p10, p50, p90)):
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in (origin, p10, p50, p90)
+        ):
             raise TypeError("response_prices_must_be_numbers")
         context = request["context"]
         if not isinstance(context, list) or not context:
