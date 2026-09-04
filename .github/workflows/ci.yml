@@ -22,6 +22,34 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Compile Python
         run: python -m compileall -q src tests
+      - name: Windows PowerShell 5.1 diagnostic capture gate
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $code = 1
+          $captured = @()
+          $tmp = Join-Path $env:RUNNER_TEMP "dusty-ps51-capture.txt"
+          try {
+              $ErrorActionPreference = "Continue"
+              $captured = @(& python -c "import sys; print('DUSTY_PS51_OK'); sys.exit(7)" 2>&1)
+              if ($null -ne $LASTEXITCODE) {
+                  $code = [int]$LASTEXITCODE
+              }
+          }
+          finally {
+              $ErrorActionPreference = "Stop"
+          }
+          $textLines = @($captured | ForEach-Object { if ($null -eq $_) { "" } else { $_.ToString() } })
+          Set-Content -LiteralPath $tmp -Value $textLines -Encoding UTF8
+          if ($code -ne 7) { throw "Native exit capture failed: $code" }
+          if (-not (Select-String -LiteralPath $tmp -SimpleMatch "DUSTY_PS51_OK" -Quiet)) {
+              throw "UTF-8 diagnostic capture marker missing"
+          }
+          if (Select-String -LiteralPath ".\tools\diagnose_vibe_ollama.ps1" -SimpleMatch "Tee-Object -FilePath" -Quiet) {
+              throw "Vibe diagnostic wrapper regressed to Tee-Object; Windows PowerShell 5.1 has no Tee-Object -Encoding."
+          }
       - name: Feature engine gate
         run: python -m unittest discover -s tests -p "test_features.py" -v
       - name: Cognition derivation gate
