@@ -29,6 +29,13 @@ class VibeOllamaDiagnosticV2Tests(unittest.TestCase):
             self._stage("native_tool_call", "pass"),
         ]
 
+    def _compat_ok(self):
+        return self._native_ok() + [
+            self._stage("openai_chat_no_think", "pass"),
+            self._stage("openai_tool_call_no_think", "pass"),
+            self._stage("vibe_doctor", "pass"),
+        ]
+
     def test_classifies_native_model_failure_before_compatibility(self):
         stages = [
             self._stage("ollama", "pass"),
@@ -48,21 +55,27 @@ class VibeOllamaDiagnosticV2Tests(unittest.TestCase):
         ]
         self.assertEqual(MODULE._classification(stages), "OLLAMA_OPENAI_TOOL_COMPAT_BLOCKED")
 
-    def test_classifies_vibe_reasoning_adapter_failure(self):
-        stages = self._native_ok() + [
-            self._stage("openai_chat_no_think", "pass"),
-            self._stage("openai_tool_call_no_think", "pass"),
-            self._stage("vibe_doctor", "pass"),
+    def test_confirms_vibe_reasoning_capability_gap_only_when_shim_passes(self):
+        stages = self._compat_ok() + [
             self._stage("vibe_agent", "fail"),
+            self._stage("vibe_agent_reasoning_shim", "pass"),
         ]
-        self.assertEqual(MODULE._classification(stages), "VIBE_OLLAMA_REASONING_ADAPTER_BLOCKED")
+        self.assertEqual(
+            MODULE._classification(stages),
+            "VIBE_OLLAMA_REASONING_CAPABILITY_GAP_CONFIRMED",
+        )
 
-    def test_pass_requires_all_paths(self):
-        stages = self._native_ok() + [
-            self._stage("openai_chat_no_think", "pass"),
-            self._stage("openai_tool_call_no_think", "pass"),
-            self._stage("vibe_doctor", "pass"),
+    def test_classifies_agent_loop_failure_when_stock_and_shim_fail(self):
+        stages = self._compat_ok() + [
+            self._stage("vibe_agent", "fail"),
+            self._stage("vibe_agent_reasoning_shim", "fail"),
+        ]
+        self.assertEqual(MODULE._classification(stages), "VIBE_AGENT_LOOP_BLOCKED")
+
+    def test_pass_requires_stock_vibe_agent(self):
+        stages = self._compat_ok() + [
             self._stage("vibe_agent", "pass"),
+            self._stage("vibe_agent_reasoning_shim", "skip"),
         ]
         self.assertEqual(MODULE._classification(stages), "PASS")
 
@@ -73,6 +86,15 @@ class VibeOllamaDiagnosticV2Tests(unittest.TestCase):
         raw = buffer.getvalue().strip()
         raw.encode("ascii")
         self.assertEqual(json.loads(raw)["detail"], "box │ line")
+
+    def test_skip_emits_machine_readable_stage(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = MODULE._skip("demo", "not_needed")
+        self.assertEqual(result.status, "skip")
+        payload = json.loads(buffer.getvalue().strip())
+        self.assertEqual(payload["name"], "demo")
+        self.assertEqual(payload["status"], "skip")
 
     def test_tool_name_extracts_function(self):
         message = {"tool_calls": [{"function": {"name": "dusty_echo", "arguments": "{}"}}]}
