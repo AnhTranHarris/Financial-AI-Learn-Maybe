@@ -70,8 +70,9 @@ try {
         Write-Host "M114.1 DIRECT PROVIDER STARTUP PROBE PASSED"
     }
     else {
-        Write-Host "M114.1 DIRECT PROVIDER STARTUP PROBE FOUND THE BOTTLENECK"
-        Write-Host "This is a diagnostic result; do not reinstall anything."
+        Write-Host "M114.1 DIRECT PROVIDER STARTUP PROBE COMPLETED WITH DIAGNOSTIC FAILURES"
+        Write-Host "The report identifies the last completed stage for each provider."
+        Write-Host "Do not reinstall anything."
     }
     Write-Host "Report: $ReportPath"
     Write-Host "Log:    $LogPath"
