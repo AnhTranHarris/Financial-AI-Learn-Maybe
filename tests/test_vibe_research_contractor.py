@@ -107,8 +107,9 @@ class VibeResearchContractorTests(unittest.TestCase):
         self.assertNotIn("OLLAMA_BASE_URL", env)
         self.assertNotIn("MT5_LOGIN", env)
         self.assertEqual(env["VIBE_TRADING_ENABLE_SHELL_TOOLS"], "0")
-        self.assertTrue(str(env["HOME"]).startswith(str(self.work_root)))
-        self.assertTrue(str(env["USERPROFILE"]).startswith(str(self.work_root)))
+        resolved_work_root = self.work_root.resolve()
+        Path(str(env["HOME"])).resolve().relative_to(resolved_work_root)
+        Path(str(env["USERPROFILE"])).resolve().relative_to(resolved_work_root)
 
     def test_backtest_path_outside_work_root_fails_before_launch(self) -> None:
         runner = _CaptureRunner(self._ok_response)
