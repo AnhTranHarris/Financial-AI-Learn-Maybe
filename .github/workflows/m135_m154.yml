@@ -33,6 +33,7 @@ jobs:
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
+          tests/test_m1542_qwen_timeout_hardening.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
 
@@ -44,6 +45,9 @@ jobs:
 
       - name: M154.1 hardware orchestration gate
         run: python -m unittest discover -s tests -p "test_m1541_hardware_certification.py" -v
+
+      - name: M154.2 Qwen latency hardening gate
+        run: python -m unittest discover -s tests -p "test_m1542_qwen_timeout_hardening.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
