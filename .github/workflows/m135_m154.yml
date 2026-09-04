@@ -62,13 +62,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          $scriptPath = Resolve-Path ".\tools\validate_m135_m154_hardware.ps1"
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path ".\tools\validate_m135_m154_hardware.ps1"),
+              $scriptPath,
               [ref]$null,
               [ref]$errors
           )
           if ($errors.Count -gt 0) {
               $errors | ForEach-Object { Write-Host $_.Message }
               exit 1
+          }
+          $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+          if (-not $scriptText.Contains('& powershell.exe @softwareArgs')) {
+              throw "M154.1 wrapper must isolate the nested software validator in a child PowerShell process."
           }
