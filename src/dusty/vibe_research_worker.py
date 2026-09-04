@@ -9,7 +9,9 @@ request on stdin and receives exactly one JSON response on stdout.
 
 import contextlib
 from hashlib import sha256
+import importlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -66,19 +68,51 @@ def _unwrap(candidate: Any) -> Callable[..., Any]:
     return fn
 
 
+def _distribution_surface() -> Path | None:
+    """Return the installed vibe-trading-ai top-level mcp_server.py if present."""
+
+    distribution = importlib.metadata.distribution("vibe-trading-ai")
+    for item in distribution.files or ():
+        normalized = str(item).replace("\\", "/")
+        if normalized != "mcp_server.py":
+            continue
+        candidate = Path(distribution.locate_file(item)).resolve()
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _load_surface(vibe_root: Path) -> tuple[Any, str]:
-    agent_dir = vibe_root / "agent"
-    surface = agent_dir / "mcp_server.py"
-    if not surface.is_file():
-        raise FileNotFoundError("vibe_mcp_surface_missing")
+    # v0.1.14's wheel installs mcp_server.py as a top-level py-module. Prefer
+    # that exact installed distribution artifact because the provider Python is
+    # already pinned to the Vibe venv. Editable/source installs can fall back to
+    # vibe_root/agent/mcp_server.py.
+    surface = _distribution_surface()
+    if surface is None:
+        source_surface = (vibe_root / "agent" / "mcp_server.py").resolve()
+        if not source_surface.is_file():
+            raise FileNotFoundError("vibe_mcp_surface_missing")
+        surface = source_surface
+        agent_dir = str(source_surface.parent)
+        if agent_dir not in sys.path:
+            sys.path.insert(0, agent_dir)
+
+    spec = importlib.util.find_spec("mcp_server")
+    if spec is None or not spec.origin:
+        raise FileNotFoundError("vibe_mcp_module_not_importable")
+    origin = Path(spec.origin).resolve()
+    if origin != surface:
+        raise RuntimeError(f"vibe_mcp_surface_origin_mismatch:{origin}")
+
     digest = sha256(surface.read_bytes()).hexdigest()
-    if str(agent_dir) not in sys.path:
-        sys.path.insert(0, str(agent_dir))
     # Third-party libraries sometimes print banners during import. Keep stdout
     # reserved for Dusty's protocol and route any such chatter to stderr.
     with contextlib.redirect_stdout(sys.stderr):
-        import mcp_server  # type: ignore[import-not-found]
-    return mcp_server, digest
+        module = importlib.import_module("mcp_server")
+    module_file = getattr(module, "__file__", None)
+    if not module_file or Path(module_file).resolve() != surface:
+        raise RuntimeError("vibe_mcp_loaded_origin_mismatch")
+    return module, digest
 
 
 def _validate_paths(tool: str, arguments: dict[str, object], work_root: Path) -> None:
