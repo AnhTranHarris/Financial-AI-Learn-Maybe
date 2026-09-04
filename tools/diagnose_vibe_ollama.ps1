@@ -29,8 +29,16 @@ Write-Host "M114.3 Vibe -> Ollama diagnostic v2"
 Write-Host "Read-only A/B test: native Ollama vs OpenAI-compatible path used by Vibe."
 Write-Host "No Vibe config changes, no MT5, no broker credentials, no orders."
 Write-Host "Model: $Model"
+Write-Host "Windows PowerShell: $($PSVersionTable.PSVersion)"
 Write-Host ""
 
+# Windows PowerShell 5.1 Tee-Object has no -Encoding parameter.  Capture the
+# bounded diagnostic output first, then display it and persist it with
+# Set-Content -Encoding UTF8, which is supported on 5.1.  Initialize the exit
+# code before invocation so an unexpected wrapper exception can never leave an
+# undefined variable under Set-StrictMode.
+$code = 1
+$captured = @()
 $previousEncoding = [Console]::OutputEncoding
 try {
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -38,18 +46,44 @@ try {
     $env:PYTHONIOENCODING = "utf-8"
 
     $ErrorActionPreference = "Continue"
-    & $dustyPython $diagnostic `
-        --vibe-root $VibeRoot `
-        --model $Model `
-        --http-timeout $HttpTimeoutSeconds `
-        --agent-timeout $AgentTimeoutSeconds `
-        --report $report 2>&1 | Tee-Object -FilePath $log -Encoding UTF8
-    $code = $LASTEXITCODE
-    $ErrorActionPreference = "Stop"
+    try {
+        $captured = @(
+            & $dustyPython $diagnostic `
+                --vibe-root $VibeRoot `
+                --model $Model `
+                --http-timeout $HttpTimeoutSeconds `
+                --agent-timeout $AgentTimeoutSeconds `
+                --report $report 2>&1
+        )
+        if ($null -ne $LASTEXITCODE) {
+            $code = [int]$LASTEXITCODE
+        }
+    }
+    catch {
+        $captured += $_
+        $code = 1
+    }
+    finally {
+        $ErrorActionPreference = "Stop"
+    }
 }
 finally {
     [Console]::OutputEncoding = $previousEncoding
 }
+
+$textLines = @(
+    $captured | ForEach-Object {
+        if ($null -eq $_) {
+            ""
+        }
+        else {
+            $_.ToString()
+        }
+    }
+)
+
+$textLines | ForEach-Object { Write-Host $_ }
+Set-Content -LiteralPath $log -Value $textLines -Encoding UTF8
 
 Write-Host ""
 if ($code -eq 0) {
