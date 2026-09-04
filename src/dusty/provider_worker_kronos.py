@@ -3,6 +3,7 @@ from __future__ import annotations
 """External Kronos-small worker executed only by its isolated Python."""
 
 import argparse
+from contextlib import redirect_stdout
 from datetime import datetime
 from hashlib import sha256
 import json
@@ -319,9 +320,9 @@ def _run_one_shot() -> int:
         if not raw.strip():
             raise ValueError("empty_provider_request")
         request = _validate_request(json.loads(raw))
-        np, pd, torch, predictor, version = _load_runtime()
-        _write_stdout(
-            _run_loaded(
+        with redirect_stdout(sys.stderr):
+            np, pd, torch, predictor, version = _load_runtime()
+            response = _run_loaded(
                 request,
                 np=np,
                 pd=pd,
@@ -329,7 +330,7 @@ def _run_one_shot() -> int:
                 predictor=predictor,
                 installed_version=version,
             )
-        )
+        _write_stdout(response)
         return 0
     except Exception as exc:
         _write_error(exc)
@@ -338,7 +339,8 @@ def _run_one_shot() -> int:
 
 def _run_persistent() -> int:
     try:
-        np, pd, torch, predictor, version = _load_runtime()
+        with redirect_stdout(sys.stderr):
+            np, pd, torch, predictor, version = _load_runtime()
         _write_stdout(_ready_event(version))
     except Exception as exc:
         _write_error(exc)
@@ -348,8 +350,8 @@ def _run_persistent() -> int:
             continue
         try:
             request = _validate_request(json.loads(raw))
-            _write_stdout(
-                _run_loaded(
+            with redirect_stdout(sys.stderr):
+                response = _run_loaded(
                     request,
                     np=np,
                     pd=pd,
@@ -357,7 +359,7 @@ def _run_persistent() -> int:
                     predictor=predictor,
                     installed_version=version,
                 )
-            )
+            _write_stdout(response)
         except Exception as exc:
             _write_error(exc)
             return 2
