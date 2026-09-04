@@ -91,8 +91,11 @@ class VibeResearchContractor:
         python_executable = _vibe_python(self.vibe_root)
         if not python_executable.is_file():
             return self._unavailable("vibe_python_missing")
-        if not (self.vibe_root / "agent" / "mcp_server.py").is_file():
-            return self._unavailable("vibe_mcp_surface_missing")
+        # Do not require a source checkout at ``vibe_root/agent/mcp_server.py``.
+        # vibe-trading-ai 0.1.14 installs mcp_server as a top-level py-module in
+        # the provider venv. The isolated worker resolves and hashes that exact
+        # installed distribution surface, with source-tree fallback for editable
+        # installs.
         if not self.worker_path.is_file():
             return self._unavailable("vibe_worker_missing")
 
