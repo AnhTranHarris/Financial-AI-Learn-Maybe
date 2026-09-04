@@ -128,6 +128,8 @@ class IsolatedChronosAdapterTests(unittest.TestCase):
             self.assertEqual(calls[0][0][0], str(registry.snapshot(CHRONOS2_PROVIDER_ID).python_executable))
             self.assertEqual(calls[0][0][1], str(worker))
             self.assertEqual(calls[0][1]["timeout"], 180)
+            self.assertEqual(calls[0][1]["encoding"], "utf-8")
+            self.assertEqual(calls[0][1]["errors"], "replace")
             self.assertEqual(calls[0][1]["env"]["HF_HUB_OFFLINE"], "1")
             self.assertEqual(calls[0][1]["env"]["CUDA_VISIBLE_DEVICES"], "")
 
