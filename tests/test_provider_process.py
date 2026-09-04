@@ -36,6 +36,32 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIs(worker.stop(), ProviderWorkerState.STOPPED)
         self.assertIs(worker.state, ProviderWorkerState.STOPPED)
 
+    def test_utf8_stderr_does_not_kill_reader_on_windows_locale(self):
+        child = (
+            "import sys\n"
+            "sys.stderr.buffer.write(b'progress:\\xe5\\x8d\\x8d\\n')\n"
+            "sys.stderr.buffer.flush()\n"
+            "print('READY', flush=True)\n"
+            "for line in sys.stdin:\n"
+            "    print('ACK:' + line.strip(), flush=True)\n"
+        )
+        worker = IsolatedJsonLineWorker(
+            (sys.executable, "-u", "-c", child),
+            environment=os.environ,
+            startup_timeout_seconds=5,
+            request_timeout_seconds=5,
+        )
+        try:
+            state, ready = worker.start()
+            self.assertIs(state, ProviderWorkerState.READY)
+            self.assertEqual(ready, "READY")
+            state, response = worker.transact("probe")
+            self.assertIs(state, ProviderWorkerState.READY)
+            self.assertEqual(response, "ACK:probe")
+            self.assertIn("progress:卍", worker.stderr_excerpt)
+        finally:
+            self.assertIs(worker.stop(), ProviderWorkerState.STOPPED)
+
     def test_resource_failure_is_classified_without_affecting_parent(self):
         child = (
             "import sys\n"
