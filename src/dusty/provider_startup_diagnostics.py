@@ -44,7 +44,9 @@ class StartupDiagnostic:
         }
 
 
-def _bounded(value: str, limit: int = 4000) -> str:
+def _bounded(value: str | None, limit: int = 4000) -> str:
+    if value is None:
+        return ""
     rendered = "\n".join(line.rstrip() for line in value.splitlines() if line.strip())
     return rendered[-limit:]
 
@@ -128,6 +130,8 @@ def diagnose_provider(
             [str(snapshot.python_executable), "-u", "-c", _script(snapshot)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             env=environment,
             check=False,
@@ -154,7 +158,7 @@ def diagnose_provider(
             stderr="",
             error=f"startup_probe_launch_failed:{type(exc).__name__}:{exc}",
         )
-    stages = _parse_stages(completed.stdout)
+    stages = _parse_stages(completed.stdout or "")
     passed = bool(stages and stages[-1].get("stage") == "startup_probe_passed")
     status = "passed" if completed.returncode == 0 and passed else "failed"
     error = "" if status == "passed" else f"startup_probe_exit:{completed.returncode}"
