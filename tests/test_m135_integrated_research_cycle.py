@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 import unittest
 
@@ -45,8 +46,10 @@ def _raw_bars(count: int = 96) -> tuple[MT5Bar, ...]:
     return tuple(rows)
 
 
-def _digest(char: str) -> str:
-    return char * 64
+def _digest(label: str) -> str:
+    """Return a real lowercase SHA-256 identity for synthetic evidence."""
+
+    return sha256(label.encode("utf-8")).hexdigest()
 
 
 class _FakeManager:
@@ -113,9 +116,9 @@ class _FakeManager:
                 p10=min(origin * 0.997, p50),
                 p50=p50,
                 p90=max(origin * 1.003, p50),
-                context_sha256=_digest(char),
-                request_sha256=_digest(chr(ord(char) + 3)),
-                response_sha256=_digest(chr(ord(char) + 6)),
+                context_sha256=_digest(f"{provider_id}:context"),
+                request_sha256=_digest(f"{provider_id}:request"),
+                response_sha256=_digest(f"{provider_id}:response"),
             )
             results.append(
                 ContractorForecastResult(
@@ -209,6 +212,11 @@ class M135IntegratedResearchCycleTests(unittest.TestCase):
             self.assertTrue(manager.stopped)
         finally:
             store.close()
+
+    def test_synthetic_forecast_identities_are_real_sha256(self):
+        value = _digest("chronos2:response")
+        self.assertEqual(len(value), 64)
+        self.assertTrue(all(char in "0123456789abcdef" for char in value))
 
 
 if __name__ == "__main__":
