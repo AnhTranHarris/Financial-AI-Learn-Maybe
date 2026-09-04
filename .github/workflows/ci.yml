@@ -109,6 +109,15 @@ jobs:
         run: python -m unittest discover -s tests -p "test_provider_startup_diagnostics.py" -v
       - name: Vibe research contractor gate
         run: python -m unittest discover -s tests -p "test_vibe_research_contractor.py" -v
+      - name: M115-M134 research brain gate
+        run: python -m unittest discover -s tests -p "test_research_brain_m115_m134.py" -v
+      - name: M115-M134 Windows local-validator gate
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $validationRoot = Join-Path $env:RUNNER_TEMP "m115-m134-validation"
+          & .\tools\validate_m115_m134.ps1 -ExpectedHead $env:GITHUB_SHA -ValidationRoot $validationRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Connected research gate
         run: python -m unittest discover -s tests -p "test_connected_research.py" -v
       - name: Sizing transparency and cross-version numerics gate
