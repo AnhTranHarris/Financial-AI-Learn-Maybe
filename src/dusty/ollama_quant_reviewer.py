@@ -31,6 +31,9 @@ RESPONSE_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
 }
 
+REVIEW_KEEP_ALIVE = "10m"
+REVIEW_NUM_PREDICT = 384
+
 
 Transport = Callable[[str, str, dict[str, object] | None, float], dict[str, object]]
 
@@ -75,7 +78,7 @@ class LocalQuantReviewResult:
 
 
 class OllamaQuantReviewer:
-    """Optional localhost reviewer.  Transport/model faults degrade to UNAVAILABLE."""
+    """Optional localhost reviewer. Transport/model faults degrade to UNAVAILABLE."""
 
     def __init__(
         self,
@@ -120,8 +123,13 @@ class OllamaQuantReviewer:
                         {"role": "user", "content": json.dumps(prompt, sort_keys=True, separators=(",", ":"))},
                     ],
                     "stream": False,
+                    "think": False,
                     "format": RESPONSE_SCHEMA,
-                    "options": {"temperature": 0},
+                    "keep_alive": REVIEW_KEEP_ALIVE,
+                    "options": {
+                        "temperature": 0,
+                        "num_predict": REVIEW_NUM_PREDICT,
+                    },
                 },
                 self.timeout_seconds,
             )
