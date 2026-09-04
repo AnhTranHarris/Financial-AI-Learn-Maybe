@@ -50,6 +50,7 @@ jobs:
           if (Select-String -LiteralPath ".\tools\diagnose_vibe_ollama.ps1" -SimpleMatch "Tee-Object -FilePath" -Quiet) {
               throw "Vibe diagnostic wrapper regressed to Tee-Object; Windows PowerShell 5.1 has no Tee-Object -Encoding."
           }
+          exit 0
       - name: Feature engine gate
         run: python -m unittest discover -s tests -p "test_features.py" -v
       - name: Cognition derivation gate
