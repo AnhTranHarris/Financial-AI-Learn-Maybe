@@ -54,17 +54,23 @@ Write-Host "M154.1 local workstation certification"
 Write-Host ("HEAD: " + $head)
 Write-Host "Safety: read-only MT5 history; no orders, broker writes, risk override, entry veto, or Champion promotion."
 
-$softwareArgs = @{
-    ExpectedHead = $head
-    ValidationRoot = $ValidationRoot
-}
+# Run the software validator in a separate PowerShell process.  Its deliberate
+# exit code must never terminate this hardware wrapper before the hardware path
+# is exercised.
+$softwareValidator = Join-Path $Repo "tools\validate_m135_m154.ps1"
+$softwareArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $softwareValidator,
+    "-ExpectedHead", $head,
+    "-ValidationRoot", $ValidationRoot
+)
 if ($FullSuite) {
-    & (Join-Path $Repo "tools\validate_m135_m154.ps1") @softwareArgs -FullSuite
+    $softwareArgs += "-FullSuite"
 }
-else {
-    & (Join-Path $Repo "tools\validate_m135_m154.ps1") @softwareArgs
-}
-if ($LASTEXITCODE -ne 0) {
+& powershell.exe @softwareArgs
+$softwareCode = $LASTEXITCODE
+if ($softwareCode -ne 0) {
     throw "M135-M154 software validation failed. Hardware certification was not started."
 }
 
