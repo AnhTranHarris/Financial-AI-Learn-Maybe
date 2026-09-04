@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from dusty.vibe_research_contract import (
     ALLOWED_TOOLS,
@@ -95,6 +96,13 @@ class VibeResearchContractorTests(unittest.TestCase):
         self.assertFalse(evidence.promotion_authority)
         self.assertEqual(len(evidence.fingerprint), 64)
 
+    def test_source_checkout_mcp_file_is_not_required_for_packaged_install(self) -> None:
+        (self.vibe_root / "agent" / "mcp_server.py").unlink()
+        runner = _CaptureRunner(self._ok_response)
+        result = self._contractor(runner).invoke("alpha_zoo", {"action": "health"})
+        self.assertTrue(result.available)
+        self.assertEqual(len(runner.calls), 1)
+
     def test_child_environment_isolated_from_llm_and_trading_authority(self) -> None:
         runner = _CaptureRunner(self._ok_response)
         result = self._contractor(runner).invoke("alpha_zoo", {"action": "health"})
@@ -140,6 +148,22 @@ class VibeResearchContractorTests(unittest.TestCase):
         result = self._contractor(_CaptureRunner(response)).invoke("alpha_zoo", {"action": "health"})
         self.assertFalse(result.available)
         self.assertIn("worker_error", result.error)
+
+    def test_worker_distribution_surface_resolves_top_level_packaged_module(self) -> None:
+        packaged_surface = Path(self.temp.name) / "site-packages" / "mcp_server.py"
+        packaged_surface.parent.mkdir(parents=True)
+        packaged_surface.write_text("# packaged\n", encoding="utf-8")
+
+        class FakeDistribution:
+            files = ("mcp_server.py",)
+
+            @staticmethod
+            def locate_file(item):
+                self.assertEqual(str(item), "mcp_server.py")
+                return packaged_surface
+
+        with mock.patch.object(worker.importlib.metadata, "distribution", return_value=FakeDistribution()):
+            self.assertEqual(worker._distribution_surface(), packaged_surface.resolve())
 
     def test_worker_unwrap_supports_fastmcp_v2_style_fn(self) -> None:
         def demo(value):
