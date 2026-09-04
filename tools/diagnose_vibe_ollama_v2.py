@@ -6,6 +6,10 @@ Compares Ollama native chat with thinking disabled against the exact
 OpenAI-compatible path used by Vibe. The OpenAI probes explicitly send
 reasoning_effort='none', which current Ollama documents as the supported way to
 disable thinking on /v1/chat/completions.
+
+If stock Vibe fails after both Ollama paths pass, one final bounded probe runs
+Vibe through a process-local compatibility shim. The shim changes only Vibe's
+in-memory Ollama capability record; it never edits the installed package.
 """
 
 import argparse
@@ -88,6 +92,12 @@ def _stage(name: str, fn) -> StageResult:
     return result
 
 
+def _skip(name: str, detail: str) -> StageResult:
+    result = StageResult(name, "skip", 0.0, detail)
+    _emit({"event": "stage", **asdict(result)})
+    return result
+
+
 def _native_message(response: Any) -> dict[str, Any]:
     if not isinstance(response, dict) or not isinstance(response.get("message"), dict):
         raise RuntimeError("native_chat_schema_invalid")
@@ -144,7 +154,9 @@ def _classification(stages: list[StageResult]) -> str:
     if not passed("vibe_doctor"):
         return "VIBE_PROVIDER_CONFIG_BLOCKED"
     if not passed("vibe_agent"):
-        return "VIBE_OLLAMA_REASONING_ADAPTER_BLOCKED"
+        if passed("vibe_agent_reasoning_shim"):
+            return "VIBE_OLLAMA_REASONING_CAPABILITY_GAP_CONFIRMED"
+        return "VIBE_AGENT_LOOP_BLOCKED"
     return "PASS"
 
 
@@ -162,27 +174,38 @@ def main(argv: list[str] | None = None) -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     vibe_python = vibe_root / ".venv" / "Scripts" / "python.exe"
     vibe_cli = vibe_root / ".venv" / "Scripts" / "vibe-trading.exe"
+    shim_path = Path(__file__).with_name("vibe_ollama_reasoning_shim.py").resolve()
     stages: list[StageResult] = []
 
     _emit({
         "event": "diagnostic_start_v2",
         "model": args.model,
         "vibe_root": str(vibe_root),
-        "safety": {"config_write": False, "mt5": False, "broker_credentials": False, "orders": False},
+        "safety": {
+            "config_write": False,
+            "mt5": False,
+            "broker_credentials": False,
+            "orders": False,
+            "installed_vibe_patch": False,
+        },
     })
 
     stages.append(_stage("paths", lambda: (
-        f"python={vibe_python};cli={vibe_cli}"
-        if vibe_python.is_file() and vibe_cli.is_file()
-        else (_ for _ in ()).throw(FileNotFoundError("vibe_virtualenv_or_cli_missing"))
+        f"python={vibe_python};cli={vibe_cli};shim={shim_path}"
+        if vibe_python.is_file() and vibe_cli.is_file() and shim_path.is_file()
+        else (_ for _ in ()).throw(FileNotFoundError("vibe_virtualenv_cli_or_shim_missing"))
     )))
 
     def check_ollama() -> str:
-        payload = _http_json(f"{OLLAMA_BASE_URL}/api/tags", timeout=args.http_timeout)
-        models = payload.get("models", []) if isinstance(payload, dict) else []
+        version_payload = _http_json(f"{OLLAMA_BASE_URL}/api/version", timeout=args.http_timeout)
+        tags_payload = _http_json(f"{OLLAMA_BASE_URL}/api/tags", timeout=args.http_timeout)
+        models = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
         if not isinstance(models, list):
             raise RuntimeError("ollama_tags_schema_invalid")
-        return "models=" + ",".join(str(m.get("name", "")) for m in models if isinstance(m, dict))
+        version = version_payload.get("version") if isinstance(version_payload, dict) else None
+        return f"version={version};models=" + ",".join(
+            str(m.get("name", "")) for m in models if isinstance(m, dict)
+        )
     stages.append(_stage("ollama", check_ollama))
 
     def check_model() -> str:
@@ -279,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     stages.append(_stage("openai_tool_call_no_think", openai_tool_no_think))
 
     child_env = os.environ.copy()
+    child_env.pop("PYTHONPATH", None)
     child_env.update({
         "LANGCHAIN_PROVIDER": "ollama",
         "LANGCHAIN_MODEL_NAME": args.model,
@@ -302,7 +326,12 @@ def main(argv: list[str] | None = None) -> int:
     stages.append(_stage("vibe_version", vibe_version))
 
     def vibe_doctor() -> str:
-        code, stdout, stderr, _ = _run([str(vibe_cli), "provider", "doctor"], cwd=vibe_root, env=child_env, timeout=60)
+        code, stdout, stderr, _ = _run(
+            [str(vibe_cli), "provider", "doctor"],
+            cwd=vibe_root,
+            env=child_env,
+            timeout=60,
+        )
         combined = f"{stdout}\n{stderr}"
         if code != 0:
             raise RuntimeError(f"provider_doctor_exit={code}:{_bounded(combined)}")
@@ -311,23 +340,63 @@ def main(argv: list[str] | None = None) -> int:
         return combined
     stages.append(_stage("vibe_doctor", vibe_doctor))
 
-    def vibe_agent() -> str:
-        prompt = (
-            "Reply with exactly VIBE_AGENT_OK and nothing else. Do not call tools, "
-            "do not perform market research, do not access external data, and do not create files."
+    prompt = (
+        "Reply with exactly VIBE_AGENT_OK and nothing else. Do not call tools, "
+        "do not perform market research, do not access external data, and do not create files."
+    )
+
+    prerequisites_ok = all(
+        any(stage.name == name and stage.status == "pass" for stage in stages)
+        for name in (
+            "openai_chat_no_think",
+            "openai_tool_call_no_think",
+            "vibe_doctor",
         )
-        code, stdout, stderr, elapsed = _run(
-            [str(vibe_cli), "run", "-p", prompt], cwd=vibe_root, env=child_env, timeout=args.agent_timeout,
-        )
-        combined = f"{stdout}\n{stderr}"
-        if code == 124:
-            raise TimeoutError(f"vibe_agent_timeout_after_{args.agent_timeout}s:{_bounded(combined)}")
-        if code != 0:
-            raise RuntimeError(f"vibe_agent_exit={code}:{_bounded(combined)}")
-        if "VIBE_AGENT_OK" not in combined:
-            raise RuntimeError("vibe_agent_no_marker:" + _bounded(combined))
-        return f"elapsed={elapsed:.3f}s\n{combined}"
-    stages.append(_stage("vibe_agent", vibe_agent))
+    )
+
+    if prerequisites_ok:
+        def vibe_agent() -> str:
+            code, stdout, stderr, elapsed = _run(
+                [str(vibe_cli), "run", "-p", prompt],
+                cwd=vibe_root,
+                env=child_env,
+                timeout=args.agent_timeout,
+            )
+            combined = f"{stdout}\n{stderr}"
+            if code == 124:
+                raise TimeoutError(f"vibe_agent_timeout_after_{args.agent_timeout}s:{_bounded(combined)}")
+            if code != 0:
+                raise RuntimeError(f"vibe_agent_exit={code}:{_bounded(combined)}")
+            if "VIBE_AGENT_OK" not in combined:
+                raise RuntimeError("vibe_agent_no_marker:" + _bounded(combined))
+            return f"elapsed={elapsed:.3f}s\n{combined}"
+        stock_agent = _stage("vibe_agent", vibe_agent)
+        stages.append(stock_agent)
+
+        if stock_agent.status != "pass":
+            def vibe_agent_shim() -> str:
+                code, stdout, stderr, elapsed = _run(
+                    [str(vibe_python), str(shim_path), "--prompt", prompt],
+                    cwd=vibe_root,
+                    env=child_env,
+                    timeout=args.agent_timeout,
+                )
+                combined = f"{stdout}\n{stderr}"
+                if code == 124:
+                    raise TimeoutError(
+                        f"vibe_agent_reasoning_shim_timeout_after_{args.agent_timeout}s:{_bounded(combined)}"
+                    )
+                if code != 0:
+                    raise RuntimeError(f"vibe_agent_reasoning_shim_exit={code}:{_bounded(combined)}")
+                if "VIBE_AGENT_OK" not in combined:
+                    raise RuntimeError("vibe_agent_reasoning_shim_no_marker:" + _bounded(combined))
+                return f"elapsed={elapsed:.3f}s\n{combined}"
+            stages.append(_stage("vibe_agent_reasoning_shim", vibe_agent_shim))
+        else:
+            stages.append(_skip("vibe_agent_reasoning_shim", "stock_vibe_passed;shim_not_needed"))
+    else:
+        stages.append(_skip("vibe_agent", "direct_ollama_or_vibe_doctor_prerequisite_failed"))
+        stages.append(_skip("vibe_agent_reasoning_shim", "direct_ollama_or_vibe_doctor_prerequisite_failed"))
 
     classification = _classification(stages)
     report = {
@@ -337,7 +406,14 @@ def main(argv: list[str] | None = None) -> int:
         "model": args.model,
         "vibe_root": str(vibe_root),
         "stages": [asdict(stage) for stage in stages],
-        "safety": {"mt5_connected": False, "broker_credentials_used": False, "orders_enabled": False, "vibe_config_modified": False},
+        "safety": {
+            "mt5_connected": False,
+            "broker_credentials_used": False,
+            "orders_enabled": False,
+            "vibe_config_modified": False,
+            "vibe_installation_modified": False,
+            "shim_scope": "process_memory_only",
+        },
     }
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     _emit({"event": "diagnostic_complete", "classification": classification, "report": str(report_path)})
