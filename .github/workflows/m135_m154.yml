@@ -1,0 +1,53 @@
+name: m135-m154-research-organism
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  research-organism:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: src
+      PYTHONHASHSEED: "0"
+      PYTHONWARNINGS: "error::DeprecationWarning"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile M135-M154 surfaces
+        run: >-
+          python -m py_compile
+          src/dusty/integrated_research_cycle.py
+          src/dusty/research_organism.py
+          src/dusty/strategy_lab.py
+          src/dusty/ollama_quant_reviewer.py
+          tests/test_m135_integrated_research_cycle.py
+          tests/test_m136_m154_research_organism.py
+          tools/smoke_m135_m154.py
+
+      - name: M135 integrated research cycle gate
+        run: python -m unittest discover -s tests -p "test_m135_integrated_research_cycle.py" -v
+
+      - name: M136-M154 research organism gate
+        run: python -m unittest discover -s tests -p "test_m136_m154_research_organism.py" -v
+
+      - name: M135-M154 durable runtime smoke
+        shell: bash
+        if: runner.os != 'Windows'
+        run: python tools/smoke_m135_m154.py --work-root "${RUNNER_TEMP}/m135-m154-smoke"
+
+      - name: M135-M154 Windows PowerShell 5.1 validator
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $validationRoot = Join-Path $env:RUNNER_TEMP "m135-m154-validation"
+          & .\tools\validate_m135_m154.ps1 -ExpectedHead $env:GITHUB_SHA -ValidationRoot $validationRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
