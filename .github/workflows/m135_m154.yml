@@ -29,15 +29,21 @@ jobs:
           src/dusty/research_organism.py
           src/dusty/strategy_lab.py
           src/dusty/ollama_quant_reviewer.py
+          src/dusty/hardware_certification.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
+          tests/test_m1541_hardware_certification.py
           tools/smoke_m135_m154.py
+          tools/smoke_m135_m154_hardware.py
 
       - name: M135 integrated research cycle gate
         run: python -m unittest discover -s tests -p "test_m135_integrated_research_cycle.py" -v
 
       - name: M136-M154 research organism gate
         run: python -m unittest discover -s tests -p "test_m136_m154_research_organism.py" -v
+
+      - name: M154.1 hardware orchestration gate
+        run: python -m unittest discover -s tests -p "test_m1541_hardware_certification.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
@@ -51,3 +57,18 @@ jobs:
           $validationRoot = Join-Path $env:RUNNER_TEMP "m135-m154-validation"
           & .\tools\validate_m135_m154.ps1 -ExpectedHead $env:GITHUB_SHA -ValidationRoot $validationRoot
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: M154.1 PowerShell contract parse gate
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path ".\tools\validate_m135_m154_hardware.ps1"),
+              [ref]$null,
+              [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              exit 1
+          }
