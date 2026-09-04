@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 
 $repo = Split-Path -Parent $PSScriptRoot
 $dustyPython = Join-Path $repo ".venv\Scripts\python.exe"
-$diagnostic = Join-Path $PSScriptRoot "diagnose_vibe_ollama.py"
+$diagnostic = Join-Path $PSScriptRoot "diagnose_vibe_ollama_v2.py"
 $validation = Join-Path $env:LOCALAPPDATA "DustyDragon\validation"
 New-Item -ItemType Directory -Force -Path $validation | Out-Null
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -25,20 +25,31 @@ if (-not (Test-Path -LiteralPath $diagnostic)) {
 }
 
 Write-Host ""
-Write-Host "M114.3 Vibe -> Ollama diagnostic"
-Write-Host "Read-only: no Vibe config changes, no MT5, no broker credentials, no orders."
+Write-Host "M114.3 Vibe -> Ollama diagnostic v2"
+Write-Host "Read-only A/B test: native Ollama vs OpenAI-compatible path used by Vibe."
+Write-Host "No Vibe config changes, no MT5, no broker credentials, no orders."
 Write-Host "Model: $Model"
 Write-Host ""
 
-$ErrorActionPreference = "Continue"
-& $dustyPython $diagnostic `
-    --vibe-root $VibeRoot `
-    --model $Model `
-    --http-timeout $HttpTimeoutSeconds `
-    --agent-timeout $AgentTimeoutSeconds `
-    --report $report 2>&1 | Tee-Object -FilePath $log
-$code = $LASTEXITCODE
-$ErrorActionPreference = "Stop"
+$previousEncoding = [Console]::OutputEncoding
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+
+    $ErrorActionPreference = "Continue"
+    & $dustyPython $diagnostic `
+        --vibe-root $VibeRoot `
+        --model $Model `
+        --http-timeout $HttpTimeoutSeconds `
+        --agent-timeout $AgentTimeoutSeconds `
+        --report $report 2>&1 | Tee-Object -FilePath $log -Encoding UTF8
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+}
+finally {
+    [Console]::OutputEncoding = $previousEncoding
+}
 
 Write-Host ""
 if ($code -eq 0) {
