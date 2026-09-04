@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Read-only A/B diagnostic for Vibe-Trading -> Ollama/Qwen.
 
-Compares Ollama's native chat API (with thinking explicitly disabled) against
-its OpenAI-compatible endpoint, then runs Vibe's provider doctor and a bounded
-minimal agent invocation. No MT5, broker, account, order, or config writes.
+Compares Ollama native chat with thinking disabled against the exact
+OpenAI-compatible path used by Vibe. The OpenAI probes explicitly send
+reasoning_effort='none', which current Ollama documents as the supported way to
+disable thinking on /v1/chat/completions.
 """
 
 import argparse
@@ -18,7 +19,6 @@ from time import perf_counter
 from typing import Any
 from urllib.request import Request, urlopen
 
-
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 
@@ -31,8 +31,8 @@ class StageResult:
 
 
 def _emit(payload: object) -> None:
-    # ASCII-only JSON is intentional: Windows PowerShell 5 commonly exposes a
-    # cp1252 console and Vibe prints box-drawing characters in its UI.
+    # ASCII-only output avoids Windows PowerShell 5 cp1252 failures when Vibe
+    # emits Unicode box-drawing characters.
     print(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True), flush=True)
 
 
@@ -80,10 +80,10 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int) ->
 def _stage(name: str, fn) -> StageResult:
     before = perf_counter()
     try:
-        detail = fn()
-        result = StageResult(name, "pass", round(perf_counter() - before, 3), _bounded(str(detail or "")))
-    except Exception as exc:  # diagnostic boundary
-        result = StageResult(name, "fail", round(perf_counter() - before, 3), _bounded(f"{type(exc).__name__}: {exc}"))
+        result = StageResult(name, "pass", 0.0, _bounded(str(fn() or "")))
+    except Exception as exc:  # diagnostic boundary intentionally catches all
+        result = StageResult(name, "fail", 0.0, _bounded(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_seconds = round(perf_counter() - before, 3)
     _emit({"event": "stage", **asdict(result)})
     return result
 
@@ -106,13 +106,10 @@ def _openai_message(response: Any) -> dict[str, Any]:
 
 def _tool_name(message: dict[str, Any]) -> str | None:
     calls = message.get("tool_calls") or []
-    if not isinstance(calls, list) or not calls:
+    if not isinstance(calls, list) or not calls or not isinstance(calls[0], dict):
         return None
-    first = calls[0]
-    if not isinstance(first, dict):
-        return None
-    fn = first.get("function") or {}
-    return str(fn.get("name")) if isinstance(fn, dict) and fn.get("name") else None
+    function = calls[0].get("function") or {}
+    return str(function.get("name")) if isinstance(function, dict) and function.get("name") else None
 
 
 def _message_debug(message: dict[str, Any]) -> str:
@@ -127,9 +124,10 @@ def _message_debug(message: dict[str, Any]) -> str:
 
 
 def _classification(stages: list[StageResult]) -> str:
-    s = {x.name: x for x in stages}
+    by_name = {stage.name: stage for stage in stages}
+
     def passed(name: str) -> bool:
-        return name in s and s[name].status == "pass"
+        return name in by_name and by_name[name].status == "pass"
 
     if not passed("ollama"):
         return "OLLAMA_SERVER_BLOCKED"
@@ -139,14 +137,14 @@ def _classification(stages: list[StageResult]) -> str:
         return "MODEL_NATIVE_CHAT_BLOCKED"
     if not passed("native_tool_call"):
         return "MODEL_NATIVE_TOOL_CALL_BLOCKED"
-    if not passed("openai_chat"):
-        return "OLLAMA_OPENAI_CHAT_COMPAT_BLOCKED"
-    if not passed("openai_tool_call"):
+    if not passed("openai_chat_no_think"):
+        return "OLLAMA_OPENAI_REASONING_CONTROL_BLOCKED"
+    if not passed("openai_tool_call_no_think"):
         return "OLLAMA_OPENAI_TOOL_COMPAT_BLOCKED"
     if not passed("vibe_doctor"):
         return "VIBE_PROVIDER_CONFIG_BLOCKED"
     if not passed("vibe_agent"):
-        return "VIBE_AGENT_LOOP_BLOCKED"
+        return "VIBE_OLLAMA_REASONING_ADAPTER_BLOCKED"
     return "PASS"
 
 
@@ -164,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     vibe_python = vibe_root / ".venv" / "Scripts" / "python.exe"
     vibe_cli = vibe_root / ".venv" / "Scripts" / "vibe-trading.exe"
-
     stages: list[StageResult] = []
+
     _emit({
         "event": "diagnostic_start_v2",
         "model": args.model,
@@ -184,37 +182,15 @@ def main(argv: list[str] | None = None) -> int:
         models = payload.get("models", []) if isinstance(payload, dict) else []
         if not isinstance(models, list):
             raise RuntimeError("ollama_tags_schema_invalid")
-        names = [str(m.get("name", "")) for m in models if isinstance(m, dict)]
-        return "models=" + ",".join(names)
+        return "models=" + ",".join(str(m.get("name", "")) for m in models if isinstance(m, dict))
     stages.append(_stage("ollama", check_ollama))
 
     def check_model() -> str:
         payload = _http_json(f"{OLLAMA_BASE_URL}/api/show", payload={"model": args.model}, timeout=args.http_timeout)
         if not isinstance(payload, dict):
             raise RuntimeError("ollama_show_schema_invalid")
-        caps = payload.get("capabilities") or []
-        details = payload.get("details") or {}
-        return f"capabilities={caps};details={details}"
+        return f"capabilities={payload.get('capabilities') or []};details={payload.get('details') or {}}"
     stages.append(_stage("model", check_model))
-
-    def native_chat() -> str:
-        response = _http_json(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            payload={
-                "model": args.model,
-                "messages": [{"role": "user", "content": "Reply with exactly VIBE_NATIVE_OK and nothing else."}],
-                "stream": False,
-                "think": False,
-                "options": {"temperature": 0, "num_predict": 64},
-            },
-            timeout=args.http_timeout,
-        )
-        message = _native_message(response)
-        content = str(message.get("content") or "").strip()
-        if "VIBE_NATIVE_OK" not in content:
-            raise RuntimeError("native_chat_no_marker:" + _message_debug(message))
-        return _message_debug(message)
-    stages.append(_stage("native_chat", native_chat))
 
     tool = {
         "type": "function",
@@ -230,8 +206,25 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
 
+    def native_chat() -> str:
+        message = _native_message(_http_json(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            payload={
+                "model": args.model,
+                "messages": [{"role": "user", "content": "Reply with exactly VIBE_NATIVE_OK and nothing else."}],
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 64},
+            },
+            timeout=args.http_timeout,
+        ))
+        if "VIBE_NATIVE_OK" not in str(message.get("content") or ""):
+            raise RuntimeError("native_chat_no_marker:" + _message_debug(message))
+        return _message_debug(message)
+    stages.append(_stage("native_chat", native_chat))
+
     def native_tool() -> str:
-        response = _http_json(
+        message = _native_message(_http_json(
             f"{OLLAMA_BASE_URL}/api/chat",
             payload={
                 "model": args.model,
@@ -242,53 +235,48 @@ def main(argv: list[str] | None = None) -> int:
                 "options": {"temperature": 0, "num_predict": 128},
             },
             timeout=args.http_timeout,
-        )
-        message = _native_message(response)
-        name = _tool_name(message)
-        if name != "dusty_echo":
+        ))
+        if _tool_name(message) != "dusty_echo":
             raise RuntimeError("native_tool_missing:" + _message_debug(message))
         return _message_debug(message)
     stages.append(_stage("native_tool_call", native_tool))
 
-    def openai_chat() -> str:
-        response = _http_json(
+    def openai_chat_no_think() -> str:
+        message = _openai_message(_http_json(
             f"{OLLAMA_BASE_URL}/v1/chat/completions",
             payload={
                 "model": args.model,
-                "messages": [{"role": "user", "content": "/no_think\nReply with exactly VIBE_OPENAI_OK and nothing else."}],
+                "messages": [{"role": "user", "content": "Reply with exactly VIBE_OPENAI_OK and nothing else."}],
+                "reasoning_effort": "none",
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": 256,
+                "max_tokens": 128,
             },
             timeout=args.http_timeout,
-        )
-        message = _openai_message(response)
-        content = str(message.get("content") or "").strip()
-        if "VIBE_OPENAI_OK" not in content:
-            raise RuntimeError("openai_chat_no_marker:" + _message_debug(message))
+        ))
+        if "VIBE_OPENAI_OK" not in str(message.get("content") or ""):
+            raise RuntimeError("openai_no_think_no_marker:" + _message_debug(message))
         return _message_debug(message)
-    stages.append(_stage("openai_chat", openai_chat))
+    stages.append(_stage("openai_chat_no_think", openai_chat_no_think))
 
-    def openai_tool() -> str:
-        response = _http_json(
+    def openai_tool_no_think() -> str:
+        message = _openai_message(_http_json(
             f"{OLLAMA_BASE_URL}/v1/chat/completions",
             payload={
                 "model": args.model,
-                "messages": [{"role": "user", "content": "/no_think\nCall dusty_echo exactly once with value DUSTY_OPENAI_TOOL_OK. Do not answer normally."}],
+                "messages": [{"role": "user", "content": "Call dusty_echo exactly once with value DUSTY_OPENAI_TOOL_OK. Do not answer normally."}],
                 "tools": [tool],
-                "tool_choice": "auto",
+                "reasoning_effort": "none",
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": 256,
+                "max_tokens": 128,
             },
             timeout=args.http_timeout,
-        )
-        message = _openai_message(response)
-        name = _tool_name(message)
-        if name != "dusty_echo":
-            raise RuntimeError("openai_tool_missing:" + _message_debug(message))
+        ))
+        if _tool_name(message) != "dusty_echo":
+            raise RuntimeError("openai_tool_no_think_missing:" + _message_debug(message))
         return _message_debug(message)
-    stages.append(_stage("openai_tool_call", openai_tool))
+    stages.append(_stage("openai_tool_call_no_think", openai_tool_no_think))
 
     child_env = os.environ.copy()
     child_env.update({
@@ -318,20 +306,18 @@ def main(argv: list[str] | None = None) -> int:
         combined = f"{stdout}\n{stderr}"
         if code != 0:
             raise RuntimeError(f"provider_doctor_exit={code}:{_bounded(combined)}")
-        low = combined.lower()
-        if "ollama" not in low or args.model.lower() not in low:
+        if "ollama" not in combined.lower() or args.model.lower() not in combined.lower():
             raise RuntimeError("provider_doctor_wrong_config:" + _bounded(combined))
         return combined
     stages.append(_stage("vibe_doctor", vibe_doctor))
 
     def vibe_agent() -> str:
         prompt = (
-            "/no_think\nReply with exactly VIBE_AGENT_OK and nothing else. "
-            "Do not call tools, do not perform market research, do not access external data, and do not create files."
+            "Reply with exactly VIBE_AGENT_OK and nothing else. Do not call tools, "
+            "do not perform market research, do not access external data, and do not create files."
         )
         code, stdout, stderr, elapsed = _run(
-            [str(vibe_cli), "run", "-p", prompt],
-            cwd=vibe_root, env=child_env, timeout=args.agent_timeout,
+            [str(vibe_cli), "run", "-p", prompt], cwd=vibe_root, env=child_env, timeout=args.agent_timeout,
         )
         combined = f"{stdout}\n{stderr}"
         if code == 124:
@@ -350,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         "classification": classification,
         "model": args.model,
         "vibe_root": str(vibe_root),
-        "stages": [asdict(x) for x in stages],
+        "stages": [asdict(stage) for stage in stages],
         "safety": {"mt5_connected": False, "broker_credentials_used": False, "orders_enabled": False, "vibe_config_modified": False},
     }
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
