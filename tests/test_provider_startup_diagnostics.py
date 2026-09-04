@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from dusty.provider_startup_diagnostics import _script, diagnose_provider
+from dusty.provider_startup_diagnostics import _bounded, _script, diagnose_provider
 from dusty.provider_registry import ProviderRegistry
 
 
@@ -47,6 +47,8 @@ class ProviderStartupDiagnosticTests(unittest.TestCase):
             self.assertTrue(captured["text"])
             self.assertTrue(captured["capture_output"])
             self.assertFalse(captured["check"])
+            self.assertEqual(captured["encoding"], "utf-8")
+            self.assertEqual(captured["errors"], "replace")
             environment = captured["env"]
             self.assertEqual(environment["HF_HUB_OFFLINE"], "1")
             self.assertEqual(environment["TRANSFORMERS_OFFLINE"], "1")
@@ -83,6 +85,9 @@ class ProviderStartupDiagnosticTests(unittest.TestCase):
                 ["python_started", "torch_import_start"],
             )
             self.assertIn("diagnostic warning", result.stderr)
+
+    def test_none_stderr_is_safe_after_reader_failure(self):
+        self.assertEqual(_bounded(None), "")
 
     def test_missing_provider_does_not_launch_a_process(self):
         with tempfile.TemporaryDirectory() as temporary:
