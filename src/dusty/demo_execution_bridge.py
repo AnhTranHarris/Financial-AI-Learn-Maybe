@@ -9,7 +9,10 @@ Champion, an exact persisted M186 shadow-intent artifact, the latched DemoSessio
 a passed BrokerPreflight, and a finite DEMO-only permit before delegating exactly
 once to the existing adapter.
 
-Actual order/deal/position reconciliation belongs to M188.
+The complete admission envelope is persisted before the broker call. Actual
+order/deal/position state remains authoritative in the existing crash-safe
+execution ledger and is reconciled in M188; M187 does not create a second broker
+ledger.
 """
 
 from dataclasses import dataclass
@@ -17,12 +20,15 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 
-from .artifact_vault import ResearchArtifactRecord, ResearchArtifactVault
+from .artifact_vault import ArtifactKind, ResearchArtifactRecord, ResearchArtifactVault
 from .champion_registry import ChampionLifecycleState, FrozenChampionRecord, FrozenChampionRegistry
 from .demo_execution import DemoExecutionResult, DemoMT5ExecutionAdapter
 from .demo_session import AccountMode, DemoSession
 from .order_intent import BrokerPreflight, OrderIntent
 from .shadow_execution import SHADOW_INTENT_CONTENT_TYPE, ShadowExecutionIntent
+
+
+DEMO_BRIDGE_ADMISSION_CONTENT_TYPE = "application/vnd.dusty.m187-demo-admission+json"
 
 
 def _canonical(value: object) -> str:
@@ -86,21 +92,23 @@ class DemoBridgePermit:
             raise ValueError("M187 permit purpose is fixed to demo_order_send")
 
     @property
+    def payload(self) -> dict[str, object]:
+        return {
+            "protocol": "dusty-m187-demo-bridge-permit-v1",
+            "champion_fingerprint": self.champion_fingerprint,
+            "lane_id": self.lane_id,
+            "session_fingerprint": self.session_fingerprint,
+            "issuer_fingerprint": self.issuer_fingerprint,
+            "authorization_evidence_fingerprints": list(self.authorization_evidence_fingerprints),
+            "valid_from": self.valid_from.isoformat(),
+            "valid_until": self.valid_until.isoformat(),
+            "purpose": self.purpose,
+            "live_write_authority": False,
+        }
+
+    @property
     def fingerprint(self) -> str:
-        return _digest(
-            (
-                "dusty-m187-demo-bridge-permit-v1",
-                self.champion_fingerprint,
-                self.lane_id,
-                self.session_fingerprint,
-                self.issuer_fingerprint,
-                self.authorization_evidence_fingerprints,
-                self.valid_from.isoformat(),
-                self.valid_until.isoformat(),
-                self.purpose,
-                False,
-            )
-        )
+        return _digest(self.payload)
 
     @property
     def demo_write_authority(self) -> bool:
@@ -150,19 +158,23 @@ class DemoBridgeAdmission:
         object.__setattr__(self, "admitted_at", _aware(self.admitted_at, "admitted_at"))
 
     @property
+    def payload(self) -> dict[str, object]:
+        return {
+            "protocol": "dusty-m187-demo-bridge-admission-v1",
+            "permit_fingerprint": self.permit_fingerprint,
+            "champion_fingerprint": self.champion_fingerprint,
+            "shadow_fingerprint": self.shadow_fingerprint,
+            "shadow_artifact_record_fingerprint": self.shadow_artifact_record_fingerprint,
+            "intent_hash": self.intent_hash,
+            "session_fingerprint": self.session_fingerprint,
+            "admitted_at": self.admitted_at.isoformat(),
+            "live_write_authority": False,
+            "retry_authority": False,
+        }
+
+    @property
     def fingerprint(self) -> str:
-        return _digest(
-            (
-                "dusty-m187-demo-bridge-admission-v1",
-                self.permit_fingerprint,
-                self.champion_fingerprint,
-                self.shadow_fingerprint,
-                self.shadow_artifact_record_fingerprint,
-                self.intent_hash,
-                self.session_fingerprint,
-                self.admitted_at.isoformat(),
-            )
-        )
+        return _digest(self.payload)
 
     @property
     def live_write_authority(self) -> bool:
@@ -176,9 +188,15 @@ class DemoBridgeAdmission:
 @dataclass(frozen=True, slots=True)
 class DemoBridgeExecutionReceipt:
     admission: DemoBridgeAdmission
+    admission_artifact_record_fingerprint: str
     execution: DemoExecutionResult
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "admission_artifact_record_fingerprint",
+            _sha(self.admission_artifact_record_fingerprint, "admission artifact record"),
+        )
         if _sha(self.execution.intent_hash, "execution result intent") != self.admission.intent_hash:
             raise ValueError("adapter execution result intent does not match bridge admission")
 
@@ -186,8 +204,9 @@ class DemoBridgeExecutionReceipt:
     def fingerprint(self) -> str:
         return _digest(
             (
-                "dusty-m187-demo-bridge-receipt-v1",
+                "dusty-m187-demo-bridge-receipt-v2",
                 self.admission.fingerprint,
+                self.admission_artifact_record_fingerprint,
                 self.execution.intent_hash,
                 self.execution.state.value,
                 int(self.execution.retcode),
@@ -220,6 +239,7 @@ class DemoExecutionBridge:
         vault: ResearchArtifactVault,
         session: DemoSession,
         adapter: DemoMT5ExecutionAdapter,
+        producer_fingerprint: str,
     ) -> None:
         if session.identity.account_mode is not AccountMode.DEMO:
             raise ValueError("M187 bridge accepts DEMO sessions only")
@@ -227,6 +247,7 @@ class DemoExecutionBridge:
         self._vault = vault
         self._session = session
         self._adapter = adapter
+        self._producer = _sha(producer_fingerprint, "M187 bridge producer")
 
     @property
     def demo_write_authorized(self) -> bool:
@@ -295,6 +316,40 @@ class DemoExecutionBridge:
             raise ValueError("M186 artifact bytes do not match supplied shadow intent")
         if record.created_at != shadow.captured_at:
             raise ValueError("M186 artifact timestamp does not match shadow capture")
+
+    def _persist_admission(
+        self,
+        admission: DemoBridgeAdmission,
+        permit: DemoBridgePermit,
+    ) -> ResearchArtifactRecord:
+        payload = {
+            "protocol": "dusty-m187-demo-admission-envelope-v1",
+            "admission": admission.payload,
+            "admission_fingerprint": admission.fingerprint,
+            "permit": permit.payload,
+            "permit_fingerprint": permit.fingerprint,
+        }
+        return self._vault.store_bytes(
+            _canonical(payload).encode("utf-8"),
+            kind=ArtifactKind.OTHER,
+            content_type=DEMO_BRIDGE_ADMISSION_CONTENT_TYPE,
+            producer_fingerprint=self._producer,
+            subject_fingerprint=admission.intent_hash,
+            source_fingerprints=tuple(
+                sorted(
+                    {
+                        admission.champion_fingerprint,
+                        admission.shadow_fingerprint,
+                        admission.shadow_artifact_record_fingerprint,
+                        admission.session_fingerprint,
+                        permit.fingerprint,
+                        permit.issuer_fingerprint,
+                        *permit.authorization_evidence_fingerprints,
+                    }
+                )
+            ),
+            now=admission.admitted_at,
+        )
 
     def admit(
         self,
@@ -366,5 +421,6 @@ class DemoExecutionBridge:
             permit=permit,
             at=at,
         )
+        admission_record = self._persist_admission(admission, permit)
         result = self._adapter.send(preflight, at=admission.admitted_at)
-        return DemoBridgeExecutionReceipt(admission, result)
+        return DemoBridgeExecutionReceipt(admission, admission_record.record_fingerprint, result)
