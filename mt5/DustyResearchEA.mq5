@@ -6,6 +6,8 @@
 // Strategy semantics are decided upstream by Dusty's Python StrategySpecV2 runtime.
 // This EA consumes a deterministic manifest to measure MetaTrader execution mechanics
 // without maintaining a second indicator/strategy implementation in MQL5.
+// M161 transport uses FILE_COMMON so the controlling terminal and isolated local tester
+// agent exchange immutable input/native evidence through one documented shared sandbox.
 
 input string InpManifestFile = "dusty_manifest.csv";
 input string InpDealsFile = "dusty_deals.csv";
@@ -86,10 +88,10 @@ ulong FindPlanPosition(const string trade_id)
 
 bool LoadManifest()
   {
-   const int handle=FileOpen(InpManifestFile,FILE_READ|FILE_CSV|FILE_ANSI,',');
+   const int handle=FileOpen(InpManifestFile,FILE_READ|FILE_CSV|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ,',');
    if(handle==INVALID_HANDLE)
      {
-      PrintFormat("DustyResearchEA cannot open manifest %s. Error=%d",InpManifestFile,GetLastError());
+      PrintFormat("DustyResearchEA cannot open common manifest %s. Error=%d",InpManifestFile,GetLastError());
       return false;
      }
 
@@ -212,10 +214,10 @@ void ExportDeals()
   {
    if(!HistorySelect(0,TimeCurrent()+86400))
       return;
-   const int handle=FileOpen(InpDealsFile,FILE_WRITE|FILE_CSV|FILE_ANSI,',');
+   const int handle=FileOpen(InpDealsFile,FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON,',');
    if(handle==INVALID_HANDLE)
      {
-      PrintFormat("DustyResearchEA cannot open deal export %s. Error=%d",InpDealsFile,GetLastError());
+      PrintFormat("DustyResearchEA cannot open common deal export %s. Error=%d",InpDealsFile,GetLastError());
       return;
      }
    FileWrite(handle,
@@ -258,6 +260,7 @@ void ExportDeals()
                 HistoryDealGetDouble(deal,DEAL_TP),
                 HistoryDealGetString(deal,DEAL_COMMENT));
      }
+   FileFlush(handle);
    FileClose(handle);
   }
 

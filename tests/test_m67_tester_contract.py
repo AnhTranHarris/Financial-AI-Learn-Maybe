@@ -54,6 +54,16 @@ class MQL5ResearchEAContractTests(unittest.TestCase):
         self.assertIn("DEAL_POSITION_ID", source)
         self.assertNotIn("AccountInfoInteger(ACCOUNT_TRADE_MODE_REAL)", source)
 
+    def test_ea_uses_documented_common_file_bridge_for_tester_artifacts(self):
+        source = Path("mt5/DustyResearchEA.mq5").read_text(encoding="utf-8")
+        self.assertGreaterEqual(source.count("FILE_COMMON"), 2)
+        self.assertIn(
+            "FILE_READ|FILE_CSV|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ",
+            source,
+        )
+        self.assertIn("FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON", source)
+        self.assertNotIn("#property tester_file", source)
+
 
 if __name__ == "__main__":
     unittest.main()
