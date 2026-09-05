@@ -3,10 +3,15 @@ from __future__ import annotations
 """M194 deterministic Single-Desk Demo Certification.
 
 M194 is a certification boundary over evidence produced by the already-certified
-M185-M193 operational stack.  It does not trade, restart processes, mutate a
-Champion, or manufacture runtime evidence.  CI may prove that this gate behaves
+M185-M193 operational stack. It does not trade, restart processes, mutate a
+Champion, or manufacture runtime evidence. CI may prove that this gate behaves
 correctly, but a CERTIFIED desk additionally requires evidence explicitly marked
 as real Demo runtime / controlled Demo exercises from the target workstation.
+
+The gate also pins the exact certified M185-M193 source lineage and requires the
+end-of-run M185 registry / M187 Demo-session state to remain valid. This keeps a
+long soak or successful chaos exercise from certifying a desk that quietly ended
+on a suspended Champion, a latched session, or the wrong account mode.
 """
 
 from dataclasses import dataclass
@@ -68,7 +73,19 @@ def _positive_int(value: int, label: str) -> int:
     return rendered
 
 
-REQUIRED_BUILD_MILESTONES = tuple(f"M{number}" for number in range(185, 194))
+CERTIFIED_PREREQUISITE_COMMITS: tuple[tuple[str, str], ...] = (
+    ("M185", "596d996e156b530697158eadc596bf475f64ad68"),
+    ("M186", "570f7bd364b6cefea85698a9d845ef6223e91968"),
+    ("M187", "4b66b5668aadc88203a2361315a46ac5d99ac889"),
+    ("M188", "b45be4bf930cfcccbd7f90a52f04a2976fd08748"),
+    ("M189", "ef32c5256bdf1def07240cc8ec6834942813cb14"),
+    ("M190", "f5d3c6d34c42806c30ff61602e23e3e1bd69d9ec"),
+    ("M191", "cd0a2bf21ab14fbc399fd899251c1b908673b650"),
+    ("M192", "d41e56c1ec8362eba8a4aa00d83f07cf63ef662e"),
+    ("M193", "9a8b9d051cea8a2ad4294446d74e09eafb46f51a"),
+)
+REQUIRED_BUILD_MILESTONES = tuple(row[0] for row in CERTIFIED_PREREQUISITE_COMMITS)
+_EXPECTED_PREREQUISITE_COMMITS = dict(CERTIFIED_PREREQUISITE_COMMITS)
 
 
 class DemoEvidenceOrigin(StrEnum):
@@ -123,7 +140,7 @@ class MilestoneBuildEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m194-prerequisite-milestone-v1",
+            "dusty-m194-prerequisite-milestone-v2",
             self.milestone,
             self.source_commit,
             self.artifact_fingerprint,
@@ -162,7 +179,7 @@ class SingleDeskDemoPolicy:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m194-single-desk-policy-v1",
+            "dusty-m194-single-desk-policy-v2",
             self.minimum_runtime_seconds,
             self.minimum_heartbeats,
             self.minimum_completed_cycles,
@@ -170,6 +187,7 @@ class SingleDeskDemoPolicy:
             self.minimum_execution_cost_samples,
             self.minimum_recovery_checkpoints,
             tuple(row.value for row in self.required_scenarios),
+            CERTIFIED_PREREQUISITE_COMMITS,
         ))
 
 
@@ -179,7 +197,8 @@ class DemoDeskRuntimeEvidence:
     desk_run_id: str
     lane_id: str
     champion_fingerprint: str
-    session_fingerprint: str
+    session_fingerprints: tuple[str, ...]
+    final_session_fingerprint: str
     broker_profile_fingerprint: str
     terminal_fingerprint: str
     account_fingerprint: str
@@ -194,6 +213,11 @@ class DemoDeskRuntimeEvidence:
     recovery_checkpoint_count: int
     duplicate_action_count: int
     unauthorized_broker_write_count: int
+    registry_integrity_ok: bool
+    champion_active_at_end: bool
+    final_session_demo_verified: bool
+    final_session_latched: bool
+    final_trade_permissions_ok: bool
     ledger_integrity_ok: bool
     artifact_integrity_ok: bool
     live_write_authorized: bool
@@ -201,6 +225,8 @@ class DemoDeskRuntimeEvidence:
     deterministic_core_operational: bool
     latest_drift_status: StrategyDriftStatus
     automatic_suspension_exercise_passed: bool
+    champion_registry_fingerprint: str
+    session_verification_fingerprint: str
     ledger_fingerprint: str
     artifact_vault_fingerprint: str
     execution_learning_fingerprint: str
@@ -215,12 +241,21 @@ class DemoDeskRuntimeEvidence:
             raise ValueError("runtime origin must use DemoEvidenceOrigin")
         object.__setattr__(self, "desk_run_id", _text(self.desk_run_id, "desk_run_id", maximum=128))
         object.__setattr__(self, "lane_id", _text(self.lane_id, "lane_id", maximum=128).lower())
+        object.__setattr__(self, "champion_fingerprint", _sha(self.champion_fingerprint, "runtime Champion"))
+        sessions = tuple(_sha(value, "runtime session") for value in self.session_fingerprints)
+        if not sessions or len(sessions) != len(set(sessions)):
+            raise ValueError("runtime sessions must be unique and nonempty")
+        object.__setattr__(self, "session_fingerprints", sessions)
+        final_session = _sha(self.final_session_fingerprint, "runtime final session")
+        if final_session not in sessions:
+            raise ValueError("runtime final session must be present in session lineage")
+        object.__setattr__(self, "final_session_fingerprint", final_session)
         for field, label in (
-            ("champion_fingerprint", "runtime Champion"),
-            ("session_fingerprint", "runtime session"),
             ("broker_profile_fingerprint", "runtime broker profile"),
             ("terminal_fingerprint", "runtime terminal"),
             ("account_fingerprint", "runtime account"),
+            ("champion_registry_fingerprint", "runtime Champion registry"),
+            ("session_verification_fingerprint", "runtime session verification"),
             ("ledger_fingerprint", "runtime execution ledger"),
             ("artifact_vault_fingerprint", "runtime artifact vault"),
             ("execution_learning_fingerprint", "runtime M189 learning"),
@@ -250,6 +285,11 @@ class DemoDeskRuntimeEvidence:
         ):
             object.__setattr__(self, name, _nonnegative_int(getattr(self, name), name))
         for name in (
+            "registry_integrity_ok",
+            "champion_active_at_end",
+            "final_session_demo_verified",
+            "final_session_latched",
+            "final_trade_permissions_ok",
             "ledger_integrity_ok",
             "artifact_integrity_ok",
             "live_write_authorized",
@@ -270,12 +310,13 @@ class DemoDeskRuntimeEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m194-demo-runtime-evidence-v1",
+            "dusty-m194-demo-runtime-evidence-v2",
             self.origin.value,
             self.desk_run_id,
             self.lane_id,
             self.champion_fingerprint,
-            self.session_fingerprint,
+            self.session_fingerprints,
+            self.final_session_fingerprint,
             self.broker_profile_fingerprint,
             self.terminal_fingerprint,
             self.account_fingerprint,
@@ -290,6 +331,11 @@ class DemoDeskRuntimeEvidence:
             self.recovery_checkpoint_count,
             self.duplicate_action_count,
             self.unauthorized_broker_write_count,
+            self.registry_integrity_ok,
+            self.champion_active_at_end,
+            self.final_session_demo_verified,
+            self.final_session_latched,
+            self.final_trade_permissions_ok,
             self.ledger_integrity_ok,
             self.artifact_integrity_ok,
             self.live_write_authorized,
@@ -297,6 +343,8 @@ class DemoDeskRuntimeEvidence:
             self.deterministic_core_operational,
             self.latest_drift_status.value,
             self.automatic_suspension_exercise_passed,
+            self.champion_registry_fingerprint,
+            self.session_verification_fingerprint,
             self.ledger_fingerprint,
             self.artifact_vault_fingerprint,
             self.execution_learning_fingerprint,
@@ -344,7 +392,7 @@ class DemoOperationalExerciseEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m194-operational-exercise-v1",
+            "dusty-m194-operational-exercise-v2",
             self.origin.value,
             self.scenario.value,
             self.desk_run_id,
@@ -413,8 +461,11 @@ def certify_single_demo_desk(
         row = prerequisite_map.get(milestone)
         if row is None:
             pending.append(f"missing_prerequisite:{milestone}")
-        elif not row.passed:
+            continue
+        if not row.passed:
             rejected.append(f"failed_prerequisite:{milestone}")
+        if row.source_commit != _EXPECTED_PREREQUISITE_COMMITS[milestone]:
+            rejected.append(f"prerequisite_source_commit_mismatch:{milestone}")
 
     if runtime.origin is not DemoEvidenceOrigin.REAL_DEMO_RUNTIME:
         pending.append("real_demo_runtime_evidence_required")
@@ -444,6 +495,17 @@ def certify_single_demo_desk(
         rejected.append("duplicate_action_detected")
     if runtime.unauthorized_broker_write_count:
         rejected.append("unauthorized_broker_write_detected")
+
+    if not runtime.registry_integrity_ok:
+        rejected.append("M185_champion_registry_integrity_failed")
+    if not runtime.champion_active_at_end:
+        rejected.append("M185_champion_not_active_at_end")
+    if not runtime.final_session_demo_verified:
+        rejected.append("M187_final_session_not_verified_demo")
+    if runtime.final_session_latched:
+        rejected.append("M187_final_session_is_latched")
+    if not runtime.final_trade_permissions_ok:
+        rejected.append("M187_final_trade_permissions_invalid")
     if not runtime.ledger_integrity_ok:
         rejected.append("execution_ledger_integrity_failed")
     if not runtime.artifact_integrity_ok:
@@ -497,7 +559,7 @@ def certify_single_demo_desk(
         else SingleDeskDemoStatus.CERTIFIED
     )
     certification_fingerprint = _digest((
-        "dusty-m194-single-desk-demo-certification-v1",
+        "dusty-m194-single-desk-demo-certification-v2",
         status.value,
         champion.fingerprint,
         runtime.fingerprint,
