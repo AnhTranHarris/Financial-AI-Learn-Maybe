@@ -31,12 +31,14 @@ jobs:
           src/dusty/ollama_quant_reviewer.py
           src/dusty/hardware_certification.py
           src/dusty/experiment_queue.py
+          src/dusty/experiment_manifest.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
           tests/test_m1542_qwen_timeout_hardening.py
           tests/test_m1543_qwen_hardware_budget.py
           tests/test_m155_durable_experiment_queue.py
+          tests/test_m155_experiment_manifest.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
           tools/smoke_m155_experiment_queue.py
@@ -55,6 +57,9 @@ jobs:
 
       - name: M154.3 Qwen hardware budget gate
         run: python -m unittest discover -s tests -p "test_m1543_qwen_hardware_budget.py" -v
+
+      - name: M155 experiment constitution gate
+        run: python -m unittest discover -s tests -p "test_m155_experiment_manifest.py" -v
 
       - name: M155 durable experiment queue gate
         run: python -m unittest discover -s tests -p "test_m155_durable_experiment_queue.py" -v
