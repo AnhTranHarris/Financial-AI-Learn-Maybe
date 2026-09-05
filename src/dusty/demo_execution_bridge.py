@@ -3,8 +3,8 @@ from __future__ import annotations
 """M187 guarded Demo Execution Bridge.
 
 M187 is an admission layer in front of the already-existing
-DemoMT5ExecutionAdapter.  It deliberately does not import MetaTrader5 and never
-calls order_send itself.  The bridge verifies the currently ACTIVE M185 Frozen
+DemoMT5ExecutionAdapter. It deliberately does not import MetaTrader5 and never
+calls order_send itself. The bridge verifies the currently ACTIVE M185 Frozen
 Champion, an exact persisted M186 shadow-intent artifact, the latched DemoSession,
 a passed BrokerPreflight, and a finite DEMO-only permit before delegating exactly
 once to the existing adapter.
@@ -21,7 +21,7 @@ from .artifact_vault import ResearchArtifactRecord, ResearchArtifactVault
 from .champion_registry import ChampionLifecycleState, FrozenChampionRecord, FrozenChampionRegistry
 from .demo_execution import DemoExecutionResult, DemoMT5ExecutionAdapter
 from .demo_session import AccountMode, DemoSession
-from .order_intent import BrokerPreflight
+from .order_intent import BrokerPreflight, OrderIntent
 from .shadow_execution import SHADOW_INTENT_CONTENT_TYPE, ShadowExecutionIntent
 
 
@@ -230,7 +230,8 @@ class DemoExecutionBridge:
 
     @property
     def demo_write_authorized(self) -> bool:
-        return self._session.broker_write_authorized
+        """There is no ambient write authority without a specific active permit."""
+        return False
 
     @property
     def live_write_authorized(self) -> bool:
@@ -239,6 +240,35 @@ class DemoExecutionBridge:
     @property
     def order_send_owner(self) -> str:
         return "DemoMT5ExecutionAdapter"
+
+    @staticmethod
+    def _verify_shadow_intent_binding(shadow: ShadowExecutionIntent, intent: OrderIntent) -> None:
+        if shadow.intent_hash != intent.intent_hash or shadow.client_tag != intent.client_tag:
+            raise PermissionError("M186 shadow identity does not match BrokerPreflight OrderIntent")
+        comparisons = (
+            (shadow.strategy_fingerprint, _sha(intent.strategy_hash, "OrderIntent strategy"), "strategy"),
+            (shadow.session_fingerprint, _sha(intent.session_fingerprint, "OrderIntent session"), "session"),
+            (shadow.symbol, intent.symbol.strip().upper(), "symbol"),
+            (shadow.side, intent.side, "side"),
+            (shadow.order_style, intent.order_style, "order_style"),
+            (shadow.volume, intent.volume, "volume"),
+            (shadow.reference_price, intent.reference_price, "reference_price"),
+            (shadow.stop_price, intent.stop_price, "stop_price"),
+            (shadow.target_price, intent.target_price, "target_price"),
+            (shadow.stop_limit_price, intent.stop_limit_price, "stop_limit_price"),
+            (shadow.approved_risk_fraction, intent.approved_risk_fraction, "approved_risk_fraction"),
+            (shadow.allowed_loss, intent.allowed_loss, "allowed_loss"),
+            (shadow.max_price_drift_fraction, intent.max_price_drift_fraction, "max_price_drift_fraction"),
+            (shadow.intent_expires_at, _aware(intent.expires_at, "OrderIntent expiry"), "intent_expiry"),
+            (
+                shadow.pending_expires_at,
+                None if intent.pending_expiry is None else _aware(intent.pending_expiry, "OrderIntent pending expiry"),
+                "pending_expiry",
+            ),
+        )
+        for observed, expected, label in comparisons:
+            if observed != expected:
+                raise PermissionError(f"M186 shadow/{label} binding drift")
 
     def _verify_shadow_artifact(
         self,
@@ -294,12 +324,9 @@ class DemoExecutionBridge:
             raise PermissionError("M186 shadow does not belong to active Champion")
         if shadow.champion_deployment_fingerprint != champion.deployment_fingerprint:
             raise PermissionError("M186 shadow deployment identity drift")
-        if shadow.session_fingerprint != self._session.identity.fingerprint:
-            raise PermissionError("M186 shadow belongs to a different DemoSession")
         if shadow.strategy_fingerprint != champion.strategy_fingerprint:
             raise PermissionError("M186 shadow strategy identity drift")
-        if preflight.intent.intent_hash != shadow.intent_hash:
-            raise PermissionError("BrokerPreflight OrderIntent does not match M186 shadow")
+        self._verify_shadow_intent_binding(shadow, preflight.intent)
         if preflight.intent.session_fingerprint != self._session.identity.fingerprint:
             raise PermissionError("BrokerPreflight OrderIntent session drift")
         if preflight.intent.strategy_hash != champion.strategy_fingerprint:
