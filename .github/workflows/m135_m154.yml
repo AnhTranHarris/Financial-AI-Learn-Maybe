@@ -52,10 +52,12 @@ jobs:
           tests/test_m160_research_loop_governor.py
           tests/test_m161_native_mt5_executor.py
           tests/test_m161_mt5_set_contract.py
+          tests/test_m161_hardware_contract.py
           tests/test_m67_tester_contract.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
           tools/smoke_m155_experiment_queue.py
+          tools/smoke_m161_hardware.py
 
       - name: M135 integrated research cycle gate
         run: python -m unittest discover -s tests -p "test_m135_integrated_research_cycle.py" -v
@@ -101,6 +103,7 @@ jobs:
           python -m unittest
           tests.test_m161_native_mt5_executor
           tests.test_m161_mt5_set_contract
+          tests.test_m161_hardware_contract
           tests.test_m67_tester_contract
           -v
 
@@ -135,4 +138,33 @@ jobs:
           $scriptText = Get-Content -LiteralPath $scriptPath -Raw
           if (-not $scriptText.Contains('& powershell.exe @softwareArgs')) {
             throw "M154.1 wrapper must isolate the nested software validator in a child PowerShell process."
+          }
+
+      - name: M161 PowerShell hardware harness parse and safety gate
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $scriptPath = Resolve-Path ".\tools\validate_m161_hardware.ps1"
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $scriptPath,
+              [ref]$null,
+              [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_.Message }
+            exit 1
+          }
+          $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+          if ($scriptText -match '(?i)taskkill\s+/IM') {
+            throw "M161 hardware validator must not kill terminal processes by image name."
+          }
+          if ($scriptText -match '(?i)Stop-Process\s+-Name') {
+            throw "M161 hardware validator must not stop terminal processes by process name."
+          }
+          if ($scriptText -notmatch 'origin\.txt') {
+            throw "M161 hardware validator must bind the terminal installation to its data root."
+          }
+          if ($scriptText -notmatch 'prior-DustyResearchEA\.ex5') {
+            throw "M161 hardware validator must preserve and restore any pre-existing staged research EA."
           }
