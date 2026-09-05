@@ -199,8 +199,10 @@ try {
     Copy-Item -LiteralPath $source -Destination $sourceCopy -Force
     $compileLog = Join-Path $compileRoot 'DustyResearchEA.log'
     $compiledExpert = Join-Path $compileRoot 'DustyResearchEA.ex5'
+    $compileExitPath = Join-Path $compileRoot 'metaeditor-exit-code.txt'
     Remove-Item -LiteralPath $compileLog -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $compiledExpert -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $compileExitPath -Force -ErrorAction SilentlyContinue
 
     Write-Host '=== M161 METAEDITOR COMPILE ==='
     $compileArgs = @(
@@ -214,20 +216,27 @@ try {
         -WorkingDirectory $compileRoot `
         -Wait `
         -PassThru
-    if ($compileProcess.ExitCode -ne 0) {
-        throw "MetaEditor returned exit code $($compileProcess.ExitCode)."
-    }
+    $compileExitCode = [int]$compileProcess.ExitCode
+    Set-Content -LiteralPath $compileExitPath -Value $compileExitCode -Encoding ASCII
+
+    # MetaQuotes documents the compilation log and generated EX5 as the
+    # compilation result but does not document a conventional 0=success
+    # process-exit contract. MetaEditor community integrations have also
+    # observed exit code 1 on successful CLI compilation. Therefore the exit
+    # code is retained as diagnostic evidence while success remains fail-closed
+    # on a fresh log with zero errors/warnings plus a fresh EX5 artifact.
     if (-not (Test-Path -LiteralPath $compileLog -PathType Leaf)) {
-        throw "MetaEditor compile log not found: $compileLog"
+        throw "MetaEditor compile log not found after process exit $compileExitCode`: $compileLog"
     }
     $compileText = Get-Content -LiteralPath $compileLog -Raw
     if ($compileText -notmatch '(?i)0\s+errors?,\s*0\s+warnings?') {
         Write-Host $compileText
-        throw 'DustyResearchEA did not compile with zero errors and zero warnings.'
+        throw "DustyResearchEA did not compile with zero errors and zero warnings (MetaEditor exit $compileExitCode)."
     }
     if (-not (Test-Path -LiteralPath $compiledExpert -PathType Leaf)) {
-        throw "Compiled DustyResearchEA.ex5 not found: $compiledExpert"
+        throw "Compiled DustyResearchEA.ex5 not found after zero-error compile log (MetaEditor exit $compileExitCode): $compiledExpert"
     }
+    Write-Host "MetaEditor process exit code: $compileExitCode (diagnostic only; log + EX5 prove compile success)."
 
     $expertRelativePath = 'DustyDragon/M161/DustyResearchEA.ex5'
     $targetExpertDir = Join-Path $mql5Root 'Experts\DustyDragon\M161'
