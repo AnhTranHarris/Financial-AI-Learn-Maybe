@@ -8,12 +8,12 @@ import unittest
 from dusty.champion_registry import FrozenChampionRecord
 from dusty.demo_execution_cost_learning import DemoCostLearningStatus
 from dusty.single_desk_demo_certification import (
+    CERTIFIED_PREREQUISITE_COMMITS,
     DemoDeskRuntimeEvidence,
     DemoEvidenceOrigin,
     DemoOperationalExerciseEvidence,
     DemoOperationalScenario,
     MilestoneBuildEvidence,
-    REQUIRED_BUILD_MILESTONES,
     REQUIRED_OPERATIONAL_SCENARIOS,
     SingleDeskDemoPolicy,
     SingleDeskDemoStatus,
@@ -54,12 +54,12 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
         return tuple(
             MilestoneBuildEvidence(
                 milestone,
-                f"{number:040x}"[-40:],
+                source_commit,
                 fp(f"artifact-{milestone}"),
                 fp(f"ci-{milestone}"),
                 True,
             )
-            for number, milestone in enumerate(REQUIRED_BUILD_MILESTONES, start=185)
+            for milestone, source_commit in CERTIFIED_PREREQUISITE_COMMITS
         )
 
     def policy(self) -> SingleDeskDemoPolicy:
@@ -78,7 +78,8 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
             desk_run_id="desk-run-001",
             lane_id=champion.lane_id,
             champion_fingerprint=champion.fingerprint,
-            session_fingerprint=fp("session"),
+            session_fingerprints=(fp("session-1"), fp("session-2")),
+            final_session_fingerprint=fp("session-2"),
             broker_profile_fingerprint=fp("broker"),
             terminal_fingerprint=fp("terminal"),
             account_fingerprint=fp("account"),
@@ -93,6 +94,11 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
             recovery_checkpoint_count=5,
             duplicate_action_count=0,
             unauthorized_broker_write_count=0,
+            registry_integrity_ok=True,
+            champion_active_at_end=True,
+            final_session_demo_verified=True,
+            final_session_latched=False,
+            final_trade_permissions_ok=True,
             ledger_integrity_ok=True,
             artifact_integrity_ok=True,
             live_write_authorized=False,
@@ -100,6 +106,8 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
             deterministic_core_operational=True,
             latest_drift_status=StrategyDriftStatus.STABLE,
             automatic_suspension_exercise_passed=True,
+            champion_registry_fingerprint=fp("champion-registry"),
+            session_verification_fingerprint=fp("final-session-verification"),
             ledger_fingerprint=fp("ledger"),
             artifact_vault_fingerprint=fp("vault"),
             execution_learning_fingerprint=fp("m189"),
@@ -182,7 +190,7 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
         self.assertEqual(result.status, SingleDeskDemoStatus.PENDING)
         self.assertIn("missing_operational_exercise:ambiguous_send", result.pending_reasons)
 
-    def test_failed_or_duplicate_prerequisite_rejects(self) -> None:
+    def test_failed_duplicate_or_wrong_lineage_prerequisite_rejects(self) -> None:
         rows = list(self.prerequisites())
         rows[0] = replace(rows[0], passed=False)
         result = self.certify(prerequisites=tuple(rows))
@@ -194,6 +202,12 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
         result = self.certify(prerequisites=tuple(rows))
         self.assertEqual(result.status, SingleDeskDemoStatus.REJECTED)
         self.assertIn("duplicate_prerequisite:M185", result.rejection_reasons)
+
+        rows = list(self.prerequisites())
+        rows[3] = replace(rows[3], source_commit="b" * 40)
+        result = self.certify(prerequisites=tuple(rows))
+        self.assertEqual(result.status, SingleDeskDemoStatus.REJECTED)
+        self.assertIn("prerequisite_source_commit_mismatch:M188", result.rejection_reasons)
 
     def test_depth_shortfalls_are_pending_not_false_failures(self) -> None:
         champion = self.champion()
@@ -228,6 +242,26 @@ class M194SingleDeskDemoCertificationTests(unittest.TestCase):
                 result = self.certify(runtime=runtime)
                 self.assertEqual(result.status, SingleDeskDemoStatus.REJECTED)
                 self.assertIn(reason, result.rejection_reasons)
+
+    def test_registry_champion_and_final_demo_session_must_end_valid(self) -> None:
+        champion = self.champion()
+        cases = (
+            ("registry_integrity_ok", False, "M185_champion_registry_integrity_failed"),
+            ("champion_active_at_end", False, "M185_champion_not_active_at_end"),
+            ("final_session_demo_verified", False, "M187_final_session_not_verified_demo"),
+            ("final_session_latched", True, "M187_final_session_is_latched"),
+            ("final_trade_permissions_ok", False, "M187_final_trade_permissions_invalid"),
+        )
+        for field, value, reason in cases:
+            with self.subTest(field=field):
+                result = self.certify(runtime=self.runtime(champion, **{field: value}))
+                self.assertEqual(result.status, SingleDeskDemoStatus.REJECTED)
+                self.assertIn(reason, result.rejection_reasons)
+
+    def test_final_session_must_be_part_of_recorded_session_lineage(self) -> None:
+        champion = self.champion()
+        with self.assertRaisesRegex(ValueError, "final session must be present"):
+            self.runtime(champion, final_session_fingerprint=fp("unseen-session"))
 
     def test_integrity_or_live_write_failure_is_rejected(self) -> None:
         champion = self.champion()
