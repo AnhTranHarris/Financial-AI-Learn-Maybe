@@ -221,31 +221,34 @@ def assess_provider_degradation(
 ) -> ProviderDegradationAssessment:
     provider = _text(provider_id, "provider id", maximum=64)
     identity = _sha(model_identity_fingerprint, "expected model identity")
-    rows = tuple(sorted(observations, key=lambda row: (row.observed_at, row.fingerprint)))
-    if len({row.fingerprint for row in rows}) != len(rows):
+    all_rows = tuple(sorted(observations, key=lambda row: (row.observed_at, row.fingerprint)))
+    if len({row.fingerprint for row in all_rows}) != len(all_rows):
         raise ValueError("M191 cannot assess duplicate health observations")
-    if any(row.provider_id != provider for row in rows):
+    if any(row.provider_id != provider for row in all_rows):
         raise ValueError("M191 cannot mix providers")
-    if any(row.model_identity_fingerprint != identity for row in rows):
+    if any(row.model_identity_fingerprint != identity for row in all_rows):
         # A caller must record identity drift as an explicit outcome for the
         # expected identity, rather than silently relabel observations.
         raise ValueError("M191 observation model identity does not match expected identity")
-    if any(left.observed_at == right.observed_at for left, right in zip(rows, rows[1:])):
+    if any(left.observed_at == right.observed_at for left, right in zip(all_rows, all_rows[1:])):
         raise ValueError("M191 observations require unique timestamps")
-    rows = rows[-policy.observation_window:]
-    if not rows:
+    if not all_rows:
         return ProviderDegradationAssessment(
             provider, identity, ProviderOperationalStatus.UNAVAILABLE,
             0, 0, 0, "no_provider_health_evidence", (), policy.fingerprint,
         )
 
-    if any(row.outcome is ProviderObservationOutcome.IDENTITY_DRIFT for row in rows):
+    # Identity drift is sticky for this model-identity lineage. It cannot age
+    # out of a rolling health window. Recovery requires an externally verified
+    # new identity lineage, not merely enough later successes.
+    if any(row.outcome is ProviderObservationOutcome.IDENTITY_DRIFT for row in all_rows):
         return ProviderDegradationAssessment(
             provider, identity, ProviderOperationalStatus.QUARANTINED,
-            0, 0, len(rows), "provider_identity_drift_requires_external_revalidation",
-            tuple(row.fingerprint for row in rows), policy.fingerprint,
+            0, 0, len(all_rows), "provider_identity_drift_requires_external_revalidation",
+            tuple(row.fingerprint for row in all_rows), policy.fingerprint,
         )
 
+    rows = all_rows[-policy.observation_window:]
     failures, successes = _trailing_counts(rows)
     if failures >= policy.unavailable_after_consecutive_failures:
         status = ProviderOperationalStatus.UNAVAILABLE
