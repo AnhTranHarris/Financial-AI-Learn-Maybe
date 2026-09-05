@@ -192,6 +192,16 @@ class A1Hypothesis:
         ))
 
     @property
+    def research_shape(self) -> tuple[object, ...]:
+        return (
+            self.statement,
+            self.falsification,
+            self.test_family.value,
+            self.test_plan,
+            self.cited_fingerprints,
+        )
+
+    @property
     def causal_claimed(self) -> bool:
         return False
 
@@ -231,7 +241,7 @@ class A1ExpertEvidence:
             raise ValueError("A1 expert evidence exceeds bounded hypothesis count")
         if len({row.hypothesis_key for row in hypotheses}) != len(hypotheses):
             raise ValueError("A1 expert hypothesis keys must be unique")
-        if len({row.fingerprint for row in hypotheses}) != len(hypotheses):
+        if len({row.research_shape for row in hypotheses}) != len(hypotheses):
             raise ValueError("A1 expert hypotheses must be structurally distinct")
         if self.state is A1ExpertState.HYPOTHESES and not hypotheses:
             raise ValueError("A1 hypotheses state requires at least one hypothesis")
