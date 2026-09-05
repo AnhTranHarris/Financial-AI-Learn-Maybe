@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """M161 deterministic, research-only native MetaTrader 5 experiment executor."""
 
+import base64
 import csv
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -433,9 +434,11 @@ class TerminalIsolationVerifier(Protocol):
 class PowerShellTerminalIsolationVerifier:
     """Fail-closed Windows check for another process using the exact terminal binary."""
 
+    _TARGET_TOKEN = "__DUSTY_TARGET_B64__"
     _SCRIPT = r"""
 $ErrorActionPreference='Stop'
-$target=[IO.Path]::GetFullPath($args[0])
+$targetBytes=[Convert]::FromBase64String('__DUSTY_TARGET_B64__')
+$target=[IO.Path]::GetFullPath([Text.Encoding]::UTF8.GetString($targetBytes))
 $rows=@(Get-CimInstance Win32_Process -Filter "Name='terminal64.exe'")
 if(@($rows | Where-Object { -not $_.ExecutablePath }).Count -gt 0) { exit 4 }
 $matches=@($rows | Where-Object { [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target })
@@ -446,6 +449,12 @@ Write-Output 'CONFLICT'; exit 3
     def __init__(self, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> None:
         self._runner = runner
 
+    @classmethod
+    def _encoded_command(cls, terminal_path: Path) -> str:
+        target_b64 = base64.b64encode(str(terminal_path).encode("utf-8")).decode("ascii")
+        script = cls._SCRIPT.replace(cls._TARGET_TOKEN, target_b64)
+        return base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
     def terminal_path_available(self, terminal_path: Path) -> bool:
         if os.name != "nt":
             return False
@@ -455,9 +464,8 @@ Write-Output 'CONFLICT'; exit 3
                     "powershell.exe",
                     "-NoProfile",
                     "-NonInteractive",
-                    "-Command",
-                    self._SCRIPT,
-                    str(terminal_path),
+                    "-EncodedCommand",
+                    self._encoded_command(terminal_path),
                 ),
                 check=False,
                 capture_output=True,
