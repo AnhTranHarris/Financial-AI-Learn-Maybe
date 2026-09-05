@@ -62,7 +62,7 @@ class M189AutonomousResearchCampaignTests(unittest.TestCase):
             fp("active-execution"),
             fp("active-subject"),
             fp("family"),
-            EvaluationStage.A1_EDGE,
+            EvaluationStage.A1,
             state,
             iteration,
             (),
