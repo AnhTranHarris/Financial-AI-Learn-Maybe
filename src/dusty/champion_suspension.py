@@ -117,6 +117,7 @@ class ChampionSuspensionPolicy:
 class ForwardDrawdownEvidence:
     champion_fingerprint: str
     baseline_fingerprint: str
+    drift_fingerprint: str
     period_start: datetime
     period_end: datetime
     observation_count: int
@@ -127,6 +128,7 @@ class ForwardDrawdownEvidence:
     def __post_init__(self) -> None:
         object.__setattr__(self, "champion_fingerprint", _sha(self.champion_fingerprint, "drawdown Champion"))
         object.__setattr__(self, "baseline_fingerprint", _sha(self.baseline_fingerprint, "drawdown baseline"))
+        object.__setattr__(self, "drift_fingerprint", _sha(self.drift_fingerprint, "drawdown drift assessment"))
         object.__setattr__(self, "period_start", _aware(self.period_start, "drawdown period_start"))
         object.__setattr__(self, "period_end", _aware(self.period_end, "drawdown period_end"))
         if self.period_end <= self.period_start:
@@ -143,9 +145,10 @@ class ForwardDrawdownEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m193-forward-drawdown-evidence-v1",
+            "dusty-m193-forward-drawdown-evidence-v2",
             self.champion_fingerprint,
             self.baseline_fingerprint,
+            self.drift_fingerprint,
             self.period_start.isoformat(),
             self.period_end.isoformat(),
             self.observation_count,
@@ -271,10 +274,16 @@ def evaluate_automatic_suspension(
         raise ValueError("Champion/drawdown identity drift")
     if drawdown.baseline_fingerprint != baseline.fingerprint:
         raise ValueError("drawdown evidence is not bound to supplied baseline")
+    if drawdown.drift_fingerprint != drift.fingerprint:
+        raise ValueError("drawdown evidence is not bound to supplied M192 drift assessment")
     if drawdown.period_start <= baseline.period_end:
         raise ValueError("drawdown evidence must begin strictly after certified baseline")
+    if drawdown.period_start <= champion.created_at:
+        raise ValueError("forward monitoring evidence must begin after Champion activation")
     if now < drawdown.period_end:
         raise ValueError("suspension assessment cannot predate drawdown evidence")
+    if now < champion.created_at:
+        raise ValueError("suspension assessment cannot predate Champion activation")
 
     confirmations = tuple(sorted(_sha(value, "execution confirmation") for value in execution_confirmation_fingerprints))
     if len(confirmations) != len(set(confirmations)):
