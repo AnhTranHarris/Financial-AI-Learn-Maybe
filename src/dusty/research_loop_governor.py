@@ -421,7 +421,8 @@ class SQLiteResearchLoopStore:
                 raise RuntimeError("governor decision execution drift")
             evidence = tuple(sorted(set(current.evidence_fingerprints) | set(extra)))
             outcome = decision.outcome_fingerprint or current.last_outcome_fingerprint
-            self._db.execute("UPDATE research_loops SET state=?,evidence_json=?,last_outcome_fingerprint=?,exhaustion_signal=?,updated_at=? WHERE loop_fingerprint=? AND state=? AND active_execution_fingerprint=?", (decision.to_state.value, _canonical(evidence), outcome, decision.exhaustion_signal.value, now_utc.isoformat(), loop_fp, current.state.value, current.active_execution_fingerprint))
+            next_iteration = current.iteration + (1 if decision.action is GovernorAction.ADMIT else 0)
+            self._db.execute("UPDATE research_loops SET state=?,iteration=?,evidence_json=?,last_outcome_fingerprint=?,exhaustion_signal=?,updated_at=? WHERE loop_fingerprint=? AND state=? AND active_execution_fingerprint=?", (decision.to_state.value, next_iteration, _canonical(evidence), outcome, decision.exhaustion_signal.value, now_utc.isoformat(), loop_fp, current.state.value, current.active_execution_fingerprint))
             if self._db.execute("SELECT changes()").fetchone()[0] != 1:
                 raise RuntimeError("research-loop compare-and-swap transition failed")
             self._event(loop_fp, decision.from_state, decision.to_state, decision.action, now_utc, {"reason": decision.reason, "outcome": decision.outcome_fingerprint, "challengers": decision.challenger_execution_fingerprints, "exhaustion": decision.exhaustion_signal.value, "evidence": extra})
@@ -437,11 +438,7 @@ class SQLiteResearchLoopStore:
             raise ValueError("research loop is not admission eligible")
         target = LoopState.TESTING if current.state is LoopState.PROPOSED else LoopState.RETESTING
         decision = GovernorDecision(GovernorAction.ADMIT, current.state, target, "governor admitted ranked research candidate", current.active_execution_fingerprint)
-        row = self.apply(loop_fingerprint, decision, now=now)
-        self._db.execute("UPDATE research_loops SET iteration=iteration+1 WHERE loop_fingerprint=?", (_sha(loop_fingerprint, "loop admission"),))
-        result = self.snapshot(loop_fingerprint)
-        assert result is not None
-        return result
+        return self.apply(loop_fingerprint, decision, now=now)
 
     def register_challenger(self, loop_fingerprint: str, *, manifest_fingerprint: str, execution_fingerprint: str, subject_fingerprint: str, now: datetime) -> ResearchLoopRecord:
         loop_fp = _sha(loop_fingerprint, "Challenger loop")
