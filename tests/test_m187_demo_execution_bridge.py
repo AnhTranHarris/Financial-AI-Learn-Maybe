@@ -472,13 +472,38 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
     def test_shadow_economics_drift_is_rejected_even_if_object_hash_field_is_reused(self) -> None:
         spy = SpyAdapter()
         values = self.fixture(spy)
-        temp, vault, registry, champion, session, intent, shadow, _record, bridge = values
+        temp, vault, registry, champion, session, intent, shadow, record, bridge = values
         try:
             forged = replace(shadow, volume=0.20)
-            forged_record = ShadowExecutionVault(
-                vault,
+
+            # M186 itself must never accept two different immutable shadow
+            # records for the same OrderIntent. This was the original fixture
+            # bug: the adversarial test attempted to create an invalid M186
+            # state through the guarded M186 persistence API.
+            with self.assertRaisesRegex(ValueError, "already has different M186 shadow evidence"):
+                ShadowExecutionVault(
+                    vault,
+                    producer_fingerprint=fp("forged-producer"),
+                ).record_intent(forged)
+
+            # Defense in depth: emulate corrupt/bypassed upstream storage by
+            # writing the forged bytes through the generic M164 vault. M187
+            # must still reject the economic drift before broker delegation.
+            forged_record = vault.store_bytes(
+                json.dumps(
+                    forged.payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                    default=str,
+                ).encode("utf-8"),
+                kind=ArtifactKind.OTHER,
+                content_type=record.content_type,
                 producer_fingerprint=fp("forged-producer"),
-            ).record_intent(forged)
+                subject_fingerprint=intent.intent_hash,
+                source_fingerprints=record.source_fingerprints,
+                now=forged.captured_at,
+            )
             with self.assertRaisesRegex(PermissionError, "shadow/volume binding drift"):
                 bridge.execute(
                     champion=champion,
