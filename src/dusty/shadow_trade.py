@@ -2,11 +2,11 @@ from __future__ import annotations
 
 """M185 immutable shadow-trade evidence and intent-to-fill comparison.
 
-The recorder freezes what Dusty intended *before* any broker send.  It reuses
+The recorder freezes what Dusty intended *before* any broker send. It reuses
 OrderIntent and CognitionAssessment rather than creating a second execution
-model.  Persistence is delegated to the M164 append-only artifact vault.
-Actual fills are supplied as observed broker-history evidence; this module does
-not call MT5, send orders, or infer a fill from order_check/order_send alone.
+model. Persistence is delegated to the M164 append-only artifact vault.
+Actual fills are supplied as explicit broker-history deal evidence; this module
+does not call MT5, send orders, or infer a fill from order_check/order_send.
 """
 
 from dataclasses import dataclass
@@ -167,8 +167,8 @@ class ShadowTradeRecord:
                 "forecast_integration_fingerprint",
                 _sha(self.forecast_integration_fingerprint, "forecast integration"),
             )
-        providers = tuple(sorted({_sha(value, "shadow provider") for value in self.provider_fingerprints}))
-        if len(providers) != len(self.provider_fingerprints):
+        providers = tuple(sorted(_sha(value, "shadow provider") for value in self.provider_fingerprints))
+        if len(providers) != len(set(providers)):
             raise ValueError("shadow provider fingerprints must be unique")
         if providers and self.forecast_integration_fingerprint is None:
             raise ValueError("forecast provider evidence requires M184 integration identity")
@@ -261,13 +261,7 @@ def build_shadow_trade(
     analyst_score: float | None = None,
     analyst_score_fingerprint: str | None = None,
 ) -> ShadowTradeRecord:
-    """Freeze one pre-send intent/cognition envelope.
-
-    ``analyst_score`` is optional because the current Cognition contract exposes
-    categorical Analyst state, not a canonical numeric score.  A numeric score
-    may be recorded only together with a fingerprint identifying its upstream
-    scoring evidence; M185 does not invent a score or scoring algorithm.
-    """
+    """Freeze one governance-approved pre-send intent/cognition envelope."""
 
     _validate_cognition(cognition)
     captured = _aware(recorded_at, "shadow recorded_at")
@@ -344,18 +338,20 @@ class ObservedBrokerFill:
             raise ValueError("broker fill volume/price must be positive")
 
     @property
+    def payload(self) -> dict[str, object]:
+        return {
+            "protocol": "dusty-m185-observed-broker-fill-v1",
+            "deal_ticket": self.deal_ticket,
+            "order_ticket": self.order_ticket,
+            "filled_at": self.filled_at.isoformat(),
+            "volume": self.volume,
+            "price": self.price,
+            "source_fingerprint": self.source_fingerprint,
+        }
+
+    @property
     def fingerprint(self) -> str:
-        return _digest(
-            (
-                "dusty-m185-observed-broker-fill-v1",
-                self.deal_ticket,
-                self.order_ticket,
-                self.filled_at.isoformat(),
-                self.volume,
-                self.price,
-                self.source_fingerprint,
-            )
-        )
+        return _digest(self.payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,7 +360,7 @@ class ShadowFillComparison:
     shadow_fingerprint: str
     intent_hash: str
     client_tag: str
-    fill_fingerprints: tuple[str, ...]
+    fills: tuple[ObservedBrokerFill, ...]
     filled_volume: float
     fill_fraction: float
     weighted_average_fill_price: float | None
@@ -378,14 +374,19 @@ class ShadowFillComparison:
         object.__setattr__(self, "shadow_fingerprint", _sha(self.shadow_fingerprint, "comparison shadow"))
         object.__setattr__(self, "intent_hash", _sha(self.intent_hash, "comparison intent"))
         object.__setattr__(self, "client_tag", _text(self.client_tag, "comparison client_tag", maximum=64))
-        fingerprints = tuple(sorted(_sha(value, "comparison fill") for value in self.fill_fingerprints))
-        if len(fingerprints) != len(set(fingerprints)):
-            raise ValueError("comparison fill fingerprints must be unique")
-        object.__setattr__(self, "fill_fingerprints", fingerprints)
+        rows = tuple(sorted(self.fills, key=lambda row: (row.filled_at, row.deal_ticket)))
+        if len({row.deal_ticket for row in rows}) != len(rows):
+            raise ValueError("comparison broker deal tickets must be unique")
+        object.__setattr__(self, "fills", rows)
+
         object.__setattr__(self, "filled_volume", _finite(self.filled_volume, "filled_volume"))
         object.__setattr__(self, "fill_fraction", _finite(self.fill_fraction, "fill_fraction"))
-        if self.filled_volume < 0 or not 0 <= self.fill_fraction <= 1 + 1e-12:
+        if self.filled_volume < 0 or not 0.0 <= self.fill_fraction <= 1.0:
             raise ValueError("comparison fill volume/fraction is invalid")
+        total = sum(row.volume for row in rows)
+        if not math.isclose(self.filled_volume, total, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("comparison filled volume does not match deal evidence")
+
         optional = (
             "weighted_average_fill_price",
             "adverse_slippage_price",
@@ -397,26 +398,42 @@ class ShadowFillComparison:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _finite(value, name))
-        if not self.fill_fingerprints:
+        if not rows:
             if self.filled_volume != 0 or self.fill_fraction != 0 or any(getattr(self, name) is not None for name in optional):
                 raise ValueError("no-fill comparison cannot carry fill metrics")
         else:
             if self.weighted_average_fill_price is None or self.weighted_average_fill_price <= 0:
                 raise ValueError("filled comparison requires positive VWAP")
+            expected_vwap = sum(row.price * row.volume for row in rows) / total
+            if not math.isclose(self.weighted_average_fill_price, expected_vwap, rel_tol=0.0, abs_tol=1e-12):
+                raise ValueError("comparison VWAP does not match deal evidence")
             if self.first_fill_latency_ms is None or self.last_fill_latency_ms is None:
                 raise ValueError("filled comparison requires fill latency")
             if self.first_fill_latency_ms < 0 or self.last_fill_latency_ms < self.first_fill_latency_ms:
                 raise ValueError("comparison fill latency ordering is invalid")
+            if self.observed_at < rows[-1].filled_at:
+                raise ValueError("comparison observation predates final broker fill")
+
+    @property
+    def fill_fingerprints(self) -> tuple[str, ...]:
+        return tuple(row.fingerprint for row in self.fills)
+
+    @property
+    def fill_source_fingerprints(self) -> tuple[str, ...]:
+        return tuple(sorted({row.source_fingerprint for row in self.fills}))
 
     @property
     def payload(self) -> dict[str, object]:
         return {
-            "protocol": "dusty-m185-shadow-fill-comparison-v1",
+            "protocol": "dusty-m185-shadow-fill-comparison-v2",
             "observed_at": self.observed_at.isoformat(),
             "shadow_fingerprint": self.shadow_fingerprint,
             "intent_hash": self.intent_hash,
             "client_tag": self.client_tag,
-            "fill_fingerprints": list(self.fill_fingerprints),
+            "fills": [
+                {**row.payload, "fingerprint": row.fingerprint}
+                for row in self.fills
+            ],
             "filled_volume": self.filled_volume,
             "fill_fraction": self.fill_fraction,
             "weighted_average_fill_price": self.weighted_average_fill_price,
@@ -441,14 +458,16 @@ def compare_shadow_to_fills(
     *,
     observed_at: datetime,
 ) -> ShadowFillComparison:
-    """Compare a frozen intent with explicit broker-history fills.
+    """Compare a frozen intent with explicit broker-history deal evidence.
 
-    Positive slippage is adverse for both LONG and SHORT.  Empty fills are a
+    Positive slippage is adverse for both LONG and SHORT. Empty fills are a
     valid observation, but are not interpreted as a broker rejection here;
     M187 owns execution-deviation classification.
     """
 
     observed = _aware(observed_at, "comparison observed_at")
+    if observed < shadow.recorded_at:
+        raise ValueError("comparison observation predates frozen shadow intent")
     rows = tuple(sorted(fills, key=lambda row: (row.filled_at, row.deal_ticket)))
     if len({row.deal_ticket for row in rows}) != len(rows):
         raise ValueError("duplicate broker deal ticket in fill comparison")
@@ -489,7 +508,7 @@ def compare_shadow_to_fills(
         shadow.fingerprint,
         shadow.intent_hash,
         shadow.client_tag,
-        tuple(row.fingerprint for row in rows),
+        rows,
         total_volume,
         fill_fraction,
         vwap,
@@ -538,7 +557,15 @@ class ShadowTradeRecorder:
 
     def record_comparison(self, comparison: ShadowFillComparison) -> ResearchArtifactRecord:
         data = _canonical(comparison.payload).encode("utf-8")
-        sources = tuple(sorted({comparison.shadow_fingerprint, *comparison.fill_fingerprints}))
+        sources = tuple(
+            sorted(
+                {
+                    comparison.shadow_fingerprint,
+                    *comparison.fill_fingerprints,
+                    *comparison.fill_source_fingerprints,
+                }
+            )
+        )
         return self._vault.store_bytes(
             data,
             kind=ArtifactKind.OTHER,
