@@ -19,8 +19,8 @@ The default novelty policy combines structural, clause-value, and parameter dist
 ## Novelty classes
 
 - `EXACT_DUPLICATE`: execution identity is identical.
-- `NEAR_DUPLICATE`: same family with very small semantic distance, or extremely similar behavior plus small semantic distance.
-- `FAMILY_VARIANT`: related but nontrivial variant, including highly correlated behavior on identical evidence.
+- `NEAR_DUPLICATE`: same family with very small semantic distance, or duplicate-level behavior plus sufficiently close semantics.
+- `FAMILY_VARIANT`: related but nontrivial variant, including variant-level correlated behavior on identical evidence.
 - `NOVEL`: no supported structural/behavioral basis for treating the candidate as a family variant.
 
 Numeric parameter values use normalized numeric distance so `50` versus `51` is not treated like an unrelated string.
@@ -38,6 +38,8 @@ Numeric parameter values use normalized numeric distance so `50` versus `51` is 
 ## Exhaustion evidence
 
 M159 does not declare a family dead based on experiment count. It considers only research attempts and explicitly excludes `INFRASTRUCTURE_FAILED` outcomes.
+
+Each research result carries an explicit monotonic `research_sequence`. Exhaustion assessment sorts by this sequence before computing its recent window and rejects duplicate sequence IDs. Therefore database/query iteration order cannot change whether the same evidence appears exhausted.
 
 A warning/strong signal requires a combination of evidence such as:
 
@@ -70,10 +72,13 @@ M159 graduates only when:
 - small numeric parameter changes are not misclassified as novel alpha;
 - materially different strategies can remain novel;
 - behavioral comparison rejects mismatched evidence sets;
+- duplicate-level and variant-level behavior are distinguished under the versioned policy;
 - lineage cycles fail closed without mutating the graph;
 - unknown external roots remain valid;
 - infrastructure failures do not count toward exhaustion;
 - experiment count alone cannot cause exhaustion;
+- explicit evidence sequence, not caller iteration order, defines recency;
+- duplicate evidence sequence IDs fail closed;
 - recent meaningful improvement prevents premature exhaustion;
 - repeated low-novelty/low-improvement research failure can produce bounded exhaustion evidence;
 - dedicated Ubuntu/Windows Python 3.11/3.12 QC and full repository CI pass on the exact head.
