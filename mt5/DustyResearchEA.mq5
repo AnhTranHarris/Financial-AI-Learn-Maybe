@@ -108,7 +108,13 @@ bool LoadManifest()
          break;
       row.entry_time=StringToTime(FileReadString(handle));
       row.exit_time=StringToTime(FileReadString(handle));
-      const string side=StringToLower(FileReadString(handle));
+      string side=FileReadString(handle);
+      if(!StringToLower(side))
+        {
+         FileClose(handle);
+         PrintFormat("DustyResearchEA cannot normalize side for %s",row.trade_id);
+         return false;
+        }
       row.is_long=(side=="long");
       if(!row.is_long && side!="short")
         {
