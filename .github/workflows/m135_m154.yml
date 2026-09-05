@@ -51,6 +51,7 @@ jobs:
           tests/test_m159_strategy_family.py
           tests/test_m160_research_loop_governor.py
           tests/test_m161_native_mt5_executor.py
+          tests/test_m161_mt5_set_contract.py
           tests/test_m67_tester_contract.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
@@ -99,6 +100,7 @@ jobs:
         run: >-
           python -m unittest
           tests.test_m161_native_mt5_executor
+          tests.test_m161_mt5_set_contract
           tests.test_m67_tester_contract
           -v
 
