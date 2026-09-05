@@ -1,0 +1,48 @@
+name: m185-m194-operational-hardening
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  operational-hardening:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: src
+      PYTHONHASHSEED: "0"
+      PYTHONWARNINGS: "error::DeprecationWarning"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile operational hardening surfaces
+        run: python -m compileall -q src/dusty tests tools
+
+      - name: M185-M189 gates
+        run: >-
+          python -c "import pathlib,subprocess,sys;
+          files=list(pathlib.Path('tests').glob('test_m18*.py'));
+          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','discover','-s','tests','-p','test_m18*.py','-v']) if files else 0)"
+
+      - name: M190-M194 gates
+        run: >-
+          python -c "import pathlib,subprocess,sys;
+          files=list(pathlib.Path('tests').glob('test_m19*.py'));
+          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','discover','-s','tests','-p','test_m19*.py','-v']) if files else 0)"
+
+      - name: No new direct broker-send surfaces after M187
+        shell: bash
+        if: runner.os != 'Windows'
+        run: >-
+          python -c "from pathlib import Path;
+          names=['execution_reconciliation.py','demo_execution_cost_learning.py','restart_recovery.py','provider_degradation.py','strategy_drift.py','champion_suspension.py','single_desk_demo_certification.py'];
+          rows=[Path('src/dusty')/name for name in names if (Path('src/dusty')/name).exists()];
+          bad=[str(path) for path in rows if 'order_send(' in path.read_text(encoding='utf-8')];
+          assert not bad, f'direct broker-send surface outside M187: {bad}'"
