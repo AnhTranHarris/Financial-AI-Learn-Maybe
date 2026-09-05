@@ -3,8 +3,8 @@ from __future__ import annotations
 """M193 automatic Frozen Champion suspension governance.
 
 M193 converts precommitted operational evidence into one irreversible M185
-lifecycle transition.  It never closes or modifies positions, sends broker
-requests, changes risk, or mutates the Frozen Champion payload.  Existing
+lifecycle transition. It never closes or modifies positions, sends broker
+requests, changes risk, or mutates the Frozen Champion payload. Existing
 position supervision remains the responsibility of the established execution
 and Guardian layers.
 """
@@ -88,16 +88,8 @@ class ChampionSuspensionPolicy:
         if drawdown <= 0:
             raise ValueError("maximum_forward_drawdown_fraction must be positive")
         object.__setattr__(self, "maximum_forward_drawdown_fraction", drawdown)
-        object.__setattr__(
-            self,
-            "minimum_drawdown_observations",
-            _positive_int(self.minimum_drawdown_observations, "minimum_drawdown_observations"),
-        )
-        object.__setattr__(
-            self,
-            "minimum_execution_confirmation_count",
-            _positive_int(self.minimum_execution_confirmation_count, "minimum_execution_confirmation_count"),
-        )
+        object.__setattr__(self, "minimum_drawdown_observations", _positive_int(self.minimum_drawdown_observations, "minimum_drawdown_observations"))
+        object.__setattr__(self, "minimum_execution_confirmation_count", _positive_int(self.minimum_execution_confirmation_count, "minimum_execution_confirmation_count"))
         for name in (
             "suspend_on_structural_drift",
             "suspend_on_data_or_replay_drift",
@@ -230,6 +222,31 @@ class ChampionSuspensionAssessment:
         return False
 
 
+def _validate_drift_assessment(drift: StrategyDriftAssessment) -> None:
+    """Revalidate M192 semantic shape at the irreversible M193 boundary."""
+
+    if not drift.evidence_fingerprints:
+        raise ValueError("M192 drift assessment requires evidence")
+    strategy = bool(drift.strategy_signals)
+    execution = bool(drift.execution_signals)
+    data = bool(drift.data_signals)
+    status = drift.status
+    if status is StrategyDriftStatus.STABLE and (strategy or execution or data):
+        raise ValueError("STABLE M192 assessment cannot carry drift signals")
+    if status is StrategyDriftStatus.WATCH and (not strategy or data):
+        raise ValueError("WATCH M192 assessment requires strategy signals only")
+    if status is StrategyDriftStatus.EXECUTION_DRIFT_ONLY and (strategy or data or not execution):
+        raise ValueError("EXECUTION_DRIFT_ONLY M192 assessment requires execution-only signals")
+    if status is StrategyDriftStatus.STRUCTURAL_DRIFT and not strategy:
+        raise ValueError("STRUCTURAL_DRIFT M192 assessment requires strategy signals")
+    if status is StrategyDriftStatus.DATA_OR_REPLAY_DRIFT and not data:
+        raise ValueError("DATA_OR_REPLAY_DRIFT M192 assessment requires data/replay signals")
+    if status is StrategyDriftStatus.GOVERNANCE_FAILURE and not data:
+        raise ValueError("GOVERNANCE_FAILURE M192 assessment requires governance evidence")
+    if status is StrategyDriftStatus.INSUFFICIENT and (strategy or execution):
+        raise ValueError("INSUFFICIENT M192 assessment cannot carry confirmed drift signals")
+
+
 def evaluate_automatic_suspension(
     champion: FrozenChampionRecord,
     baseline: StrategyDriftBaseline,
@@ -249,6 +266,7 @@ def evaluate_automatic_suspension(
         raise ValueError("Champion/drift identity drift")
     if drift.baseline_fingerprint != baseline.fingerprint:
         raise ValueError("drift assessment is not bound to supplied baseline")
+    _validate_drift_assessment(drift)
     if drawdown.champion_fingerprint != champion.fingerprint:
         raise ValueError("Champion/drawdown identity drift")
     if drawdown.baseline_fingerprint != baseline.fingerprint:
@@ -261,6 +279,8 @@ def evaluate_automatic_suspension(
     confirmations = tuple(sorted(_sha(value, "execution confirmation") for value in execution_confirmation_fingerprints))
     if len(confirmations) != len(set(confirmations)):
         raise ValueError("execution confirmation evidence must be unique")
+    if confirmations and not drift.execution_signals:
+        raise ValueError("execution confirmations require M192 execution-drift evidence")
 
     reasons: list[str] = []
     if not drawdown.data_integrity_ok:
