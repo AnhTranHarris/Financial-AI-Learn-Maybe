@@ -2,12 +2,12 @@ from __future__ import annotations
 
 """M185 immutable, append-only Frozen Champion Registry.
 
-M185 is a custody/governance boundary, not a promotion algorithm.  A caller
+M185 is a custody/governance boundary, not a promotion algorithm. A caller
 must supply an external deterministic selection fingerprint plus already-passing
 M174 robustness evidence and, when forecasts are part of the frozen Champion,
-M184 forecast-integration evidence.  The registry never edits a Champion in
-place.  A changed strategy/graph/tool identity is a new lineage member, and
-lifecycle changes are append-only terminal events.
+M184 forecast-integration evidence. The registry never edits a Champion in
+place. A changed strategy/graph/tool identity is a new lineage member, and
+lifecycle changes are append-only events.
 """
 
 from dataclasses import dataclass
@@ -232,8 +232,8 @@ def freeze_champion_record(
 ) -> FrozenChampionRecord:
     """Build an immutable record from externally selected, certified evidence.
 
-    ``selection_evidence_fingerprint`` is intentionally mandatory: M185 does not
-    turn M174/M184 research eligibility into a promotion decision by itself.
+    ``selection_evidence_fingerprint`` is mandatory because M185 must not turn
+    M174/M184 research eligibility into a promotion decision by itself.
     """
 
     _validate_robustness(robustness)
@@ -422,29 +422,71 @@ class FrozenChampionRegistry:
             ),
         )
 
+    def _registration_sources(
+        self,
+        champion: FrozenChampionRecord,
+        robustness: RobustnessCertification,
+        forecast_integration: ForecastIntegrationCertification | None,
+        evidence_fingerprints: Iterable[str],
+    ) -> tuple[str, ...]:
+        _validate_robustness(robustness)
+        if robustness.fingerprint != champion.robustness_fingerprint:
+            raise ValueError("Champion/M174 robustness fingerprint drift")
+        required = {champion.selection_evidence_fingerprint, champion.robustness_fingerprint}
+        if champion.forecast_integration_fingerprint is None:
+            if forecast_integration is not None:
+                raise ValueError("non-forecast Champion cannot attach M184 integration evidence")
+        else:
+            if forecast_integration is None:
+                raise ValueError("forecast-enabled Champion requires M184 integration evidence")
+            _validate_forecast(
+                forecast_integration,
+                strategy_fingerprint=champion.strategy_fingerprint,
+                strategy_family=champion.strategy_family,
+            )
+            if forecast_integration.fingerprint != champion.forecast_integration_fingerprint:
+                raise ValueError("Champion/M184 forecast integration fingerprint drift")
+            required.add(champion.forecast_integration_fingerprint)
+        supplied = tuple(sorted(_sha(value, "Champion registration evidence") for value in evidence_fingerprints))
+        if len(supplied) != len(set(supplied)):
+            raise ValueError("Champion registration evidence must be unique")
+        if not required.issubset(set(supplied)):
+            raise ValueError("Champion registration is missing required selection/certification evidence")
+        return supplied
+
     def register(
         self,
         champion: FrozenChampionRecord,
         *,
+        robustness: RobustnessCertification,
+        forecast_integration: ForecastIntegrationCertification | None,
         actor_fingerprint: str,
         evidence_fingerprints: Iterable[str],
         reason: str,
     ) -> FrozenChampionRecord:
         actor = _sha(actor_fingerprint, "registration actor")
-        evidence = tuple(evidence_fingerprints)
+        evidence = self._registration_sources(
+            champion,
+            robustness,
+            forecast_integration,
+            evidence_fingerprints,
+        )
         rendered = _canonical(champion.payload)
         payload_sha = sha256(rendered.encode("utf-8")).hexdigest()
         self._begin()
         try:
-            existing_fp = self._db.execute(
+            existing = self._db.execute(
                 "SELECT champion_fingerprint,payload_sha256 FROM frozen_champions WHERE lane_id=? AND generation_id=?",
                 (champion.lane_id, champion.generation_id),
             ).fetchone()
-            if existing_fp is not None:
-                if str(existing_fp[0]) != champion.fingerprint or str(existing_fp[1]) != payload_sha:
+            if existing is not None:
+                if str(existing[0]) != champion.fingerprint or str(existing[1]) != payload_sha:
                     raise ChampionRegistryIntegrityError("Champion generation is immutable and already occupied")
+                stored = self.get(champion.fingerprint)
+                if stored is None:
+                    raise ChampionRegistryIntegrityError("idempotent Champion registration lost stored payload")
                 self._commit()
-                return champion
+                return stored
 
             lane_rows = self._db.execute(
                 "SELECT champion_fingerprint FROM frozen_champions WHERE lane_id=? ORDER BY seq",
@@ -470,6 +512,8 @@ class FrozenChampionRegistry:
                     raise ValueError("parent Champion must be explicitly superseded before successor registration")
                 if parent_event.successor_fingerprint != champion.fingerprint:
                     raise ValueError("parent supersession does not name this exact successor fingerprint")
+                if champion.created_at < parent_event.created_at:
+                    raise ValueError("successor Champion cannot predate parent supersession")
 
             self._db.execute(
                 "INSERT INTO frozen_champions("
@@ -490,7 +534,7 @@ class FrozenChampionRegistry:
                     champion.fingerprint,
                     ChampionLifecycleEventType.REGISTERED,
                     actor,
-                    tuple(evidence),
+                    evidence,
                     reason,
                     champion.created_at,
                 )
@@ -501,19 +545,47 @@ class FrozenChampionRegistry:
             self._rollback()
             raise
 
-    def append_terminal_event(self, event: ChampionLifecycleEvent) -> ChampionLifecycleEvent:
+    def append_lifecycle_event(self, event: ChampionLifecycleEvent) -> ChampionLifecycleEvent:
         if event.event_type is ChampionLifecycleEventType.REGISTERED:
             raise ValueError("registered lifecycle event is created only by register()")
         self._begin()
         try:
+            existing = self._db.execute(
+                "SELECT payload,payload_sha256 FROM champion_lifecycle_events WHERE event_fingerprint=?",
+                (event.fingerprint,),
+            ).fetchone()
+            if existing is not None:
+                rendered = _canonical(event.payload)
+                expected = sha256(rendered.encode("utf-8")).hexdigest()
+                if str(existing[1]) != expected or str(existing[0]) != rendered:
+                    raise ChampionRegistryIntegrityError("lifecycle event idempotency integrity failure")
+                self._commit()
+                return event
+
             champion = self.get(event.champion_fingerprint)
             if champion is None:
                 raise KeyError(event.champion_fingerprint)
             latest = self.latest_event(event.champion_fingerprint)
-            if latest is None or latest.event_type is not ChampionLifecycleEventType.REGISTERED:
-                raise ValueError("Champion lifecycle is terminal after suspension/retirement/supersession")
+            if latest is None:
+                raise ChampionRegistryIntegrityError("registered Champion has no lifecycle event")
             if event.created_at < latest.created_at:
                 raise ValueError("Champion lifecycle time cannot move backwards")
+
+            allowed = {
+                ChampionLifecycleEventType.REGISTERED: {
+                    ChampionLifecycleEventType.SUSPENDED,
+                    ChampionLifecycleEventType.RETIRED,
+                    ChampionLifecycleEventType.SUPERSEDED,
+                },
+                ChampionLifecycleEventType.SUSPENDED: {
+                    ChampionLifecycleEventType.RETIRED,
+                    ChampionLifecycleEventType.SUPERSEDED,
+                },
+                ChampionLifecycleEventType.RETIRED: set(),
+                ChampionLifecycleEventType.SUPERSEDED: set(),
+            }
+            if event.event_type not in allowed[latest.event_type]:
+                raise ValueError("illegal Champion lifecycle transition; reactivation is prohibited")
             if event.event_type is ChampionLifecycleEventType.SUPERSEDED:
                 assert event.successor_fingerprint is not None
                 if self.get(event.successor_fingerprint) is not None:
@@ -556,17 +628,9 @@ class FrozenChampionRegistry:
             raise ChampionRegistryIntegrityError("Champion fingerprint does not match stored payload")
         return record
 
-    def latest_event(self, champion_fingerprint: str) -> ChampionLifecycleEvent | None:
-        fingerprint = _sha(champion_fingerprint, "Champion event lookup")
-        row = self._db.execute(
-            "SELECT payload,payload_sha256 FROM champion_lifecycle_events "
-            "WHERE champion_fingerprint=? ORDER BY seq DESC LIMIT 1",
-            (fingerprint,),
-        ).fetchone()
-        if row is None:
-            return None
-        rendered = str(row[0])
-        if sha256(rendered.encode("utf-8")).hexdigest() != str(row[1]):
+    @staticmethod
+    def _event_from_payload(rendered: str, expected_payload_sha: str) -> ChampionLifecycleEvent:
+        if sha256(rendered.encode("utf-8")).hexdigest() != expected_payload_sha:
             raise ChampionRegistryIntegrityError("Champion lifecycle payload hash mismatch")
         data = json.loads(rendered)
         return ChampionLifecycleEvent(
@@ -578,6 +642,20 @@ class FrozenChampionRegistry:
             datetime.fromisoformat(data["created_at"]),
             data["successor_fingerprint"],
         )
+
+    def latest_event(self, champion_fingerprint: str) -> ChampionLifecycleEvent | None:
+        fingerprint = _sha(champion_fingerprint, "Champion event lookup")
+        row = self._db.execute(
+            "SELECT event_fingerprint,payload,payload_sha256 FROM champion_lifecycle_events "
+            "WHERE champion_fingerprint=? ORDER BY seq DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        if row is None:
+            return None
+        event = self._event_from_payload(str(row[1]), str(row[2]))
+        if event.fingerprint != str(row[0]):
+            raise ChampionRegistryIntegrityError("Champion lifecycle fingerprint mismatch")
+        return event
 
     def state(self, champion_fingerprint: str) -> ChampionLifecycleState:
         event = self.latest_event(champion_fingerprint)
@@ -596,12 +674,11 @@ class FrozenChampionRegistry:
             "SELECT champion_fingerprint FROM frozen_champions WHERE lane_id=? ORDER BY seq",
             (lane,),
         ).fetchall()
-        active = tuple(
-            record
-            for (fingerprint,) in rows
-            if (record := self.get(str(fingerprint))) is not None
-            and self.state(record.fingerprint) is ChampionLifecycleState.ACTIVE
-        )
+        active: list[FrozenChampionRecord] = []
+        for (fingerprint,) in rows:
+            record = self.get(str(fingerprint))
+            if record is not None and self.state(record.fingerprint) is ChampionLifecycleState.ACTIVE:
+                active.append(record)
         if len(active) > 1:
             raise ChampionRegistryIntegrityError("multiple active Champions detected in one lane")
         return active[0] if active else None
@@ -612,7 +689,13 @@ class FrozenChampionRegistry:
             "SELECT champion_fingerprint FROM frozen_champions WHERE lane_id=? ORDER BY seq",
             (lane,),
         ).fetchall()
-        return tuple(self.get(str(row[0])) for row in rows)  # type: ignore[arg-type]
+        records: list[FrozenChampionRecord] = []
+        for (fingerprint,) in rows:
+            record = self.get(str(fingerprint))
+            if record is None:
+                raise ChampionRegistryIntegrityError("Champion lineage index references missing record")
+            records.append(record)
+        return tuple(records)
 
     def integrity_check(self) -> tuple[bool, tuple[str, ...]]:
         errors: list[str] = []
@@ -620,9 +703,11 @@ class FrozenChampionRegistry:
         if db_result.lower() != "ok":
             errors.append(f"sqlite:{db_result}")
         champion_rows = self._db.execute(
-            "SELECT champion_fingerprint FROM frozen_champions ORDER BY seq"
+            "SELECT champion_fingerprint,lane_id FROM frozen_champions ORDER BY seq"
         ).fetchall()
-        for (fingerprint,) in champion_rows:
+        lanes: set[str] = set()
+        for fingerprint, lane in champion_rows:
+            lanes.add(str(lane))
             try:
                 record = self.get(str(fingerprint))
                 if record is None or self.latest_event(record.fingerprint) is None:
@@ -633,9 +718,17 @@ class FrozenChampionRegistry:
             "SELECT event_fingerprint,payload,payload_sha256 FROM champion_lifecycle_events ORDER BY seq"
         ).fetchall()
         for event_fp, payload, expected in event_rows:
-            rendered = str(payload)
-            if sha256(rendered.encode("utf-8")).hexdigest() != str(expected):
-                errors.append(f"event:{event_fp}:payload_hash")
+            try:
+                event = self._event_from_payload(str(payload), str(expected))
+                if event.fingerprint != str(event_fp):
+                    errors.append(f"event:{event_fp}:fingerprint")
+            except (ValueError, ChampionRegistryIntegrityError, json.JSONDecodeError) as exc:
+                errors.append(f"event:{event_fp}:{type(exc).__name__}")
+        for lane in lanes:
+            try:
+                self.active_for_lane(lane)
+            except ChampionRegistryIntegrityError as exc:
+                errors.append(f"lane:{lane}:{type(exc).__name__}")
         return (not errors, tuple(errors))
 
     def close(self) -> None:
