@@ -1,0 +1,43 @@
+name: m162-m181-quant-robustness-forecast
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tranche-qc:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: src
+      PYTHONHASHSEED: "0"
+      PYTHONWARNINGS: "error::DeprecationWarning"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile Dusty research surfaces
+        run: python -m compileall -q src/dusty tests tools
+
+      - name: M160-M169 tranche gates
+        run: python -m unittest discover -s tests -p "test_m16*.py" -v
+
+      - name: M170-M179 tranche gates
+        run: python -m unittest discover -s tests -p "test_m17*.py" -v
+
+      - name: M180-M181 tranche gates
+        run: python -m unittest discover -s tests -p "test_m18*.py" -v
+
+      - name: Fail-closed authority scan
+        shell: bash
+        if: runner.os != 'Windows'
+        run: >-
+          python -c "from pathlib import Path;
+          rows=[p.read_text(encoding='utf-8') for p in Path('src/dusty').glob('*.py') if p.name in {'resource_governor.py','replay_cache.py','artifact_vault.py','broker_calibration.py'}];
+          assert all('broker_write_authorized' in row or 'broker_write_authority' in row for row in rows)"
