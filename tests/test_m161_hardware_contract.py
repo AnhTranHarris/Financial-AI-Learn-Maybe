@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, time, timezone
 from pathlib import Path
 import runpy
 import unittest
+
+from dusty.native_mt5_executor import PowerShellTerminalIsolationVerifier
 
 
 class M161HardwareHarnessContractTests(unittest.TestCase):
@@ -38,6 +41,25 @@ class M161HardwareHarnessContractTests(unittest.TestCase):
         self.assertIn("diagnostic only; log + EX5 prove compile success", source)
         self.assertNotIn("if ($compileProcess.ExitCode -ne 0)", source)
         self.assertNotIn("throw \"MetaEditor returned exit code", source)
+
+    def test_python_terminal_isolation_uses_encoded_powershell_contract(self) -> None:
+        terminal = Path(r"C:\Program Files\Coinexx MT5 Terminal\terminal64.exe")
+        encoded = PowerShellTerminalIsolationVerifier._encoded_command(terminal)
+        decoded = base64.b64decode(encoded).decode("utf-16le")
+        target_b64 = base64.b64encode(str(terminal).encode("utf-8")).decode("ascii")
+
+        self.assertIn(target_b64, decoded)
+        self.assertIn("[Convert]::FromBase64String", decoded)
+        self.assertIn("[Text.Encoding]::UTF8.GetString", decoded)
+        self.assertIn("Get-CimInstance Win32_Process", decoded)
+        self.assertIn("ExecutablePath", decoded)
+        self.assertNotIn("$args[0]", decoded)
+
+        source = Path("src/dusty/native_mt5_executor.py").read_text(encoding="utf-8")
+        self.assertIn('"-EncodedCommand"', source)
+        self.assertIn('script.encode("utf-16le")', source)
+        self.assertNotIn('"-Command",\n                    self._SCRIPT', source)
+        self.assertNotIn("$args[0]", source)
 
     def test_python_hardware_smoke_uses_bounded_native_executor_without_strategy_verdict(self) -> None:
         source = Path("tools/smoke_m161_hardware.py").read_text(encoding="utf-8")
