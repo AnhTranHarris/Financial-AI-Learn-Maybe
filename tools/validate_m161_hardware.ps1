@@ -27,7 +27,12 @@ Set-StrictMode -Version Latest
 
 function Get-NormalizedPath {
     param([Parameter(Mandatory = $true)][string]$Path)
-    return [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ($full.Length -le $root.Length) {
+        return $full
+    }
+    return $full.TrimEnd([char[]]@('\', '/'))
 }
 
 function Assert-LastExitCode {
@@ -106,6 +111,12 @@ if ([IO.Path]::GetFileName($TerminalPath) -ine 'terminal64.exe') {
     throw 'M161 hardware certification requires an explicit terminal64.exe path.'
 }
 
+$targetExpert = $null
+$priorExpertBackup = $null
+$targetExpertExisted = $false
+$validationPassed = $false
+$resolvedValidationRoot = $null
+
 Push-Location $Repo
 try {
     $actualHead = (& git rev-parse HEAD).Trim().ToLowerInvariant()
@@ -129,6 +140,7 @@ try {
         $ValidationRoot = Join-Path $env:LOCALAPPDATA "DustyDragon\validation\m161-hardware-$stamp"
     }
     $ValidationRoot = Get-NormalizedPath $ValidationRoot
+    $resolvedValidationRoot = $ValidationRoot
     New-Item -ItemType Directory -Path $ValidationRoot -Force | Out-Null
 
     Write-Host '=== M161 LOCAL WINDOWS SOFTWARE PREFLIGHT ==='
@@ -141,6 +153,7 @@ try {
     & $python -m unittest `
         tests.test_m161_native_mt5_executor `
         tests.test_m161_mt5_set_contract `
+        tests.test_m161_hardware_contract `
         tests.test_m67_tester_contract `
         -v
     Assert-LastExitCode 'M161 focused software gate'
@@ -220,8 +233,10 @@ try {
     $targetExpertDir = Join-Path $mql5Root 'Experts\DustyDragon\M161'
     $targetExpert = Join-Path $targetExpertDir 'DustyResearchEA.ex5'
     New-Item -ItemType Directory -Path $targetExpertDir -Force | Out-Null
-    if (Test-Path -LiteralPath $targetExpert -PathType Leaf) {
-        Copy-Item -LiteralPath $targetExpert -Destination (Join-Path $ValidationRoot 'prior-DustyResearchEA.ex5') -Force
+    $targetExpertExisted = Test-Path -LiteralPath $targetExpert -PathType Leaf
+    if ($targetExpertExisted) {
+        $priorExpertBackup = Join-Path $ValidationRoot 'prior-DustyResearchEA.ex5'
+        Copy-Item -LiteralPath $targetExpert -Destination $priorExpertBackup -Force
     }
     Copy-Item -LiteralPath $compiledExpert -Destination $targetExpert -Force
 
@@ -289,11 +304,39 @@ try {
         throw "M161 evidence passed but the target terminal remained running (PID(s): $pids). No automatic broad cleanup was attempted."
     }
 
-    Write-Host ''
-    Write-Host 'M161 LOCAL HARDWARE CERTIFICATION PASSED'
-    Write-Host "Evidence directory: $ValidationRoot"
-    Write-Host 'This certifies the native research boundary only; it grants no demo/live trading authority.'
+    $validationPassed = $true
 }
 finally {
+    $cleanupError = $null
+    try {
+        if ($targetExpert) {
+            if ($targetExpertExisted) {
+                if (-not $priorExpertBackup -or -not (Test-Path -LiteralPath $priorExpertBackup -PathType Leaf)) {
+                    throw 'Prior M161 research EA backup is missing; cannot restore the pre-certification file.'
+                }
+                Copy-Item -LiteralPath $priorExpertBackup -Destination $targetExpert -Force
+            }
+            elseif (Test-Path -LiteralPath $targetExpert -PathType Leaf) {
+                Remove-Item -LiteralPath $targetExpert -Force
+            }
+        }
+    }
+    catch {
+        $cleanupError = $_.Exception.Message
+    }
     Pop-Location
+    if ($cleanupError) {
+        if ($validationPassed) {
+            throw "M161 certification evidence passed but transactional EA cleanup failed: $cleanupError"
+        }
+        Write-Warning "M161 cleanup also failed after certification failure: $cleanupError"
+    }
+}
+
+if ($validationPassed) {
+    Write-Host ''
+    Write-Host 'M161 LOCAL HARDWARE CERTIFICATION PASSED'
+    Write-Host "Evidence directory: $resolvedValidationRoot"
+    Write-Host 'The staged research EA was restored/removed transactionally.'
+    Write-Host 'This certifies the native research boundary only; it grants no demo/live trading authority.'
 }
