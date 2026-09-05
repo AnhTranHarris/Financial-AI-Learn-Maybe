@@ -25,8 +25,8 @@ class M161HardwareHarnessContractTests(unittest.TestCase):
         self.assertIn("-Algorithm SHA256", source)
         self.assertIn("smoke_m161_hardware.py", source)
         self.assertIn("M161 LOCAL HARDWARE CERTIFICATION PASSED", source)
-        self.assertNotIn("taskkill /IM", source.lower())
-        self.assertNotIn("Stop-Process -Name", source)
+        self.assertNotIn("taskkill /im", source.lower())
+        self.assertNotIn("stop-process -name", source.lower())
 
     def test_python_hardware_smoke_uses_bounded_native_executor_without_strategy_verdict(self) -> None:
         source = Path("tools/smoke_m161_hardware.py").read_text(encoding="utf-8")
