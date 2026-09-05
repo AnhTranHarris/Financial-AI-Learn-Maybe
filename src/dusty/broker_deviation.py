@@ -166,6 +166,10 @@ class BrokerDeviationAssessment:
 
 _SUCCESS_STATES = {ExecutionState.ACCEPTED, ExecutionState.PARTIAL, ExecutionState.FILLED}
 _FAILURE_STATES = {ExecutionState.REJECTED, ExecutionState.FAULT}
+_MT5_PLACED = 10008
+_MT5_DONE = 10009
+_MT5_DONE_PARTIAL = 10010
+_MT5_SUCCESS_RETCODES = {_MT5_PLACED, _MT5_DONE, _MT5_DONE_PARTIAL}
 
 
 def _execution_fingerprint(result: DemoExecutionResult) -> str:
@@ -178,6 +182,19 @@ def _execution_fingerprint(result: DemoExecutionResult) -> str:
         int(result.deal_ticket),
         str(result.comment),
     ))
+
+
+def _retcode_state_issue(execution: DemoExecutionResult) -> str | None:
+    retcode = int(execution.retcode)
+    if execution.state is ExecutionState.ACCEPTED and retcode not in {_MT5_PLACED, _MT5_DONE}:
+        return "accepted_state_conflicts_with_mt5_retcode"
+    if execution.state is ExecutionState.PARTIAL and retcode != _MT5_DONE_PARTIAL:
+        return "partial_state_conflicts_with_mt5_retcode"
+    if execution.state is ExecutionState.FILLED and retcode != _MT5_DONE:
+        return "filled_state_conflicts_with_mt5_retcode"
+    if execution.state in _FAILURE_STATES and retcode in _MT5_SUCCESS_RETCODES:
+        return "failure_state_conflicts_with_mt5_success_retcode"
+    return None
 
 
 def classify_broker_deviation(
@@ -207,6 +224,9 @@ def classify_broker_deviation(
     fill_deal_tickets = {row.deal_ticket for row in comparison.fills}
 
     inconsistencies: list[str] = []
+    retcode_issue = _retcode_state_issue(execution)
+    if retcode_issue is not None:
+        inconsistencies.append(retcode_issue)
     if order_ticket and fill_order_tickets and fill_order_tickets != {order_ticket}:
         inconsistencies.append("broker_history_order_ticket_mismatch")
     if deal_ticket and comparison.fills and deal_ticket not in fill_deal_tickets:
