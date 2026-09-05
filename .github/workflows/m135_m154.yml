@@ -60,7 +60,6 @@ jobs:
         run: python -m unittest discover -s tests -p "test_m155_durable_experiment_queue.py" -v
 
       - name: M155 durable experiment queue smoke
-        shell: bash
         run: python tools/smoke_m155_experiment_queue.py --work-root "${RUNNER_TEMP}/m155-queue-smoke"
 
       - name: M135-M154 durable runtime smoke
@@ -88,10 +87,10 @@ jobs:
               [ref]$errors
           )
           if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Host $_.Message }
-              exit 1
+            $errors | ForEach-Object { Write-Host $_.Message }
+            exit 1
           }
           $scriptText = Get-Content -LiteralPath $scriptPath -Raw
           if (-not $scriptText.Contains('& powershell.exe @softwareArgs')) {
-              throw "M154.1 wrapper must isolate the nested software validator in a child PowerShell process."
+            throw "M154.1 wrapper must isolate the nested software validator in a child PowerShell process."
           }
