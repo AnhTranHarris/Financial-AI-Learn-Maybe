@@ -3,14 +3,14 @@ from __future__ import annotations
 """M188 broker-history execution reconciliation.
 
 M188 reconciles an immutable M186 expected execution and the M187 admission/send
-receipt against explicit read-only MT5 order/deal/position evidence.  It never
+receipt against explicit read-only MT5 order/deal/position evidence. It never
 calls order_send, retries, cancels, mutates a position, changes risk, promotes a
 Champion, or overrides Guardian.
 
-A successful order_send response is not final fill truth.  Broker deal history is
+A successful order_send response is not final fill truth. Broker deal history is
 the primary fill evidence; active orders and positions explain pending/partial
-states.  Missing history remains INCOMPLETE unless an explicit broker rejection
-is already known.
+states. Missing history remains INCOMPLETE unless an explicit, non-ambiguous
+broker rejection is already known.
 """
 
 from dataclasses import dataclass
@@ -19,7 +19,6 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 import math
-from typing import Iterable
 
 from .artifact_vault import ArtifactKind, ResearchArtifactRecord, ResearchArtifactVault
 from .demo_execution_bridge import DemoBridgeExecutionReceipt
@@ -151,8 +150,14 @@ class BrokerOrderEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m188-order-v1", self.order_ticket, self.symbol, self.volume_initial,
-            self.volume_current, self.state, self.filling_mode, self.position_id,
+            "dusty-m188-order-v1",
+            self.order_ticket,
+            self.symbol,
+            self.volume_initial,
+            self.volume_current,
+            self.state,
+            self.filling_mode,
+            self.position_id,
             self.source_fingerprint,
         ))
 
@@ -180,8 +185,13 @@ class BrokerPositionEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m188-position-v1", self.position_ticket, self.symbol,
-            self.side.value, self.volume, self.price_open, self.source_fingerprint,
+            "dusty-m188-position-v1",
+            self.position_ticket,
+            self.symbol,
+            self.side.value,
+            self.volume,
+            self.price_open,
+            self.source_fingerprint,
         ))
 
 
@@ -224,9 +234,14 @@ class BrokerExecutionEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m188-broker-evidence-v1", self.intent_hash, self.session_fingerprint,
-            self.symbol, self.observed_at.isoformat(), self.history_complete,
-            self.source_fingerprint, tuple(row.fingerprint for row in self.deals),
+            "dusty-m188-broker-evidence-v1",
+            self.intent_hash,
+            self.session_fingerprint,
+            self.symbol,
+            self.observed_at.isoformat(),
+            self.history_complete,
+            self.source_fingerprint,
+            tuple(row.fingerprint for row in self.deals),
             tuple(row.fingerprint for row in self.active_orders),
             tuple(row.fingerprint for row in self.positions),
         ))
@@ -279,7 +294,13 @@ class ExecutionReconciliation:
             object.__setattr__(self, field, _finite(getattr(self, field), field))
         if self.expected_price <= 0 or self.filled_volume < 0 or not 0 <= self.fill_fraction <= 1:
             raise ValueError("reconciliation economics invalid")
-        for field in ("weighted_average_fill_price", "adverse_slippage_price", "adverse_slippage_fraction", "first_fill_latency_ms", "last_fill_latency_ms"):
+        for field in (
+            "weighted_average_fill_price",
+            "adverse_slippage_price",
+            "adverse_slippage_fraction",
+            "first_fill_latency_ms",
+            "last_fill_latency_ms",
+        ):
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(self, field, _finite(value, field))
@@ -293,7 +314,11 @@ class ExecutionReconciliation:
             raise ValueError("last fill latency cannot precede first fill latency")
         if not self.reasons:
             raise ValueError("reconciliation requires at least one reason")
-        object.__setattr__(self, "evidence_fingerprints", tuple(sorted({_sha(row, "reconciliation evidence") for row in self.evidence_fingerprints})))
+        object.__setattr__(
+            self,
+            "evidence_fingerprints",
+            tuple(sorted({_sha(row, "reconciliation evidence") for row in self.evidence_fingerprints})),
+        )
 
     @property
     def payload(self) -> dict[str, object]:
@@ -365,11 +390,7 @@ def _expected_price(shadow: ShadowExecutionIntent) -> float:
     return shadow.reference_price
 
 
-def _execution_fingerprint(receipt: DemoBridgeExecutionReceipt) -> str:
-    return receipt.fingerprint
-
-
-_AMBIGUOUS_RETCODES = {10012}  # TRADE_RETCODE_TIMEOUT: broker state must be reconciled before any retry.
+_AMBIGUOUS_RETCODES = {10012}  # TRADE_RETCODE_TIMEOUT: reconcile broker state before any retry.
 _SUCCESS_RETCODES = {10008, 10009, 10010}
 
 
@@ -404,11 +425,9 @@ def reconcile_execution(
     reasons: list[str] = []
 
     if returned_order:
-        foreign = tuple(row for row in deals if row.order_ticket != returned_order)
-        if foreign:
+        if any(row.order_ticket != returned_order for row in deals):
             reasons.append("broker_deal_order_ticket_mismatch")
-        active_foreign = tuple(row for row in active_orders if row.order_ticket != returned_order)
-        if active_foreign:
+        if any(row.order_ticket != returned_order for row in active_orders):
             reasons.append("active_order_ticket_mismatch")
     if returned_deal and deals and returned_deal not in {row.deal_ticket for row in deals}:
         reasons.append("returned_deal_ticket_missing_from_broker_history")
@@ -423,13 +442,10 @@ def reconcile_execution(
     tolerance = max(1e-12, shadow.volume * 1e-9)
     if filled_volume > shadow.volume + tolerance:
         reasons.append("broker_history_overfill")
-    if reasons:
-        status = ReconciliationStatus.INCONSISTENT
-    else:
-        status = ReconciliationStatus.INCOMPLETE
+    status = ReconciliationStatus.INCONSISTENT if reasons else ReconciliationStatus.INCOMPLETE
 
     capped_volume = min(filled_volume, shadow.volume)
-    fill_fraction = 0.0 if shadow.volume <= 0 else min(1.0, capped_volume / shadow.volume)
+    fill_fraction = min(1.0, capped_volume / shadow.volume)
     expected_price = _expected_price(shadow)
     if deals:
         vwap = sum(row.volume * row.price for row in deals) / filled_volume
@@ -448,36 +464,38 @@ def reconcile_execution(
         last_latency = None
 
     if status is not ReconciliationStatus.INCONSISTENT:
+        retcode = int(receipt.execution.retcode)
         if filled_volume >= shadow.volume - tolerance and deals:
             status = ReconciliationStatus.FILLED
             reasons.append("broker_deal_history_confirms_full_fill")
         elif deals:
             status = ReconciliationStatus.PARTIAL
-            if active_orders:
-                reasons.append("broker_history_confirms_partial_fill_with_active_remainder")
-            else:
-                reasons.append("broker_history_confirms_partial_fill")
+            reasons.append(
+                "broker_history_confirms_partial_fill_with_active_remainder"
+                if active_orders
+                else "broker_history_confirms_partial_fill"
+            )
         elif active_orders:
             status = ReconciliationStatus.PENDING
             reasons.append("active_broker_order_without_fill")
-        elif receipt.execution.state is ExecutionState.REJECTED and int(receipt.execution.retcode) not in _SUCCESS_RETCODES:
-            status = ReconciliationStatus.REJECTED
-            reasons.append(f"explicit_broker_rejection_retcode:{int(receipt.execution.retcode)}")
-        elif int(receipt.execution.retcode) in _AMBIGUOUS_RETCODES or receipt.execution.state is ExecutionState.SENT_UNKNOWN:
+        elif retcode in _AMBIGUOUS_RETCODES or receipt.execution.state is ExecutionState.SENT_UNKNOWN:
             status = ReconciliationStatus.INCOMPLETE
             reasons.append("ambiguous_send_requires_more_broker_evidence")
+        elif receipt.execution.state is ExecutionState.REJECTED and retcode not in _SUCCESS_RETCODES:
+            status = ReconciliationStatus.REJECTED
+            reasons.append(f"explicit_broker_rejection_retcode:{retcode}")
         elif not broker.history_complete:
             status = ReconciliationStatus.INCOMPLETE
             reasons.append("broker_history_declared_incomplete")
         else:
-            # Absence of deals after an accepted/placed send is not transformed into
-            # a rejection.  MT5 history can become visible after the send response.
+            # Absence of deals after an accepted/placed send is not transformed
+            # into a rejection; MT5 deal history may become visible later.
             status = ReconciliationStatus.INCOMPLETE
             reasons.append("accepted_send_has_no_broker_fill_evidence_yet")
 
     evidence = {
         shadow.fingerprint,
-        _execution_fingerprint(receipt),
+        receipt.fingerprint,
         receipt.admission.fingerprint,
         receipt.admission_artifact_record_fingerprint,
         broker.fingerprint,
