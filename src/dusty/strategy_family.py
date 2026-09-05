@@ -341,6 +341,7 @@ class FamilyExperimentEvidence:
     novelty_score: float
     improvement_score: float
     evidence_fingerprint: str
+    research_sequence: int
     failure_mechanism: str = ""
 
     def __post_init__(self) -> None:
@@ -350,6 +351,11 @@ class FamilyExperimentEvidence:
         object.__setattr__(self, "novelty_score", _unit(self.novelty_score, "novelty score"))
         object.__setattr__(self, "improvement_score", _unit(self.improvement_score, "improvement score"))
         object.__setattr__(self, "evidence_fingerprint", _sha(self.evidence_fingerprint, "family evidence artifact"))
+        if isinstance(self.research_sequence, bool) or int(self.research_sequence) != self.research_sequence:
+            raise ValueError("research sequence must be an integer")
+        if int(self.research_sequence) < 0:
+            raise ValueError("research sequence cannot be negative")
+        object.__setattr__(self, "research_sequence", int(self.research_sequence))
         object.__setattr__(self, "failure_mechanism", str(self.failure_mechanism).strip().lower())
 
     @property
@@ -426,6 +432,10 @@ def assess_exhaustion(
     family_ids = {row.family_fingerprint for row in rows}
     if len(family_ids) != 1:
         raise ValueError("exhaustion evidence must belong to one structural family")
+    sequences = tuple(row.research_sequence for row in rows)
+    if len(sequences) != len(set(sequences)):
+        raise ValueError("research evidence sequence must be unique within a family")
+    rows = tuple(sorted(rows, key=lambda row: row.research_sequence))
 
     recent = rows[-policy.recent_window :]
     novelty = fmean(row.novelty_score for row in recent)
