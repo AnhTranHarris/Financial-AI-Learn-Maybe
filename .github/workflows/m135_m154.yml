@@ -1,4 +1,4 @@
-name: m135-m156-research-organism
+name: m135-m157-research-organism
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Compile M135-M156 surfaces
+      - name: Compile M135-M157 surfaces
         run: >-
           python -m py_compile
           src/dusty/integrated_research_cycle.py
@@ -33,6 +33,7 @@ jobs:
           src/dusty/experiment_queue.py
           src/dusty/experiment_manifest.py
           src/dusty/feature_registry.py
+          src/dusty/strategy_genome_v2.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
@@ -41,6 +42,7 @@ jobs:
           tests/test_m155_durable_experiment_queue.py
           tests/test_m155_experiment_manifest.py
           tests/test_m156_feature_intelligence_registry.py
+          tests/test_m157_strategy_genome_compiler_v2.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
           tools/smoke_m155_experiment_queue.py
@@ -71,6 +73,9 @@ jobs:
 
       - name: M156 feature intelligence registry gate
         run: python -m unittest discover -s tests -p "test_m156_feature_intelligence_registry.py" -v
+
+      - name: M157 typed strategy genome compiler gate
+        run: python -m unittest discover -s tests -p "test_m157_strategy_genome_compiler_v2.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
