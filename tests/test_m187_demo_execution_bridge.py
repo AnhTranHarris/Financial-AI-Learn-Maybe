@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -19,7 +20,11 @@ from dusty.champion_registry import (
 from dusty.cognition import CognitionAssessment, RoleJustification
 from dusty.core import AnalystState, Cognition, GuardianState, PatienceState, SkepticState
 from dusty.demo_execution import DemoExecutionResult, DemoMT5ExecutionAdapter
-from dusty.demo_execution_bridge import DemoBridgePermit, DemoExecutionBridge
+from dusty.demo_execution_bridge import (
+    DEMO_BRIDGE_ADMISSION_CONTENT_TYPE,
+    DemoBridgePermit,
+    DemoExecutionBridge,
+)
 from dusty.demo_session import AccountMode, DemoSession, SessionIdentity
 from dusty.execution_lifecycle import ExecutionState, SQLiteExecutionLedger
 from dusty.experience import TradeSide
@@ -39,17 +44,20 @@ def fp(value: str) -> str:
 
 
 class SpyAdapter:
-    def __init__(self, result: DemoExecutionResult | None = None) -> None:
+    def __init__(self, result: DemoExecutionResult | None = None, before_send=None) -> None:
         self.calls = 0
         self.last_preflight = None
         self.last_at = None
         self.result = result
+        self.before_send = before_send
 
     @property
     def live_write_authorized(self) -> bool:
         return False
 
     def send(self, preflight: BrokerPreflight, *, at: datetime) -> DemoExecutionResult:
+        if self.before_send is not None:
+            self.before_send(preflight, at)
         self.calls += 1
         self.last_preflight = preflight
         self.last_at = at
@@ -191,9 +199,27 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             ("type_time", 0),
             ("volume", intent.volume),
         )
-        return BrokerPreflight(intent, passed, 49.0, 100.0, 1.1001, request if passed else (), () if passed else ("failed",))
+        return BrokerPreflight(
+            intent,
+            passed,
+            49.0,
+            100.0,
+            1.1001,
+            request if passed else (),
+            () if passed else ("failed",),
+        )
 
-    def permit(self, champion, session: DemoSession, *, start=None, end=None, lane=None, champion_fp=None, session_fp=None) -> DemoBridgePermit:
+    def permit(
+        self,
+        champion,
+        session: DemoSession,
+        *,
+        start=None,
+        end=None,
+        lane=None,
+        champion_fp=None,
+        session_fp=None,
+    ) -> DemoBridgePermit:
         return DemoBridgePermit(
             champion_fp or champion.fingerprint,
             lane or champion.lane_id,
@@ -227,6 +253,7 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             vault=vault,
             session=session,
             adapter=adapter or SpyAdapter(),
+            producer_fingerprint=fp("m187-producer"),
         )
         return temp, vault, registry, champion, session, intent, shadow, record, bridge
 
@@ -251,8 +278,13 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
                 replace(permit, purpose="live_order_send")
             with self.assertRaises(ValueError):
                 DemoBridgePermit(
-                    champion.fingerprint, champion.lane_id, session.identity.fingerprint,
-                    fp("issuer"), (fp("evidence"),), NOW, NOW,
+                    champion.fingerprint,
+                    champion.lane_id,
+                    session.identity.fingerprint,
+                    fp("issuer"),
+                    (fp("evidence"),),
+                    NOW,
+                    NOW,
                 )
         finally:
             registry.close()
@@ -268,10 +300,23 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
         finally:
             self.close_fixture(temp, vault, registry)
 
-    def test_exact_admission_and_execute_delegate_once(self) -> None:
-        spy = SpyAdapter()
+    def test_exact_admission_persists_before_send_and_delegates_once(self) -> None:
+        holder = {}
+
+        def assert_persisted(preflight, _at):
+            vault = holder["vault"]
+            rows = tuple(
+                row
+                for row in vault.list_subject(preflight.intent.intent_hash)
+                if row.content_type == DEMO_BRIDGE_ADMISSION_CONTENT_TYPE
+            )
+            if len(rows) != 1:
+                raise AssertionError("M187 admission artifact was not durable before adapter.send")
+
+        spy = SpyAdapter(before_send=assert_persisted)
         values = self.fixture(spy)
         temp, vault, registry, champion, session, intent, shadow, record, bridge = values
+        holder["vault"] = vault
         try:
             permit = self.permit(champion, session)
             receipt = bridge.execute(
@@ -285,6 +330,14 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             self.assertEqual(spy.calls, 1)
             self.assertEqual(receipt.admission.intent_hash, intent.intent_hash)
             self.assertEqual(receipt.execution.intent_hash, intent.intent_hash)
+            admission_record = vault.get_record(receipt.admission_artifact_record_fingerprint)
+            self.assertIsNotNone(admission_record)
+            assert admission_record is not None
+            self.assertEqual(admission_record.content_type, DEMO_BRIDGE_ADMISSION_CONTENT_TYPE)
+            body = json.loads(vault.read_bytes(admission_record.record_fingerprint))
+            self.assertEqual(body["permit"]["champion_fingerprint"], champion.fingerprint)
+            self.assertEqual(body["admission"]["shadow_fingerprint"], shadow.fingerprint)
+            self.assertFalse(body["permit"]["live_write_authority"])
             self.assertFalse(receipt.live_write_authority)
             self.assertFalse(receipt.retry_authority)
             self.assertFalse(receipt.promotion_authority)
@@ -296,11 +349,20 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
         values = self.fixture(spy)
         temp, vault, registry, champion, session, intent, shadow, record, bridge = values
         try:
-            permit = self.permit(champion, session, start=NOW - timedelta(minutes=2), end=NOW - timedelta(minutes=1))
+            permit = self.permit(
+                champion,
+                session,
+                start=NOW - timedelta(minutes=2),
+                end=NOW - timedelta(minutes=1),
+            )
             with self.assertRaisesRegex(PermissionError, "permit is not active"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=self.preflight(intent), permit=permit, at=NOW + timedelta(seconds=2),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent),
+                    permit=permit,
+                    at=NOW + timedelta(seconds=2),
                 )
             self.assertEqual(spy.calls, 0)
         finally:
@@ -323,8 +385,11 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(PermissionError, "ACTIVE"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
                     at=NOW + timedelta(seconds=2),
                 )
             self.assertEqual(spy.calls, 0)
@@ -332,16 +397,20 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             self.close_fixture(temp, vault, registry)
 
     def test_latched_demo_session_never_reaches_adapter(self) -> None:
+        from dusty.demo_session import SessionFault
+
         spy = SpyAdapter()
         values = self.fixture(spy)
         temp, vault, registry, champion, session, intent, shadow, record, bridge = values
         try:
-            from dusty.demo_session import SessionFault
             session.latch(SessionFault.PERMISSION_LOSS)
             with self.assertRaisesRegex(PermissionError, "latched DemoSession"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
                     at=NOW + timedelta(seconds=2),
                 )
             self.assertEqual(spy.calls, 0)
@@ -362,8 +431,11 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
                 with self.subTest(permit=permit.fingerprint):
                     with self.assertRaises(PermissionError):
                         bridge.execute(
-                            champion=champion, shadow=shadow, shadow_artifact=record,
-                            preflight=self.preflight(intent), permit=permit,
+                            champion=champion,
+                            shadow=shadow,
+                            shadow_artifact=record,
+                            preflight=self.preflight(intent),
+                            permit=permit,
                             at=NOW + timedelta(seconds=2),
                         )
             self.assertEqual(spy.calls, 0)
@@ -377,14 +449,20 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(PermissionError, "preflight did not pass"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=self.preflight(intent, passed=False), permit=self.permit(champion, session),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent, passed=False),
+                    permit=self.permit(champion, session),
                     at=NOW + timedelta(seconds=2),
                 )
             with self.assertRaisesRegex(PermissionError, "expired"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session, end=NOW + timedelta(minutes=10)),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session, end=NOW + timedelta(minutes=10)),
                     at=NOW + timedelta(minutes=4),
                 )
             self.assertEqual(spy.calls, 0)
@@ -394,21 +472,27 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
     def test_shadow_economics_drift_is_rejected_even_if_object_hash_field_is_reused(self) -> None:
         spy = SpyAdapter()
         values = self.fixture(spy)
-        temp, vault, registry, champion, session, intent, shadow, record, bridge = values
+        temp, vault, registry, champion, session, intent, shadow, _record, bridge = values
         try:
             forged = replace(shadow, volume=0.20)
-            forged_record = ShadowExecutionVault(vault, producer_fingerprint=fp("forged-producer")).record_intent(forged)
+            forged_record = ShadowExecutionVault(
+                vault,
+                producer_fingerprint=fp("forged-producer"),
+            ).record_intent(forged)
             with self.assertRaisesRegex(PermissionError, "shadow/volume binding drift"):
                 bridge.execute(
-                    champion=champion, shadow=forged, shadow_artifact=forged_record,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session),
+                    champion=champion,
+                    shadow=forged,
+                    shadow_artifact=forged_record,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
                     at=NOW + timedelta(seconds=2),
                 )
             self.assertEqual(spy.calls, 0)
         finally:
             self.close_fixture(temp, vault, registry)
 
-    def test_wrong_or_missing_m186_artifact_provenance_fails_closed(self) -> None:
+    def test_wrong_m186_artifact_provenance_fails_closed(self) -> None:
         spy = SpyAdapter()
         values = self.fixture(spy)
         temp, vault, registry, champion, session, intent, shadow, _record, bridge = values
@@ -424,21 +508,30 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "M186 shadow-intent artifact"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=wrong,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=wrong,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
                     at=NOW + timedelta(seconds=2),
                 )
             self.assertEqual(spy.calls, 0)
         finally:
             self.close_fixture(temp, vault, registry)
 
-    def test_shadow_artifact_recorded_after_admission_is_rejected(self) -> None:
+    def test_shadow_artifact_timestamp_drift_fails_closed(self) -> None:
         spy = SpyAdapter()
         values = self.fixture(spy)
         temp, vault, registry, champion, session, intent, shadow, _record, bridge = values
         try:
             late = vault.store_bytes(
-                json_bytes := __import__("json").dumps(shadow.payload, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str).encode("utf-8"),
+                json.dumps(
+                    shadow.payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                    default=str,
+                ).encode("utf-8"),
                 kind=ArtifactKind.OTHER,
                 content_type="application/vnd.dusty.m186-shadow-intent+json",
                 producer_fingerprint=fp("late-producer"),
@@ -453,37 +546,76 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
                 ),
                 now=NOW + timedelta(seconds=3),
             )
-            self.assertTrue(json_bytes)
             with self.assertRaisesRegex(ValueError, "timestamp does not match shadow capture"):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=late,
-                    preflight=self.preflight(intent), permit=self.permit(champion, session),
-                    at=NOW + timedelta(seconds=2),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=late,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
+                    at=NOW + timedelta(seconds=4),
                 )
             self.assertEqual(spy.calls, 0)
         finally:
             self.close_fixture(temp, vault, registry)
+
+    def test_admission_storage_failure_blocks_adapter_send(self) -> None:
+        spy = SpyAdapter()
+        values = self.fixture(spy)
+        temp, vault, registry, champion, session, intent, shadow, record, bridge = values
+        try:
+            vault.close()
+            with self.assertRaises(sqlite3.ProgrammingError):
+                bridge.execute(
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=self.preflight(intent),
+                    permit=self.permit(champion, session),
+                    at=NOW + timedelta(seconds=2),
+                )
+            self.assertEqual(spy.calls, 0)
+            vault = None
+        finally:
+            if vault is not None:
+                vault.close()
+            registry.close()
+            temp.cleanup()
 
     def test_real_existing_adapter_sends_once_and_ledger_blocks_duplicate_resend(self) -> None:
         temp, vault, registry, champion, session, intent, shadow, record, _bridge = self.fixture()
         ledger = SQLiteExecutionLedger()
         mt5 = FakeMT5()
         adapter = DemoMT5ExecutionAdapter(mt5, session, lambda: session.identity, ledger)
-        bridge = DemoExecutionBridge(registry=registry, vault=vault, session=session, adapter=adapter)
+        bridge = DemoExecutionBridge(
+            registry=registry,
+            vault=vault,
+            session=session,
+            adapter=adapter,
+            producer_fingerprint=fp("m187-producer"),
+        )
         try:
             preflight = self.preflight(intent)
             permit = self.permit(champion, session)
             receipt = bridge.execute(
-                champion=champion, shadow=shadow, shadow_artifact=record,
-                preflight=preflight, permit=permit, at=NOW + timedelta(seconds=2),
+                champion=champion,
+                shadow=shadow,
+                shadow_artifact=record,
+                preflight=preflight,
+                permit=permit,
+                at=NOW + timedelta(seconds=2),
             )
             self.assertEqual(receipt.execution.state, ExecutionState.FILLED)
             self.assertEqual(mt5.order_send_calls, 1)
             self.assertEqual(ledger.get(intent.intent_hash).state, ExecutionState.FILLED)
             with self.assertRaises(sqlite3.IntegrityError):
                 bridge.execute(
-                    champion=champion, shadow=shadow, shadow_artifact=record,
-                    preflight=preflight, permit=permit, at=NOW + timedelta(seconds=3),
+                    champion=champion,
+                    shadow=shadow,
+                    shadow_artifact=record,
+                    preflight=preflight,
+                    permit=permit,
+                    at=NOW + timedelta(seconds=3),
                 )
             self.assertEqual(mt5.order_send_calls, 1)
         finally:
@@ -496,7 +628,13 @@ class M187DemoExecutionBridgeTests(unittest.TestCase):
         try:
             session.identity = self.session_identity(mode=AccountMode.REAL)
             with self.assertRaisesRegex(ValueError, "DEMO sessions only"):
-                DemoExecutionBridge(registry=registry, vault=vault, session=session, adapter=SpyAdapter())
+                DemoExecutionBridge(
+                    registry=registry,
+                    vault=vault,
+                    session=session,
+                    adapter=SpyAdapter(),
+                    producer_fingerprint=fp("m187-producer"),
+                )
         finally:
             self.close_fixture(temp, vault, registry)
 
