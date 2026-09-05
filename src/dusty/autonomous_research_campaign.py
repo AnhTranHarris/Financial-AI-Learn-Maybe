@@ -108,18 +108,10 @@ class AutonomousCampaignManifest:
         object.__setattr__(self, "source_commit", _commit(self.source_commit))
         object.__setattr__(self, "maximum_steps", _positive_int(self.maximum_steps, "maximum_steps"))
         object.__setattr__(self, "maximum_experiments", _positive_int(self.maximum_experiments, "maximum_experiments"))
-        object.__setattr__(
-            self,
-            "maximum_resource_seconds",
-            _nonnegative_float(self.maximum_resource_seconds, "maximum_resource_seconds"),
-        )
+        object.__setattr__(self, "maximum_resource_seconds", _nonnegative_float(self.maximum_resource_seconds, "maximum_resource_seconds"))
         if self.maximum_resource_seconds <= 0:
             raise ValueError("maximum_resource_seconds must be positive")
-        object.__setattr__(
-            self,
-            "maximum_stagnant_steps",
-            _positive_int(self.maximum_stagnant_steps, "maximum_stagnant_steps"),
-        )
+        object.__setattr__(self, "maximum_stagnant_steps", _positive_int(self.maximum_stagnant_steps, "maximum_stagnant_steps"))
         schools = tuple(ResearchSchool(value) for value in self.schools)
         expected = (
             ResearchSchool.A1_EDGE,
@@ -132,20 +124,18 @@ class AutonomousCampaignManifest:
 
     @property
     def fingerprint(self) -> str:
-        return _digest(
-            (
-                "dusty-m189-autonomous-campaign-manifest-v1",
-                self.campaign_id,
-                self.constitution_fingerprint,
-                self.context_fingerprint,
-                self.source_commit,
-                self.maximum_steps,
-                self.maximum_experiments,
-                self.maximum_resource_seconds,
-                self.maximum_stagnant_steps,
-                tuple(value.value for value in self.schools),
-            )
-        )
+        return _digest((
+            "dusty-m189-autonomous-campaign-manifest-v1",
+            self.campaign_id,
+            self.constitution_fingerprint,
+            self.context_fingerprint,
+            self.source_commit,
+            self.maximum_steps,
+            self.maximum_experiments,
+            self.maximum_resource_seconds,
+            self.maximum_stagnant_steps,
+            tuple(value.value for value in self.schools),
+        ))
 
     @property
     def broker_write_authority(self) -> bool:
@@ -185,11 +175,7 @@ class CampaignCheckpoint:
             raise ValueError("checkpoint experiment/result identities must be unique")
         object.__setattr__(self, "completed_experiment_fingerprints", experiments)
         object.__setattr__(self, "result_fingerprints", results)
-        object.__setattr__(
-            self,
-            "resource_seconds_used",
-            _nonnegative_float(self.resource_seconds_used, "checkpoint resource_seconds_used"),
-        )
+        object.__setattr__(self, "resource_seconds_used", _nonnegative_float(self.resource_seconds_used, "checkpoint resource_seconds_used"))
         if self.last_action_fingerprint is not None:
             object.__setattr__(self, "last_action_fingerprint", _sha(self.last_action_fingerprint, "checkpoint action"))
         object.__setattr__(self, "stagnant_steps", _nonnegative_int(self.stagnant_steps, "checkpoint stagnant_steps"))
@@ -198,26 +184,24 @@ class CampaignCheckpoint:
 
     @property
     def fingerprint(self) -> str:
-        return _digest(
-            (
-                "dusty-m189-campaign-checkpoint-v1",
-                self.campaign_id,
-                self.manifest_fingerprint,
-                self.loop_fingerprint,
-                self.school_index,
-                self.loop_state.value,
-                self.loop_iteration,
-                self.step_index,
-                self.completed_experiment_fingerprints,
-                self.result_fingerprints,
-                self.resource_seconds_used,
-                self.last_action_fingerprint,
-                self.stagnant_steps,
-                self.status.value,
-                self.reason,
-                self.created_at.isoformat(),
-            )
-        )
+        return _digest((
+            "dusty-m189-campaign-checkpoint-v1",
+            self.campaign_id,
+            self.manifest_fingerprint,
+            self.loop_fingerprint,
+            self.school_index,
+            self.loop_state.value,
+            self.loop_iteration,
+            self.step_index,
+            self.completed_experiment_fingerprints,
+            self.result_fingerprints,
+            self.resource_seconds_used,
+            self.last_action_fingerprint,
+            self.stagnant_steps,
+            self.status.value,
+            self.reason,
+            self.created_at.isoformat(),
+        ))
 
     @property
     def broker_write_authority(self) -> bool:
@@ -237,14 +221,10 @@ class CampaignCheckpoint:
 
 
 _TERMINAL_LOOP_STATES = {LoopState.EXHAUSTED, LoopState.GRAVEYARD}
+_TERMINAL_CAMPAIGN_STATES = {CampaignStatus.EXHAUSTED, CampaignStatus.COMPLETE, CampaignStatus.CANCELLED}
 
 
-def start_campaign(
-    manifest: AutonomousCampaignManifest,
-    loop: ResearchLoopRecord,
-    *,
-    now: datetime,
-) -> CampaignCheckpoint:
+def start_campaign(manifest: AutonomousCampaignManifest, loop: ResearchLoopRecord, *, now: datetime) -> CampaignCheckpoint:
     return CampaignCheckpoint(
         manifest.campaign_id,
         manifest.fingerprint,
@@ -286,6 +266,7 @@ def advance_campaign(
         raise ValueError("research-loop iteration regressed across campaign checkpoint")
     if loop.updated_at < previous.created_at:
         raise ValueError("research-loop state predates durable campaign checkpoint")
+
     action = _sha(action_fingerprint, "campaign action")
     new_experiments = tuple(sorted({_sha(value, "campaign completed experiment") for value in completed_experiment_fingerprints}))
     new_results = tuple(sorted({_sha(value, "campaign result") for value in result_fingerprints}))
@@ -293,13 +274,20 @@ def advance_campaign(
         raise ValueError("campaign step cannot recount completed experiment evidence")
     if set(previous.result_fingerprints) & set(new_results):
         raise ValueError("campaign step cannot recount result evidence")
+
     total_experiments = tuple(sorted((*previous.completed_experiment_fingerprints, *new_experiments)))
     total_results = tuple(sorted((*previous.result_fingerprints, *new_results)))
     resource = previous.resource_seconds_used + _nonnegative_float(resource_seconds_delta, "campaign resource_seconds_delta")
     step = previous.step_index + 1
+    if step > manifest.maximum_steps:
+        raise ValueError("campaign step would exceed immutable step budget")
+    if len(total_experiments) > manifest.maximum_experiments:
+        raise ValueError("campaign step would exceed immutable experiment budget")
+    if resource > manifest.maximum_resource_seconds + 1e-12:
+        raise ValueError("campaign step would exceed immutable resource budget")
 
     made_progress = bool(new_experiments or new_results or loop.iteration > previous.loop_iteration or loop.state != previous.loop_state)
-    stagnant = 0 if made_progress or action != previous.last_action_fingerprint else previous.stagnant_steps + 1
+    stagnant = 0 if made_progress else previous.stagnant_steps + 1
 
     school_index = previous.school_index
     status = CampaignStatus.ACTIVE
@@ -310,6 +298,11 @@ def advance_campaign(
     elif school_passed:
         if loop.state is not LoopState.PASSED_STAGE:
             raise ValueError("school pass requires M160 PASSED_STAGE evidence")
+        if loop.last_outcome_fingerprint is None:
+            raise ValueError("school pass requires exact M160 outcome evidence")
+        outcome = _sha(loop.last_outcome_fingerprint, "school pass M160 outcome")
+        if outcome not in new_results:
+            raise ValueError("school pass must bind exact new M160 outcome fingerprint")
         if school_index == len(manifest.schools) - 1:
             status = CampaignStatus.COMPLETE
             reason = "a1_a2_a3_campaign_complete"
@@ -357,7 +350,7 @@ def cancel_campaign(
 ) -> CampaignCheckpoint:
     if previous.manifest_fingerprint != manifest.fingerprint or previous.campaign_id != manifest.campaign_id:
         raise ValueError("campaign cancellation manifest identity drift")
-    if previous.status in {CampaignStatus.COMPLETE, CampaignStatus.EXHAUSTED, CampaignStatus.CANCELLED}:
+    if previous.status in _TERMINAL_CAMPAIGN_STATES:
         raise ValueError("terminal campaign cannot be cancelled again")
     return CampaignCheckpoint(
         previous.campaign_id,
@@ -394,8 +387,7 @@ class SQLiteAutonomousCampaignStore:
             "checkpoint_fingerprint TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL)"
         )
         self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_autonomous_campaign_latest "
-            "ON autonomous_campaign_checkpoints(campaign_id,seq)"
+            "CREATE INDEX IF NOT EXISTS idx_autonomous_campaign_latest ON autonomous_campaign_checkpoints(campaign_id,seq)"
         )
         self._db.commit()
 
@@ -427,45 +419,8 @@ class SQLiteAutonomousCampaignStore:
             "created_at": checkpoint.created_at.isoformat(),
         }
 
-    def append(self, checkpoint: CampaignCheckpoint) -> None:
-        payload = self._payload(checkpoint)
-        rendered = _canonical(payload)
-        payload_sha = sha256(rendered.encode("utf-8")).hexdigest()
-        with self._db:
-            prior = self._db.execute(
-                "SELECT manifest_fingerprint,payload_sha256 FROM autonomous_campaign_checkpoints "
-                "WHERE campaign_id=? ORDER BY seq DESC LIMIT 1",
-                (checkpoint.campaign_id,),
-            ).fetchone()
-            if prior is not None and str(prior[0]) != checkpoint.manifest_fingerprint:
-                raise ValueError("campaign store refuses manifest drift for existing campaign_id")
-            existing = self._db.execute(
-                "SELECT payload_sha256 FROM autonomous_campaign_checkpoints WHERE checkpoint_fingerprint=?",
-                (checkpoint.fingerprint,),
-            ).fetchone()
-            if existing is not None:
-                if str(existing[0]) != payload_sha:
-                    raise RuntimeError("campaign checkpoint fingerprint collision/corruption")
-                return
-            self._db.execute(
-                "INSERT INTO autonomous_campaign_checkpoints("
-                "campaign_id,manifest_fingerprint,checkpoint_fingerprint,payload,payload_sha256) VALUES(?,?,?,?,?)",
-                (checkpoint.campaign_id, checkpoint.manifest_fingerprint, checkpoint.fingerprint, rendered, payload_sha),
-            )
-
-    def latest(self, manifest: AutonomousCampaignManifest) -> CampaignCheckpoint | None:
-        row = self._db.execute(
-            "SELECT manifest_fingerprint,payload,payload_sha256 FROM autonomous_campaign_checkpoints "
-            "WHERE campaign_id=? ORDER BY seq DESC LIMIT 1",
-            (manifest.campaign_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        if str(row[0]) != manifest.fingerprint:
-            raise ValueError("campaign resume manifest identity drift")
-        rendered = str(row[1])
-        if sha256(rendered.encode("utf-8")).hexdigest() != str(row[2]):
-            raise RuntimeError("campaign checkpoint payload integrity failure")
+    @staticmethod
+    def _decode(rendered: str) -> CampaignCheckpoint:
         data = json.loads(rendered)
         return CampaignCheckpoint(
             data["campaign_id"],
@@ -485,11 +440,77 @@ class SQLiteAutonomousCampaignStore:
             datetime.fromisoformat(data["created_at"]),
         )
 
+    @classmethod
+    def _verify_row(cls, checkpoint_fingerprint: str, rendered: str, payload_sha256: str) -> CampaignCheckpoint:
+        if sha256(rendered.encode("utf-8")).hexdigest() != payload_sha256:
+            raise RuntimeError("campaign checkpoint payload integrity failure")
+        checkpoint = cls._decode(rendered)
+        if checkpoint.fingerprint != checkpoint_fingerprint:
+            raise RuntimeError("campaign checkpoint fingerprint integrity failure")
+        return checkpoint
+
+    def append(self, checkpoint: CampaignCheckpoint) -> None:
+        payload = self._payload(checkpoint)
+        rendered = _canonical(payload)
+        payload_sha = sha256(rendered.encode("utf-8")).hexdigest()
+        with self._db:
+            existing = self._db.execute(
+                "SELECT payload_sha256 FROM autonomous_campaign_checkpoints WHERE checkpoint_fingerprint=?",
+                (checkpoint.fingerprint,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != payload_sha:
+                    raise RuntimeError("campaign checkpoint fingerprint collision/corruption")
+                return
+
+            prior_row = self._db.execute(
+                "SELECT manifest_fingerprint,checkpoint_fingerprint,payload,payload_sha256 "
+                "FROM autonomous_campaign_checkpoints WHERE campaign_id=? ORDER BY seq DESC LIMIT 1",
+                (checkpoint.campaign_id,),
+            ).fetchone()
+            if prior_row is not None:
+                if str(prior_row[0]) != checkpoint.manifest_fingerprint:
+                    raise ValueError("campaign store refuses manifest drift for existing campaign_id")
+                prior = self._verify_row(str(prior_row[1]), str(prior_row[2]), str(prior_row[3]))
+                if checkpoint.created_at < prior.created_at:
+                    raise ValueError("campaign store refuses checkpoint time regression")
+                if checkpoint.step_index < prior.step_index:
+                    raise ValueError("campaign store refuses checkpoint step regression")
+                if prior.status in _TERMINAL_CAMPAIGN_STATES:
+                    raise ValueError("campaign store refuses append after terminal checkpoint")
+                if checkpoint.step_index == prior.step_index and checkpoint.status is not CampaignStatus.CANCELLED:
+                    raise ValueError("campaign store same-step append is reserved for explicit cancellation")
+
+            self._db.execute(
+                "INSERT INTO autonomous_campaign_checkpoints("
+                "campaign_id,manifest_fingerprint,checkpoint_fingerprint,payload,payload_sha256) VALUES(?,?,?,?,?)",
+                (checkpoint.campaign_id, checkpoint.manifest_fingerprint, checkpoint.fingerprint, rendered, payload_sha),
+            )
+
+    def latest(self, manifest: AutonomousCampaignManifest) -> CampaignCheckpoint | None:
+        row = self._db.execute(
+            "SELECT manifest_fingerprint,checkpoint_fingerprint,payload,payload_sha256 "
+            "FROM autonomous_campaign_checkpoints WHERE campaign_id=? ORDER BY seq DESC LIMIT 1",
+            (manifest.campaign_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if str(row[0]) != manifest.fingerprint:
+            raise ValueError("campaign resume manifest identity drift")
+        return self._verify_row(str(row[1]), str(row[2]), str(row[3]))
+
     def integrity_ok(self) -> bool:
         if str(self._db.execute("PRAGMA integrity_check").fetchone()[0]).lower() != "ok":
             return False
-        rows = self._db.execute("SELECT payload,payload_sha256 FROM autonomous_campaign_checkpoints").fetchall()
-        return all(sha256(str(payload).encode("utf-8")).hexdigest() == str(expected) for payload, expected in rows)
+        rows = self._db.execute(
+            "SELECT checkpoint_fingerprint,payload,payload_sha256 FROM autonomous_campaign_checkpoints ORDER BY seq"
+        ).fetchall()
+        try:
+            for checkpoint_fingerprint, payload, payload_sha in rows:
+                self._verify_row(str(checkpoint_fingerprint), str(payload), str(payload_sha))
+        except (ValueError, RuntimeError, KeyError, TypeError, json.JSONDecodeError):
+            return False
+        return True
 
     def close(self) -> None:
         self._db.close()
