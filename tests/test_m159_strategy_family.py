@@ -91,6 +91,7 @@ def _evidence(
         novelty_score=novelty,
         improvement_score=improvement,
         evidence_fingerprint=_sha(f"evidence-{idx}-{outcome.value}"),
+        research_sequence=idx,
         failure_mechanism=mechanism if outcome is ExperimentOutcomeType.RESEARCH_FAILED else "",
     )
 
@@ -202,6 +203,25 @@ class M159StrategyFamilyTests(unittest.TestCase):
         assessment = assess_exhaustion(rows)
         self.assertEqual(assessment.signal, ExhaustionSignal.NONE)
         self.assertGreater(assessment.recent_mean_improvement, 0.10)
+
+    def test_exhaustion_uses_explicit_research_sequence_not_input_order(self) -> None:
+        family = structural_family_fingerprint(_compiled())
+        rows = [
+            _evidence(family, idx, novelty=0.02, improvement=0.01, mechanism="entry")
+            for idx in range(12)
+        ]
+        rows[-1] = _evidence(family, 11, novelty=0.50, improvement=0.80, mechanism="entry")
+        forward = assess_exhaustion(rows)
+        reversed_input = assess_exhaustion(tuple(reversed(rows)))
+        self.assertEqual(forward, reversed_input)
+        self.assertEqual(forward.signal, ExhaustionSignal.NONE)
+
+    def test_duplicate_research_sequence_is_rejected(self) -> None:
+        family = structural_family_fingerprint(_compiled())
+        first = _evidence(family, 1)
+        second = replace(_evidence(family, 2), research_sequence=1)
+        with self.assertRaisesRegex(ValueError, "sequence must be unique"):
+            assess_exhaustion((first, second))
 
     def test_exhaustion_evidence_must_not_mix_structural_families(self) -> None:
         family_a = structural_family_fingerprint(_compiled())
