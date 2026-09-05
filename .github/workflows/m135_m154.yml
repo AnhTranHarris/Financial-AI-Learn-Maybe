@@ -1,4 +1,4 @@
-name: m135-m159-research-organism
+name: m135-m160-research-organism
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Compile M135-M159 surfaces
+      - name: Compile M135-M160 surfaces
         run: >-
           python -m py_compile
           src/dusty/integrated_research_cycle.py
@@ -36,6 +36,7 @@ jobs:
           src/dusty/strategy_genome_v2.py
           src/dusty/controlled_evolution.py
           src/dusty/strategy_family.py
+          src/dusty/research_loop_governor.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
@@ -47,6 +48,7 @@ jobs:
           tests/test_m157_strategy_genome_compiler_v2.py
           tests/test_m158_controlled_evolution.py
           tests/test_m159_strategy_family.py
+          tests/test_m160_research_loop_governor.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
           tools/smoke_m155_experiment_queue.py
@@ -86,6 +88,9 @@ jobs:
 
       - name: M159 family novelty lineage exhaustion gate
         run: python -m unittest discover -s tests -p "test_m159_strategy_family.py" -v
+
+      - name: M160 research value scheduler and loop governor gate
+        run: python -m unittest discover -s tests -p "test_m160_research_loop_governor.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
