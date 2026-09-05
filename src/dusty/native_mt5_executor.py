@@ -2,10 +2,12 @@ from __future__ import annotations
 
 """M161 deterministic, research-only native MetaTrader 5 experiment executor."""
 
+import csv
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from hashlib import sha256
+import io
 import json
 import math
 import os
@@ -706,6 +708,18 @@ class NativeMT5ExperimentExecutor:
                 NativeMT5FailureKind.CONFIG_FAIL,
                 "research_manifest_schema_mismatch",
             )
+        reader = csv.DictReader(io.StringIO(research_manifest_csv))
+        planned_ids = tuple(str(row.get("trade_id", "")).strip() for row in reader)
+        if (
+            not planned_ids
+            or any(not trade_id for trade_id in planned_ids)
+            or len(set(planned_ids)) != len(planned_ids)
+        ):
+            return self._failure(
+                package,
+                NativeMT5FailureKind.CONFIG_FAIL,
+                "research_manifest_trade_ids_invalid",
+            )
 
         terminal = Path(package.terminal_path)
         data_root = Path(package.terminal_data_root)
@@ -800,6 +814,13 @@ class NativeMT5ExperimentExecutor:
                 package,
                 NativeMT5FailureKind.CONFIG_FAIL,
                 "native_deals_strategy_mismatch",
+            )
+        observed_ids = tuple(row.trade_id for row in trades)
+        if len(observed_ids) != len(planned_ids) or set(observed_ids) != set(planned_ids):
+            return self._failure(
+                package,
+                NativeMT5FailureKind.TESTER_FAIL,
+                "native_trade_manifest_mismatch",
             )
         evidence = NativeMT5Evidence(
             package_fingerprint=package.fingerprint,
