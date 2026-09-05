@@ -3,9 +3,9 @@ from __future__ import annotations
 """M186 no-send Shadow Execution Mode.
 
 M186 freezes a governance-approved OrderIntent for the currently ACTIVE M185
-Champion and evaluates that intent only against immutable market quotes.  This
-module intentionally imports no MT5 execution adapter and exposes no send,
-retry, cancel, position-mutation, promotion, or risk-override surface.
+Champion and evaluates it only against immutable market quotes. This module
+intentionally imports no MT5 execution adapter and exposes no send, retry,
+cancel, position-mutation, promotion, or risk-override surface.
 
 Actual broker orders/deals/fills belong to M187/M188, not M186.
 """
@@ -88,6 +88,21 @@ def _validate_cognition(assessment: CognitionAssessment) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class ShadowCapturePolicy:
+    maximum_quote_age_ms: float
+
+    def __post_init__(self) -> None:
+        value = _finite(self.maximum_quote_age_ms, "maximum_quote_age_ms")
+        if value < 0:
+            raise ValueError("maximum_quote_age_ms must be nonnegative")
+        object.__setattr__(self, "maximum_quote_age_ms", value)
+
+    @property
+    def fingerprint(self) -> str:
+        return _digest(("dusty-m186-capture-policy-v1", self.maximum_quote_age_ms))
+
+
+@dataclass(frozen=True, slots=True)
 class ShadowMarketQuote:
     symbol: str
     observed_at: datetime
@@ -105,15 +120,64 @@ class ShadowMarketQuote:
             raise ValueError("quote requires positive bid <= ask")
 
     @property
+    def payload(self) -> dict[str, object]:
+        return {
+            "symbol": self.symbol,
+            "observed_at": self.observed_at.isoformat(),
+            "bid": self.bid,
+            "ask": self.ask,
+            "source_fingerprint": self.source_fingerprint,
+        }
+
+    @property
     def fingerprint(self) -> str:
-        return _digest((
-            "dusty-m186-market-quote-v1",
-            self.symbol,
-            self.observed_at.isoformat(),
-            self.bid,
-            self.ask,
-            self.source_fingerprint,
-        ))
+        return _digest(("dusty-m186-market-quote-v1", self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowQuoteWindow:
+    symbol: str
+    coverage_start: datetime
+    coverage_end: datetime
+    complete: bool
+    source_fingerprint: str
+    quotes: tuple[ShadowMarketQuote, ...]
+
+    def __post_init__(self) -> None:
+        symbol = _text(self.symbol, "quote-window symbol", maximum=64).upper()
+        start = _aware(self.coverage_start, "quote-window coverage_start")
+        end = _aware(self.coverage_end, "quote-window coverage_end")
+        if end < start:
+            raise ValueError("quote-window coverage_end cannot precede coverage_start")
+        source = _sha(self.source_fingerprint, "quote-window source")
+        rows = tuple(sorted(self.quotes, key=lambda row: (row.observed_at, row.fingerprint)))
+        fingerprints = tuple(row.fingerprint for row in rows)
+        if len(fingerprints) != len(set(fingerprints)):
+            raise ValueError("quote-window contains duplicate quote evidence")
+        for row in rows:
+            if row.symbol != symbol:
+                raise ValueError("quote-window symbol drift")
+            if not start <= row.observed_at <= end:
+                raise ValueError("quote lies outside declared observation coverage")
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "coverage_start", start)
+        object.__setattr__(self, "coverage_end", end)
+        object.__setattr__(self, "source_fingerprint", source)
+        object.__setattr__(self, "quotes", rows)
+
+    @property
+    def fingerprint(self) -> str:
+        return _digest(
+            (
+                "dusty-m186-quote-window-v1",
+                self.symbol,
+                self.coverage_start.isoformat(),
+                self.coverage_end.isoformat(),
+                self.complete,
+                self.source_fingerprint,
+                tuple(row.fingerprint for row in self.quotes),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +208,8 @@ class ShadowExecutionIntent:
     captured_at: datetime
     intent_expires_at: datetime
     pending_expires_at: datetime | None
-    capture_quote_fingerprint: str
+    capture_quote: ShadowMarketQuote
+    capture_policy_fingerprint: str
 
     def __post_init__(self) -> None:
         for field, label in (
@@ -154,7 +219,7 @@ class ShadowExecutionIntent:
             ("strategy_fingerprint", "shadow strategy"),
             ("session_fingerprint", "shadow session"),
             ("cognition_fingerprint", "shadow cognition"),
-            ("capture_quote_fingerprint", "shadow capture quote"),
+            ("capture_policy_fingerprint", "shadow capture policy"),
         ):
             object.__setattr__(self, field, _sha(getattr(self, field), label))
         object.__setattr__(self, "lane_id", _text(self.lane_id, "shadow lane", maximum=128).lower())
@@ -183,11 +248,15 @@ class ShadowExecutionIntent:
             raise ValueError("shadow intent risk/drift controls are invalid")
         if self.captured_at > self.intent_expires_at:
             raise ValueError("shadow capture cannot occur after intent expiry")
+        if self.capture_quote.symbol != self.symbol:
+            raise ValueError("embedded capture quote symbol drift")
+        if self.capture_quote.observed_at > self.captured_at:
+            raise ValueError("embedded capture quote cannot come from the future")
 
     @property
     def payload(self) -> dict[str, object]:
         return {
-            "protocol": "dusty-m186-shadow-intent-v1",
+            "protocol": "dusty-m186-shadow-intent-v2",
             "champion_fingerprint": self.champion_fingerprint,
             "champion_deployment_fingerprint": self.champion_deployment_fingerprint,
             "lane_id": self.lane_id,
@@ -216,7 +285,8 @@ class ShadowExecutionIntent:
             "captured_at": self.captured_at.isoformat(),
             "intent_expires_at": self.intent_expires_at.isoformat(),
             "pending_expires_at": None if self.pending_expires_at is None else self.pending_expires_at.isoformat(),
-            "capture_quote_fingerprint": self.capture_quote_fingerprint,
+            "capture_quote": {**self.capture_quote.payload, "fingerprint": self.capture_quote.fingerprint},
+            "capture_policy_fingerprint": self.capture_policy_fingerprint,
             "execution_blocked": True,
         }
 
@@ -253,6 +323,18 @@ class ShadowExecutionIntent:
         return False
 
 
+def _market_price(side: TradeSide, quote: ShadowMarketQuote) -> float:
+    return quote.ask if side is TradeSide.LONG else quote.bid
+
+
+def _pending_geometry_valid(intent: OrderIntent, market_price: float) -> bool:
+    if intent.order_style is OrderStyle.LIMIT:
+        return intent.reference_price < market_price if intent.side is TradeSide.LONG else intent.reference_price > market_price
+    if intent.order_style in {OrderStyle.STOP, OrderStyle.STOP_LIMIT}:
+        return intent.reference_price > market_price if intent.side is TradeSide.LONG else intent.reference_price < market_price
+    return True
+
+
 def capture_shadow_intent(
     registry: FrozenChampionRegistry,
     champion: FrozenChampionRecord,
@@ -261,6 +343,7 @@ def capture_shadow_intent(
     capture_quote: ShadowMarketQuote,
     *,
     captured_at: datetime,
+    policy: ShadowCapturePolicy,
 ) -> ShadowExecutionIntent:
     """Freeze an approved intent while guaranteeing execution remains blocked."""
 
@@ -277,12 +360,17 @@ def capture_shadow_intent(
         raise ValueError("capture quote symbol does not match OrderIntent")
     if capture_quote.observed_at > captured:
         raise ValueError("future quote cannot be used to capture shadow intent")
+    age_ms = (captured - capture_quote.observed_at).total_seconds() * 1000.0
+    if age_ms > policy.maximum_quote_age_ms + 1e-9:
+        raise ValueError("capture quote exceeds explicit staleness policy")
     if captured < _aware(intent.created_at, "OrderIntent created_at") or captured > _aware(intent.expires_at, "OrderIntent expires_at"):
         raise ValueError("shadow capture must occur within OrderIntent validity window")
     if not all((intent.pm_approved, intent.risk_approved, intent.guardian_approved)) or intent.growth_multiplier <= 0:
         raise ValueError("shadow execution requires fully governance-approved OrderIntent")
     if cognition.cognition.guardian is GuardianState.STOP:
         raise ValueError("Guardian STOP cannot be frozen as executable shadow intent")
+    if not _pending_geometry_valid(intent, _market_price(intent.side, capture_quote)):
+        raise ValueError("pending OrderIntent geometry is invalid at capture quote")
     return ShadowExecutionIntent(
         champion.fingerprint,
         champion.deployment_fingerprint,
@@ -310,7 +398,8 @@ def capture_shadow_intent(
         captured,
         intent.expires_at,
         intent.pending_expiry,
-        capture_quote.fingerprint,
+        capture_quote,
+        policy.fingerprint,
     )
 
 
@@ -324,129 +413,171 @@ class ShadowAssessmentStatus(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ShadowExecutionAssessment:
     shadow_fingerprint: str
+    quote_window_fingerprint: str
     status: ShadowAssessmentStatus
     evaluated_at: datetime
-    quote_fingerprints: tuple[str, ...]
     trigger_quote_fingerprint: str | None
     executable_quote_fingerprint: str | None
     theoretical_execution_price: float | None
     adverse_price_delta: float | None
     adverse_price_fraction: float | None
-    latency_ms: float | None
+    time_to_executable_ms: float | None
     reasons: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shadow_fingerprint", _sha(self.shadow_fingerprint, "assessment shadow"))
+        object.__setattr__(self, "quote_window_fingerprint", _sha(self.quote_window_fingerprint, "assessment quote window"))
         object.__setattr__(self, "evaluated_at", _aware(self.evaluated_at, "assessment evaluated_at"))
-        quotes = tuple(_sha(value, "assessment quote") for value in self.quote_fingerprints)
-        if len(quotes) != len(set(quotes)):
-            raise ValueError("assessment quote evidence must be unique")
-        object.__setattr__(self, "quote_fingerprints", quotes)
         for field in ("trigger_quote_fingerprint", "executable_quote_fingerprint"):
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(self, field, _sha(value, field))
-        for field in ("theoretical_execution_price", "adverse_price_delta", "adverse_price_fraction", "latency_ms"):
+        for field in (
+            "theoretical_execution_price",
+            "adverse_price_delta",
+            "adverse_price_fraction",
+            "time_to_executable_ms",
+        ):
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(self, field, _finite(value, field))
-        if self.latency_ms is not None and self.latency_ms < 0:
-            raise ValueError("shadow latency cannot be negative")
-        object.__setattr__(self, "reasons", tuple(sorted({_text(value, "assessment reason", maximum=128) for value in self.reasons})))
+        if self.time_to_executable_ms is not None and self.time_to_executable_ms < 0:
+            raise ValueError("shadow time_to_executable_ms cannot be negative")
+        reasons = tuple(sorted({_text(value, "assessment reason", maximum=128) for value in self.reasons}))
+        if not reasons:
+            raise ValueError("shadow assessment requires reason evidence")
+        object.__setattr__(self, "reasons", reasons)
         has_execution = self.status is ShadowAssessmentStatus.WOULD_EXECUTE
         execution_values = (
             self.executable_quote_fingerprint,
             self.theoretical_execution_price,
             self.adverse_price_delta,
             self.adverse_price_fraction,
-            self.latency_ms,
+            self.time_to_executable_ms,
         )
         if has_execution != all(value is not None for value in execution_values):
             raise ValueError("shadow execution metrics/status identity drift")
 
     @property
     def fingerprint(self) -> str:
-        return _digest((
-            "dusty-m186-shadow-assessment-v1",
-            self.shadow_fingerprint,
-            self.status.value,
-            self.evaluated_at.isoformat(),
-            self.quote_fingerprints,
-            self.trigger_quote_fingerprint,
-            self.executable_quote_fingerprint,
-            self.theoretical_execution_price,
-            self.adverse_price_delta,
-            self.adverse_price_fraction,
-            self.latency_ms,
-            self.reasons,
-        ))
+        return _digest(
+            (
+                "dusty-m186-shadow-assessment-v2",
+                self.shadow_fingerprint,
+                self.quote_window_fingerprint,
+                self.status.value,
+                self.evaluated_at.isoformat(),
+                self.trigger_quote_fingerprint,
+                self.executable_quote_fingerprint,
+                self.theoretical_execution_price,
+                self.adverse_price_delta,
+                self.adverse_price_fraction,
+                self.time_to_executable_ms,
+                self.reasons,
+            )
+        )
 
     @property
     def broker_write_authority(self) -> bool:
         return False
 
+    @property
+    def order_send_authority(self) -> bool:
+        return False
 
-def _executable_price(shadow: ShadowExecutionIntent, quote: ShadowMarketQuote) -> float:
-    return quote.ask if shadow.side is TradeSide.LONG else quote.bid
+
+def _execution_assessment(
+    shadow: ShadowExecutionIntent,
+    window: ShadowQuoteWindow,
+    quote: ShadowMarketQuote,
+    trigger: ShadowMarketQuote | None,
+    evaluated: datetime,
+) -> ShadowExecutionAssessment:
+    price = _market_price(shadow.side, quote)
+    direction = 1.0 if shadow.side is TradeSide.LONG else -1.0
+    adverse = (price - shadow.reference_price) * direction
+    latency = max(0.0, (quote.observed_at - shadow.captured_at).total_seconds() * 1000.0)
+    return ShadowExecutionAssessment(
+        shadow.fingerprint,
+        window.fingerprint,
+        ShadowAssessmentStatus.WOULD_EXECUTE,
+        evaluated,
+        None if trigger is None else trigger.fingerprint,
+        quote.fingerprint,
+        price,
+        adverse,
+        adverse / shadow.reference_price,
+        latency,
+        ("read_only_market_geometry_became_executable",),
+    )
 
 
 def assess_shadow_execution(
     shadow: ShadowExecutionIntent,
-    quotes: Iterable[ShadowMarketQuote],
+    window: ShadowQuoteWindow,
     *,
     evaluated_at: datetime,
 ) -> ShadowExecutionAssessment:
-    """Evaluate the frozen intent against read-only quote history.
+    """Evaluate a frozen intent against a provenance-bound quote window.
 
-    This is intentionally a market-observability comparison, not broker-fill
-    simulation. M188 will later reconcile M187 demo execution against expected
-    execution. Here, a quote satisfying order geometry means only WOULD_EXECUTE.
+    ``WOULD_EXECUTE`` means only observable bid/ask geometry became executable.
+    It is not a broker-fill claim. Missing/sparse coverage never becomes an
+    invented unfilled outcome; M188 later reconciles real M187 broker evidence.
     """
 
     evaluated = _aware(evaluated_at, "shadow evaluation time")
-    rows = tuple(sorted(quotes, key=lambda row: (row.observed_at, row.fingerprint)))
-    quote_fps = tuple(row.fingerprint for row in rows)
-    if len(quote_fps) != len(set(quote_fps)):
-        raise ValueError("duplicate market quote evidence")
-    if any(row.symbol != shadow.symbol for row in rows):
-        raise ValueError("market quote symbol drift in shadow assessment")
-    if any(row.observed_at < shadow.captured_at for row in rows):
-        raise ValueError("shadow assessment cannot use pre-capture market quote")
-    if rows and evaluated < rows[-1].observed_at:
-        raise ValueError("shadow evaluation time predates supplied quote evidence")
-    if not rows:
-        return ShadowExecutionAssessment(
-            shadow.fingerprint,
-            ShadowAssessmentStatus.INSUFFICIENT_MARKET_EVIDENCE,
-            evaluated,
-            (),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            ("no_post_capture_market_quotes",),
-        )
-
-    trigger_quote: ShadowMarketQuote | None = None
-    executable_quote: ShadowMarketQuote | None = None
-    market_expiry = shadow.pending_expires_at if shadow.order_style is not OrderStyle.MARKET else shadow.intent_expires_at
-    if market_expiry is None:
-        market_expiry = shadow.intent_expires_at
+    if window.symbol != shadow.symbol:
+        raise ValueError("quote window symbol does not match shadow intent")
+    if window.coverage_start > shadow.captured_at:
+        raise ValueError("quote window does not cover shadow capture time")
+    if evaluated < window.coverage_end:
+        raise ValueError("shadow evaluation time predates quote-window coverage end")
+    rows = tuple(row for row in window.quotes if row.observed_at >= shadow.captured_at)
 
     if shadow.order_style is OrderStyle.MARKET:
-        first = rows[0]
-        if first.observed_at <= shadow.intent_expires_at:
-            price = _executable_price(shadow, first)
-            drift = abs(price - shadow.reference_price) / shadow.reference_price
-            if drift <= shadow.max_price_drift_fraction:
-                trigger_quote = executable_quote = first
-    elif shadow.order_style is OrderStyle.LIMIT:
+        price = _market_price(shadow.side, shadow.capture_quote)
+        drift = abs(price - shadow.reference_price) / shadow.reference_price
+        if drift <= shadow.max_price_drift_fraction:
+            return _execution_assessment(shadow, window, shadow.capture_quote, shadow.capture_quote, evaluated)
+        if evaluated >= shadow.intent_expires_at and window.complete and window.coverage_end >= shadow.intent_expires_at:
+            return ShadowExecutionAssessment(
+                shadow.fingerprint,
+                window.fingerprint,
+                ShadowAssessmentStatus.EXPIRED_UNFILLED,
+                evaluated,
+                shadow.capture_quote.fingerprint,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ("market_quote_exceeded_intent_price_drift_until_expiry",),
+            )
+        return ShadowExecutionAssessment(
+            shadow.fingerprint,
+            window.fingerprint,
+            ShadowAssessmentStatus.INSUFFICIENT_MARKET_EVIDENCE if not window.complete else ShadowAssessmentStatus.WOULD_NOT_EXECUTE,
+            evaluated,
+            shadow.capture_quote.fingerprint,
+            None,
+            None,
+            None,
+            None,
+            None,
+            ("capture_price_drift_exceeded",),
+        )
+
+    expiry = shadow.pending_expires_at
+    if expiry is None:
+        raise ValueError("pending shadow intent lost pending expiration")
+    trigger_quote: ShadowMarketQuote | None = None
+    executable_quote: ShadowMarketQuote | None = None
+
+    if shadow.order_style is OrderStyle.LIMIT:
         for row in rows:
-            if row.observed_at > market_expiry:
+            if row.observed_at > expiry:
                 break
-            price = _executable_price(shadow, row)
+            price = _market_price(shadow.side, row)
             if (shadow.side is TradeSide.LONG and price <= shadow.reference_price) or (
                 shadow.side is TradeSide.SHORT and price >= shadow.reference_price
             ):
@@ -454,9 +585,9 @@ def assess_shadow_execution(
                 break
     elif shadow.order_style is OrderStyle.STOP:
         for row in rows:
-            if row.observed_at > market_expiry:
+            if row.observed_at > expiry:
                 break
-            price = _executable_price(shadow, row)
+            price = _market_price(shadow.side, row)
             if (shadow.side is TradeSide.LONG and price >= shadow.reference_price) or (
                 shadow.side is TradeSide.SHORT and price <= shadow.reference_price
             ):
@@ -467,14 +598,14 @@ def assess_shadow_execution(
             raise ValueError("stop-limit shadow intent lost limit price")
         triggered = False
         for row in rows:
-            if row.observed_at > market_expiry:
+            if row.observed_at > expiry:
                 break
-            price = _executable_price(shadow, row)
+            price = _market_price(shadow.side, row)
             if not triggered:
-                trigger = (shadow.side is TradeSide.LONG and price >= shadow.reference_price) or (
+                hit = (shadow.side is TradeSide.LONG and price >= shadow.reference_price) or (
                     shadow.side is TradeSide.SHORT and price <= shadow.reference_price
                 )
-                if trigger:
+                if hit:
                     trigger_quote = row
                     triggered = True
             if triggered and (
@@ -483,47 +614,53 @@ def assess_shadow_execution(
             ):
                 executable_quote = row
                 break
-    else:  # pragma: no cover - defensive against future enum expansion
+    else:  # pragma: no cover
         raise ValueError(f"unsupported shadow order style: {shadow.order_style}")
 
     if executable_quote is not None:
-        price = _executable_price(shadow, executable_quote)
-        direction = 1.0 if shadow.side is TradeSide.LONG else -1.0
-        adverse = (price - shadow.reference_price) * direction
-        latency = (executable_quote.observed_at - shadow.captured_at).total_seconds() * 1000.0
+        return _execution_assessment(shadow, window, executable_quote, trigger_quote, evaluated)
+
+    if evaluated >= expiry:
+        if not window.complete or window.coverage_end < expiry:
+            return ShadowExecutionAssessment(
+                shadow.fingerprint,
+                window.fingerprint,
+                ShadowAssessmentStatus.INSUFFICIENT_MARKET_EVIDENCE,
+                evaluated,
+                None if trigger_quote is None else trigger_quote.fingerprint,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ("incomplete_quote_coverage_cannot_prove_unfilled_expiry",),
+            )
         return ShadowExecutionAssessment(
             shadow.fingerprint,
-            ShadowAssessmentStatus.WOULD_EXECUTE,
+            window.fingerprint,
+            ShadowAssessmentStatus.EXPIRED_UNFILLED,
             evaluated,
-            quote_fps,
             None if trigger_quote is None else trigger_quote.fingerprint,
-            executable_quote.fingerprint,
-            price,
-            adverse,
-            adverse / shadow.reference_price,
-            latency,
-            ("read_only_market_geometry_became_executable",),
+            None,
+            None,
+            None,
+            None,
+            None,
+            ("pending_order_expired_without_executable_quote",),
         )
 
-    expired = evaluated >= market_expiry
-    if expired:
-        reason = "pending_order_expired_without_executable_quote" if shadow.order_style is not OrderStyle.MARKET else "market_intent_expired_without_acceptable_quote"
-        status = ShadowAssessmentStatus.EXPIRED_UNFILLED
-    else:
-        reason = "market_geometry_not_yet_executable"
-        status = ShadowAssessmentStatus.WOULD_NOT_EXECUTE
     return ShadowExecutionAssessment(
         shadow.fingerprint,
-        status,
+        window.fingerprint,
+        ShadowAssessmentStatus.INSUFFICIENT_MARKET_EVIDENCE if not window.complete else ShadowAssessmentStatus.WOULD_NOT_EXECUTE,
         evaluated,
-        quote_fps,
         None if trigger_quote is None else trigger_quote.fingerprint,
         None,
         None,
         None,
         None,
         None,
-        (reason,),
+        ("market_geometry_not_yet_executable",),
     )
 
 
@@ -562,28 +699,54 @@ class ShadowExecutionVault:
                 shadow.champion_fingerprint,
                 shadow.champion_deployment_fingerprint,
                 shadow.cognition_fingerprint,
-                shadow.capture_quote_fingerprint,
+                shadow.capture_quote.fingerprint,
+                shadow.capture_quote.source_fingerprint,
+                shadow.capture_policy_fingerprint,
             ),
             now=shadow.captured_at,
         )
 
-    def record_assessment(self, assessment: ShadowExecutionAssessment) -> ResearchArtifactRecord:
+    def record_assessment(
+        self,
+        assessment: ShadowExecutionAssessment,
+        window: ShadowQuoteWindow,
+    ) -> ResearchArtifactRecord:
+        if assessment.quote_window_fingerprint != window.fingerprint:
+            raise ValueError("assessment/quote-window identity drift")
         payload = {
-            "protocol": "dusty-m186-shadow-assessment-v1",
+            "protocol": "dusty-m186-shadow-assessment-v2",
             "fingerprint": assessment.fingerprint,
             "shadow_fingerprint": assessment.shadow_fingerprint,
+            "quote_window_fingerprint": assessment.quote_window_fingerprint,
             "status": assessment.status.value,
             "evaluated_at": assessment.evaluated_at.isoformat(),
-            "quote_fingerprints": list(assessment.quote_fingerprints),
             "trigger_quote_fingerprint": assessment.trigger_quote_fingerprint,
             "executable_quote_fingerprint": assessment.executable_quote_fingerprint,
             "theoretical_execution_price": assessment.theoretical_execution_price,
             "adverse_price_delta": assessment.adverse_price_delta,
             "adverse_price_fraction": assessment.adverse_price_fraction,
-            "latency_ms": assessment.latency_ms,
+            "time_to_executable_ms": assessment.time_to_executable_ms,
             "reasons": list(assessment.reasons),
+            "quote_window": {
+                "symbol": window.symbol,
+                "coverage_start": window.coverage_start.isoformat(),
+                "coverage_end": window.coverage_end.isoformat(),
+                "complete": window.complete,
+                "source_fingerprint": window.source_fingerprint,
+                "quote_fingerprints": [row.fingerprint for row in window.quotes],
+            },
         }
-        sources = tuple(sorted({assessment.shadow_fingerprint, *assessment.quote_fingerprints}))
+        sources = tuple(
+            sorted(
+                {
+                    assessment.shadow_fingerprint,
+                    window.fingerprint,
+                    window.source_fingerprint,
+                    *(row.fingerprint for row in window.quotes),
+                    *(row.source_fingerprint for row in window.quotes),
+                }
+            )
+        )
         return self._vault.store_bytes(
             _canonical(payload).encode("utf-8"),
             kind=ArtifactKind.OTHER,
