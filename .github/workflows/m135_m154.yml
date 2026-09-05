@@ -1,4 +1,4 @@
-name: m135-m163-research-organism
+name: m135-m164-research-organism
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Compile M135-M163 surfaces
+      - name: Compile M135-M164 surfaces
         run: >-
           python -m py_compile
           src/dusty/integrated_research_cycle.py
@@ -40,6 +40,7 @@ jobs:
           src/dusty/native_mt5_executor.py
           src/dusty/resource_governor.py
           src/dusty/replay_cache.py
+          src/dusty/artifact_vault.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
@@ -57,6 +58,7 @@ jobs:
           tests/test_m161_hardware_contract.py
           tests/test_m162_resource_governor.py
           tests/test_m163_replay_cache.py
+          tests/test_m164_artifact_vault.py
           tests/test_m67_tester_contract.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
@@ -116,6 +118,9 @@ jobs:
 
       - name: M163 deterministic replay cache gate
         run: python -m unittest discover -s tests -p "test_m163_replay_cache.py" -v
+
+      - name: M164 append-only research artifact vault gate
+        run: python -m unittest discover -s tests -p "test_m164_artifact_vault.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
