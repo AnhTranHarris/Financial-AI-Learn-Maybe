@@ -279,6 +279,78 @@ class M161NativeMT5ExecutorTests(unittest.TestCase):
             self.assertEqual(hinted.failure_kind, NativeMT5FailureKind.DATA_FAIL)
             self.assertTrue(hinted.infrastructure_failure)
 
+    def test_completed_native_artifacts_recover_shutdown_timeout(self) -> None:
+        with TemporaryDirectory() as temp:
+            _, package, common, work, deals, report = self._fixture(temp)
+
+            def completed() -> None:
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(
+                    "<html><body>complete native tester report</body></html>",
+                    encoding="utf-8",
+                )
+                deals.parent.mkdir(parents=True, exist_ok=True)
+                deals.write_text(
+                    self._deal_csv(package.strategy_fingerprint),
+                    encoding="utf-8",
+                )
+
+            result = NativeMT5ExperimentExecutor(
+                common_files_root=common,
+                work_root=work,
+                runner=_Runner(
+                    NativeMT5ProcessResult(None, True),
+                    completed,
+                ),
+                isolation_verifier=_Isolation(True),
+            ).execute(package, research_manifest_csv=MANIFEST_CSV)
+
+            self.assertIsNone(result.failure_kind)
+            self.assertIsNotNone(result.evidence)
+            self.assertTrue(result.strategy_evidence_usable)
+            self.assertEqual(
+                result.reason,
+                "native_mt5_execution_completed_after_terminal_shutdown_timeout",
+            )
+            assert result.evidence is not None
+            self.assertEqual(result.evidence.trade_count, 1)
+
+    def test_shutdown_timeout_with_incomplete_report_fails_closed(self) -> None:
+        with TemporaryDirectory() as temp:
+            _, package, common, work, deals, report = self._fixture(temp)
+
+            def incomplete() -> None:
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(
+                    "<html><body>unfinished",
+                    encoding="utf-8",
+                )
+                deals.parent.mkdir(parents=True, exist_ok=True)
+                deals.write_text(
+                    self._deal_csv(package.strategy_fingerprint),
+                    encoding="utf-8",
+                )
+
+            result = NativeMT5ExperimentExecutor(
+                common_files_root=common,
+                work_root=work,
+                runner=_Runner(
+                    NativeMT5ProcessResult(None, True),
+                    incomplete,
+                ),
+                isolation_verifier=_Isolation(True),
+            ).execute(package, research_manifest_csv=MANIFEST_CSV)
+
+            self.assertEqual(
+                result.failure_kind,
+                NativeMT5FailureKind.TIMEOUT,
+            )
+            self.assertEqual(
+                result.reason,
+                "strategy_tester_timeout_with_incomplete_report",
+            )
+            self.assertIsNone(result.evidence)
+
     def test_missing_or_malformed_native_artifacts_are_tester_failures(self) -> None:
         with TemporaryDirectory() as temp:
             _, package, common, work, deals, report = self._fixture(temp)

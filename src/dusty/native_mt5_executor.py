@@ -786,11 +786,10 @@ class NativeMT5ExperimentExecutor:
             cwd=terminal.parent,
             timeout_seconds=float(package.timeout_seconds),
         )
-        if process.timed_out:
-            return self._failure(package, NativeMT5FailureKind.TIMEOUT, "strategy_tester_timeout")
+        timed_out = process.timed_out
         if process.failure_hint is not None:
             return self._failure(package, process.failure_hint, "runner_failure_hint")
-        if process.returncode != 0:
+        if not timed_out and process.returncode != 0:
             return self._failure(
                 package,
                 NativeMT5FailureKind.TESTER_FAIL,
@@ -799,14 +798,36 @@ class NativeMT5ExperimentExecutor:
         if not report_path.is_file() or report_path.stat().st_size <= 0:
             return self._failure(
                 package,
-                NativeMT5FailureKind.TESTER_FAIL,
-                "tester_report_missing",
+                NativeMT5FailureKind.TIMEOUT
+                if timed_out
+                else NativeMT5FailureKind.TESTER_FAIL,
+                "strategy_tester_timeout_before_report"
+                if timed_out
+                else "tester_report_missing",
             )
+
+        if timed_out:
+            report_tail = report_path.read_bytes()[-8192:].lower()
+            closing_tags = (
+                b"</html>",
+                "</html>".encode("utf-16le"),
+                "</html>".encode("utf-16be"),
+            )
+            if not any(tag in report_tail for tag in closing_tags):
+                return self._failure(
+                    package,
+                    NativeMT5FailureKind.TIMEOUT,
+                    "strategy_tester_timeout_with_incomplete_report",
+                )
         if not deals_path.is_file() or deals_path.stat().st_size <= 0:
             return self._failure(
                 package,
-                NativeMT5FailureKind.TESTER_FAIL,
-                "native_deals_missing",
+                NativeMT5FailureKind.TIMEOUT
+                if timed_out
+                else NativeMT5FailureKind.TESTER_FAIL,
+                "strategy_tester_timeout_before_native_deals"
+                if timed_out
+                else "native_deals_missing",
             )
 
         deals_text = deals_path.read_text(encoding="utf-8-sig")
@@ -849,7 +870,11 @@ class NativeMT5ExperimentExecutor:
         return NativeMT5ExecutionResult(
             package_fingerprint=package.fingerprint,
             failure_kind=None,
-            reason="native_mt5_execution_completed",
+            reason=(
+                "native_mt5_execution_completed_after_terminal_shutdown_timeout"
+                if timed_out
+                else "native_mt5_execution_completed"
+            ),
             evidence=evidence,
         )
 
