@@ -132,7 +132,7 @@ class M159StrategyFamilyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same evaluation evidence"):
             behavior_correlation(left, right)
 
-    def test_behavioral_similarity_can_mark_structural_change_as_family_variant(self) -> None:
+    def test_duplicate_level_behavior_plus_close_semantics_is_near_duplicate(self) -> None:
         base = _compiled()
         other = _compiled(entry_rule="breakout_after_volatility_expansion", timeframe="H4")
         evaluation = _sha("shared-evaluation")
@@ -140,6 +140,17 @@ class M159StrategyFamilyTests(unittest.TestCase):
         right = BehaviorSignature(evaluation, (-2.0, 0.0, 2.0, 4.0, 6.0))
         assessment = assess_novelty(other, base, candidate_behavior=right, incumbent_behavior=left)
         self.assertAlmostEqual(assessment.behavior_correlation or 0.0, 1.0, places=12)
+        self.assertEqual(assessment.classification, NoveltyClass.NEAR_DUPLICATE)
+
+    def test_variant_level_behavior_can_mark_structural_change_as_family_variant(self) -> None:
+        base = _compiled()
+        other = _compiled(entry_rule="breakout_after_volatility_expansion", timeframe="H4")
+        evaluation = _sha("shared-variant-evaluation")
+        left = BehaviorSignature(evaluation, (-1.0, 0.0, 1.0, 2.0, 3.0))
+        right = BehaviorSignature(evaluation, (-1.0, 0.0, 1.0, 2.0, 2.0))
+        assessment = assess_novelty(other, base, candidate_behavior=right, incumbent_behavior=left)
+        self.assertGreater(assessment.behavior_correlation or 0.0, 0.90)
+        self.assertLess(assessment.behavior_correlation or 1.0, 0.99)
         self.assertEqual(assessment.classification, NoveltyClass.FAMILY_VARIANT)
 
     def test_unknown_external_parent_is_allowed_but_cycle_is_rejected_transactionally(self) -> None:
