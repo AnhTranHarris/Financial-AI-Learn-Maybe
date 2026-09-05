@@ -64,6 +64,16 @@ class MQL5ResearchEAContractTests(unittest.TestCase):
         self.assertIn("FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON", source)
         self.assertNotIn("#property tester_file", source)
 
+    def test_side_normalization_uses_mql5_in_place_string_contract(self):
+        source = Path("mt5/DustyResearchEA.mq5").read_text(encoding="utf-8")
+        self.assertIn("string side=FileReadString(handle);", source)
+        self.assertIn("if(!StringToLower(side))", source)
+        self.assertIn("DustyResearchEA cannot normalize side", source)
+        self.assertNotIn(
+            'const string side=StringToLower(FileReadString(handle));',
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
