@@ -272,9 +272,27 @@ class StrategyLineageIndex:
         existing = self._parents.get(node)
         if existing is not None and existing != parents:
             raise ValueError("lineage node cannot change parents")
+
+        had_parent = node in self._parents
+        old_parents = self._parents.get(node)
+        had_family = node in self._family
+        old_family = self._family.get(node)
         self._parents[node] = parents
         self._family[node] = structural_family_fingerprint(strategy)
-        self._assert_acyclic()
+        try:
+            self._assert_acyclic()
+        except Exception:
+            if had_parent:
+                assert old_parents is not None
+                self._parents[node] = old_parents
+            else:
+                self._parents.pop(node, None)
+            if had_family:
+                assert old_family is not None
+                self._family[node] = old_family
+            else:
+                self._family.pop(node, None)
+            raise
 
     def _assert_acyclic(self) -> None:
         visiting: set[str] = set()
