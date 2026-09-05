@@ -23,6 +23,7 @@ from .strategy_genome_v2 import (
 from .strategy_lab import (
     ConstraintMode,
     FailureDiagnosis,
+    StrategyConstraint,
     StrategyGenome,
     compose_in_house_strategy,
 )
@@ -114,13 +115,10 @@ class FeatureReplacement:
     mutation_family: str
 
     def __post_init__(self) -> None:
-        for field, label in (
-            (self.clause_id, "feature replacement clause"),
-            (self.from_feature, "feature replacement source"),
-            (self.to_feature, "feature replacement target"),
-            (self.mutation_family, "feature mutation family"),
-        ):
-            _text(field, label)
+        object.__setattr__(self, "clause_id", _text(self.clause_id, "feature replacement clause"))
+        object.__setattr__(self, "from_feature", _text(self.from_feature, "feature replacement source").lower())
+        object.__setattr__(self, "to_feature", _text(self.to_feature, "feature replacement target").lower())
+        object.__setattr__(self, "mutation_family", _text(self.mutation_family, "feature mutation family").lower())
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,9 +144,9 @@ class MutationInstruction:
             if replacement is None
             else {
                 "clause_id": replacement.clause_id,
-                "from_feature": replacement.from_feature.lower(),
-                "to_feature": replacement.to_feature.lower(),
-                "mutation_family": replacement.mutation_family.lower(),
+                "from_feature": replacement.from_feature,
+                "to_feature": replacement.to_feature,
+                "mutation_family": replacement.mutation_family,
             },
         }
 
@@ -224,7 +222,7 @@ def _specs_from_compiled(compiled: CompiledStrategyGenomeV2) -> tuple[GenomeClau
     )
 
 
-def _constraint_for(parent: StrategyGenome, source_key: str):
+def _constraint_for(parent: StrategyGenome, source_key: str) -> StrategyConstraint:
     constraints = {row.key.lower(): row for row in parent.constraints}
     key = source_key.lower()
     candidates = (key, f"unresolved.{key}") if not key.startswith("unresolved.") else (
@@ -247,16 +245,13 @@ def _validate_feature_replacement(
     if len(matches) != 1:
         raise ValueError(f"feature replacement clause not found: {replacement.clause_id}")
     spec = matches[0]
-    source = replacement.from_feature.lower()
-    target = replacement.to_feature.lower()
-    if source not in tuple(value.lower() for value in spec.feature_keys):
-        raise ValueError(f"feature replacement source not bound to clause: {source}")
-    source_definition = registry.get(source)
-    registry.get(target)  # target must already be a registered, versioned M156 feature
-    family = replacement.mutation_family.strip().lower()
-    if family not in source_definition.compatible_mutations:
+    if replacement.from_feature not in tuple(value.lower() for value in spec.feature_keys):
+        raise ValueError(f"feature replacement source not bound to clause: {replacement.from_feature}")
+    source_definition = registry.get(replacement.from_feature)
+    registry.get(replacement.to_feature)  # target must already be a registered M156 feature
+    if replacement.mutation_family not in source_definition.compatible_mutations:
         raise PermissionError(
-            f"feature {source_definition.key} does not allow mutation family {family}"
+            f"feature {source_definition.key} does not allow mutation family {replacement.mutation_family}"
         )
 
 
@@ -266,6 +261,8 @@ def _apply_instruction_to_specs(
     registry: FeatureRegistry,
 ) -> tuple[GenomeClauseSpec, ...]:
     replacement = instruction.feature_replacement
+    if replacement is not None:
+        _validate_feature_replacement(replacement, specs=specs, registry=registry)
     updated: list[GenomeClauseSpec] = []
     matched_source = False
     for spec in specs:
@@ -284,9 +281,8 @@ def _apply_instruction_to_specs(
                 parameters=spec.parameters,
             )
         if replacement is not None and spec.clause_id == replacement.clause_id:
-            _validate_feature_replacement(replacement, specs=specs, registry=registry)
             feature_keys = tuple(
-                replacement.to_feature.lower() if key.lower() == replacement.from_feature.lower() else key
+                replacement.to_feature if key.lower() == replacement.from_feature else key
                 for key in spec.feature_keys
             )
             spec = GenomeClauseSpec(
@@ -418,13 +414,13 @@ def decide_evolution(
             exact_retry_execution_fingerprint=compiled_parent.execution_fingerprint,
         )
 
+    groups = tuple(tuple(group) for group in candidate_instructions)
     if diagnosis is not None:
         if diagnosis.subject_fingerprint != parent.fingerprint:
             raise ValueError("failure diagnosis does not belong to parent")
-        if not tuple(candidate_instructions):
-            candidate_instructions = instructions_from_failure(diagnosis)
+        if not groups:
+            groups = instructions_from_failure(diagnosis)
 
-    groups = tuple(tuple(group) for group in candidate_instructions)
     if not groups:
         return EvolutionDecision(
             EvolutionAction.STOP_RESEARCH,
