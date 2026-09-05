@@ -192,6 +192,11 @@ def _validate_weight(weight: AdaptiveForecastEvidenceWeight) -> None:
     if not math.isclose(rendered_weight, min(caps), rel_tol=0.0, abs_tol=1e-12):
         raise ValueError("evidence weight must equal its most conservative component cap")
 
+    zero_statuses = {EvidenceWeightStatus.INSUFFICIENT, EvidenceWeightStatus.BLOCKED}
+    zero_weight = math.isclose(rendered_weight, 0.0, rel_tol=0.0, abs_tol=1e-12)
+    if (weight.status in zero_statuses) != zero_weight:
+        raise ValueError("M183 status/weight identity drift")
+
     fingerprints = tuple(_sha(value, "M183 source fingerprint") for value in weight.source_fingerprints)
     if not fingerprints or len(fingerprints) != len(set(fingerprints)):
         raise ValueError("M183 source fingerprints must be unique and nonempty")
@@ -231,13 +236,18 @@ def _validate_information_value(value: ForecastInformationValue, comparison: For
     _sha(value.cost_fingerprint, "information-value cost fingerprint")
     if value.comparison_fingerprint.lower() != comparison.fingerprint:
         raise ValueError("information-value/ablation identity drift")
+    matched_delta = _finite(value.net_return_delta, "information-value net_return_delta")
     if not math.isclose(
-        _finite(value.net_return_delta, "information-value net_return_delta"),
+        matched_delta,
         comparison.net_return_delta,
         rel_tol=0.0,
         abs_tol=1e-12,
     ):
         raise ValueError("information-value return delta drift")
+    if value.status is InformationValueStatus.POSITIVE and matched_delta <= 0.0:
+        raise ValueError("positive information value requires positive matched return delta")
+    if value.status is InformationValueStatus.NEGATIVE and matched_delta >= 0.0:
+        raise ValueError("negative information value requires negative matched return delta")
     weighted = _finite(value.weighted_compute_seconds, "weighted_compute_seconds")
     wall = _finite(value.wall_seconds, "wall_seconds")
     external = _finite(value.external_cost, "external_cost")
