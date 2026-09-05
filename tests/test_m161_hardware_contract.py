@@ -28,6 +28,17 @@ class M161HardwareHarnessContractTests(unittest.TestCase):
         self.assertNotIn("taskkill /im", source.lower())
         self.assertNotIn("stop-process -name", source.lower())
 
+    def test_metaeditor_cli_success_is_proven_by_log_and_ex5_not_zero_exit_assumption(self) -> None:
+        source = Path("tools/validate_m161_hardware.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("metaeditor-exit-code.txt", source)
+        self.assertIn("$compileExitCode = [int]$compileProcess.ExitCode", source)
+        self.assertIn("0\\s+errors?,\\s*0\\s+warnings?", source)
+        self.assertIn("Compiled DustyResearchEA.ex5 not found", source)
+        self.assertIn("diagnostic only; log + EX5 prove compile success", source)
+        self.assertNotIn("if ($compileProcess.ExitCode -ne 0)", source)
+        self.assertNotIn("throw \"MetaEditor returned exit code", source)
+
     def test_python_hardware_smoke_uses_bounded_native_executor_without_strategy_verdict(self) -> None:
         source = Path("tools/smoke_m161_hardware.py").read_text(encoding="utf-8")
 
