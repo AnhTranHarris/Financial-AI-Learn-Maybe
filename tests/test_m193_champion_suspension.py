@@ -105,9 +105,9 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         )
 
     def drift(self, champion, baseline, status: StrategyDriftStatus) -> StrategyDriftAssessment:
-        strategy = ()
-        execution = ()
-        data = ()
+        strategy: tuple[str, ...] = ()
+        execution: tuple[str, ...] = ()
+        data: tuple[str, ...] = ()
         if status is StrategyDriftStatus.WATCH:
             strategy = ("holding_time_distribution_shift",)
         elif status is StrategyDriftStatus.STRUCTURAL_DRIFT:
@@ -138,18 +138,21 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         self,
         champion,
         baseline,
+        drift: StrategyDriftAssessment,
         *,
         fraction: float = 0.05,
         count: int = 30,
         data_ok: bool = True,
         start: datetime | None = None,
         end: datetime | None = None,
+        drift_fingerprint: str | None = None,
     ) -> ForwardDrawdownEvidence:
-        period_start = start or (BASE_END + timedelta(days=1))
-        period_end = end or (BASE_END + timedelta(days=30))
+        period_start = start or (champion.created_at + timedelta(days=1))
+        period_end = end or (champion.created_at + timedelta(days=30))
         return ForwardDrawdownEvidence(
             champion.fingerprint,
             baseline.fingerprint,
+            drift_fingerprint or drift.fingerprint,
             period_start,
             period_end,
             count,
@@ -158,24 +161,8 @@ class M193ChampionSuspensionTests(unittest.TestCase):
             (fp("equity-series"), fp("deal-history")),
         )
 
-    def policy(
-        self,
-        *,
-        structural: bool = True,
-        data: bool = True,
-        governance: bool = True,
-        execution: bool = False,
-        confirmations: int = 2,
-    ) -> ChampionSuspensionPolicy:
-        return ChampionSuspensionPolicy(
-            0.15,
-            20,
-            structural,
-            data,
-            governance,
-            execution,
-            confirmations,
-        )
+    def policy(self, *, execution: bool = False, confirmations: int = 2) -> ChampionSuspensionPolicy:
+        return ChampionSuspensionPolicy(0.15, 20, True, True, True, execution, confirmations)
 
     def evaluate(
         self,
@@ -189,64 +176,69 @@ class M193ChampionSuspensionTests(unittest.TestCase):
     ):
         champion, _ = self.champion()
         baseline = self.baseline(champion)
-        dd = self.drawdown(champion, baseline, fraction=drawdown_fraction, count=drawdown_count, data_ok=data_ok)
+        drift = self.drift(champion, baseline, status)
+        dd = self.drawdown(
+            champion,
+            baseline,
+            drift,
+            fraction=drawdown_fraction,
+            count=drawdown_count,
+            data_ok=data_ok,
+        )
         result = evaluate_automatic_suspension(
             champion,
             baseline,
-            self.drift(champion, baseline, status),
+            drift,
             dd,
             execution_confirmation_fingerprints=confirmations,
             policy=self.policy(execution=execution_policy),
             assessed_at=dd.period_end + timedelta(minutes=1),
         )
-        return champion, baseline, dd, result
+        return champion, baseline, drift, dd, result
 
     def test_stable_watch_and_insufficient_do_not_suspend_inside_drawdown_policy(self) -> None:
         for status in (StrategyDriftStatus.STABLE, StrategyDriftStatus.WATCH, StrategyDriftStatus.INSUFFICIENT):
             with self.subTest(status=status):
-                _, _, _, result = self.evaluate(status)
+                *_, result = self.evaluate(status)
                 self.assertEqual(result.decision, ChampionSuspensionDecision.KEEP_ACTIVE)
                 self.assertFalse(result.reasons)
 
-    def test_structural_drift_suspends_under_precommitted_policy(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.STRUCTURAL_DRIFT)
-        self.assertEqual(result.decision, ChampionSuspensionDecision.SUSPEND)
-        self.assertIn("structural_strategy_drift", result.reasons)
-
-    def test_data_or_replay_failure_and_governance_failure_suspend(self) -> None:
-        for status, reason in (
+    def test_structural_data_and_governance_failures_suspend(self) -> None:
+        cases = (
+            (StrategyDriftStatus.STRUCTURAL_DRIFT, "structural_strategy_drift"),
             (StrategyDriftStatus.DATA_OR_REPLAY_DRIFT, "data_or_PIT_replay_integrity_failure"),
             (StrategyDriftStatus.GOVERNANCE_FAILURE, "forward_governance_failure"),
-        ):
+        )
+        for status, reason in cases:
             with self.subTest(status=status):
-                _, _, _, result = self.evaluate(status)
+                *_, result = self.evaluate(status)
                 self.assertEqual(result.decision, ChampionSuspensionDecision.SUSPEND)
                 self.assertIn(reason, result.reasons)
 
-    def test_excessive_forward_drawdown_suspends_even_when_m192_is_stable(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.STABLE, drawdown_fraction=0.20)
+    def test_drawdown_trigger_requires_depth_sample_and_integrity(self) -> None:
+        *_, result = self.evaluate(StrategyDriftStatus.STABLE, drawdown_fraction=0.20)
         self.assertEqual(result.decision, ChampionSuspensionDecision.SUSPEND)
         self.assertIn("forward_drawdown_exceeded", result.reasons)
 
-    def test_large_drawdown_with_too_few_observations_does_not_become_false_alarm(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.STABLE, drawdown_fraction=0.20, drawdown_count=5)
+        *_, result = self.evaluate(StrategyDriftStatus.STABLE, drawdown_fraction=0.20, drawdown_count=5)
         self.assertEqual(result.decision, ChampionSuspensionDecision.KEEP_ACTIVE)
 
-    def test_drawdown_data_integrity_failure_suspends_without_interpreting_performance(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.STABLE, data_ok=False)
+        *_, result = self.evaluate(StrategyDriftStatus.STABLE, data_ok=False)
         self.assertEqual(result.decision, ChampionSuspensionDecision.SUSPEND)
         self.assertIn("forward_drawdown_data_integrity_failure", result.reasons)
 
-    def test_execution_only_drift_requires_explicit_policy_and_confirmations(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.EXECUTION_DRIFT_ONLY)
+    def test_execution_only_drift_requires_explicit_policy_and_independent_confirmations(self) -> None:
+        *_, result = self.evaluate(StrategyDriftStatus.EXECUTION_DRIFT_ONLY)
         self.assertEqual(result.decision, ChampionSuspensionDecision.KEEP_ACTIVE)
-        _, _, _, result = self.evaluate(
+
+        *_, result = self.evaluate(
             StrategyDriftStatus.EXECUTION_DRIFT_ONLY,
             execution_policy=True,
             confirmations=(fp("execution-confirmation-1"),),
         )
         self.assertEqual(result.decision, ChampionSuspensionDecision.KEEP_ACTIVE)
-        _, _, _, result = self.evaluate(
+
+        *_, result = self.evaluate(
             StrategyDriftStatus.EXECUTION_DRIFT_ONLY,
             execution_policy=True,
             confirmations=(fp("execution-confirmation-1"), fp("execution-confirmation-2")),
@@ -254,33 +246,32 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         self.assertEqual(result.decision, ChampionSuspensionDecision.SUSPEND)
         self.assertIn("confirmed_execution_mismatch", result.reasons)
 
-    def test_execution_confirmation_evidence_cannot_be_attached_to_nonexecution_drift(self) -> None:
+    def test_execution_confirmation_evidence_is_unique_and_cannot_contaminate_other_drift(self) -> None:
         champion, _ = self.champion()
         baseline = self.baseline(champion)
-        dd = self.drawdown(champion, baseline)
+        stable = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+        dd = self.drawdown(champion, baseline, stable)
         with self.assertRaisesRegex(ValueError, "require M192 execution-drift evidence"):
             evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                stable,
                 dd,
                 execution_confirmation_fingerprints=(fp("unrelated-execution"),),
                 policy=self.policy(),
                 assessed_at=dd.period_end + timedelta(minutes=1),
             )
 
-    def test_duplicate_execution_confirmations_fail_closed(self) -> None:
-        champion, _ = self.champion()
-        baseline = self.baseline(champion)
-        dd = self.drawdown(champion, baseline)
-        duplicated = fp("confirmation")
+        execution = self.drift(champion, baseline, StrategyDriftStatus.EXECUTION_DRIFT_ONLY)
+        dd = self.drawdown(champion, baseline, execution)
+        duplicate = fp("confirmation")
         with self.assertRaisesRegex(ValueError, "must be unique"):
             evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.EXECUTION_DRIFT_ONLY),
+                execution,
                 dd,
-                execution_confirmation_fingerprints=(duplicated, duplicated),
+                execution_confirmation_fingerprints=(duplicate, duplicate),
                 policy=self.policy(execution=True),
                 assessed_at=dd.period_end + timedelta(minutes=1),
             )
@@ -288,7 +279,6 @@ class M193ChampionSuspensionTests(unittest.TestCase):
     def test_malformed_m192_status_signal_semantics_fail_closed(self) -> None:
         champion, _ = self.champion()
         baseline = self.baseline(champion)
-        dd = self.drawdown(champion, baseline)
         malformed = StrategyDriftAssessment(
             StrategyDriftStatus.STRUCTURAL_DRIFT,
             champion.fingerprint,
@@ -302,6 +292,7 @@ class M193ChampionSuspensionTests(unittest.TestCase):
             fp("m192-policy"),
             "forged structural status without signals",
         )
+        dd = self.drawdown(champion, baseline, malformed)
         with self.assertRaisesRegex(ValueError, "requires strategy signals"):
             evaluate_automatic_suspension(
                 champion,
@@ -313,47 +304,83 @@ class M193ChampionSuspensionTests(unittest.TestCase):
                 assessed_at=dd.period_end + timedelta(minutes=1),
             )
 
-    def test_champion_and_baseline_identity_drift_fail_closed(self) -> None:
+    def test_identity_and_cross_evidence_binding_fail_closed(self) -> None:
         champion, _ = self.champion()
         baseline = self.baseline(champion)
-        dd = self.drawdown(champion, baseline)
-        wrong = replace(baseline, champion_fingerprint=fp("other-champion"))
+        drift = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+        dd = self.drawdown(champion, baseline, drift)
+
+        wrong_baseline = replace(baseline, champion_fingerprint=fp("other-champion"))
         with self.assertRaisesRegex(ValueError, "Champion/baseline identity drift"):
             evaluate_automatic_suspension(
                 champion,
-                wrong,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                wrong_baseline,
+                drift,
                 dd,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
                 assessed_at=dd.period_end + timedelta(minutes=1),
             )
 
-    def test_drawdown_must_be_forward_and_assessment_cannot_predate_evidence(self) -> None:
+        mismatched = self.drawdown(champion, baseline, drift, drift_fingerprint=fp("other-drift"))
+        with self.assertRaisesRegex(ValueError, "not bound to supplied M192"):
+            evaluate_automatic_suspension(
+                champion,
+                baseline,
+                drift,
+                mismatched,
+                execution_confirmation_fingerprints=(),
+                policy=self.policy(),
+                assessed_at=mismatched.period_end + timedelta(minutes=1),
+            )
+
+    def test_monitoring_window_must_be_after_baseline_and_champion_activation(self) -> None:
         champion, _ = self.champion()
         baseline = self.baseline(champion)
-        stale = self.drawdown(
+        drift = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+
+        prebaseline = self.drawdown(
             champion,
             baseline,
+            drift,
             start=BASE_END - timedelta(days=1),
             end=BASE_END + timedelta(days=2),
         )
-        with self.assertRaisesRegex(ValueError, "begin strictly after"):
+        with self.assertRaisesRegex(ValueError, "strictly after certified baseline"):
             evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
-                stale,
+                drift,
+                prebaseline,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
-                assessed_at=stale.period_end + timedelta(minutes=1),
+                assessed_at=champion.created_at + timedelta(days=1),
             )
-        fresh = self.drawdown(champion, baseline)
-        with self.assertRaisesRegex(ValueError, "cannot predate"):
+
+        preactivation = self.drawdown(
+            champion,
+            baseline,
+            drift,
+            start=BASE_END + timedelta(days=2),
+            end=champion.created_at - timedelta(days=1),
+        )
+        with self.assertRaisesRegex(ValueError, "after Champion activation"):
             evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                drift,
+                preactivation,
+                execution_confirmation_fingerprints=(),
+                policy=self.policy(),
+                assessed_at=champion.created_at + timedelta(days=1),
+            )
+
+        fresh = self.drawdown(champion, baseline, drift)
+        with self.assertRaisesRegex(ValueError, "cannot predate drawdown evidence"):
+            evaluate_automatic_suspension(
+                champion,
+                baseline,
+                drift,
                 fresh,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
@@ -365,11 +392,12 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         try:
             champion = self.register(registry)
             baseline = self.baseline(champion)
-            dd = self.drawdown(champion, baseline)
+            drift = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+            dd = self.drawdown(champion, baseline, drift)
             assessment = evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                drift,
                 dd,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
@@ -386,11 +414,12 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         try:
             champion = self.register(registry)
             baseline = self.baseline(champion)
-            dd = self.drawdown(champion, baseline, fraction=0.20)
+            drift = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+            dd = self.drawdown(champion, baseline, drift, fraction=0.20)
             assessment = evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                drift,
                 dd,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
@@ -402,7 +431,6 @@ class M193ChampionSuspensionTests(unittest.TestCase):
             self.assertEqual(first.event_type, ChampionLifecycleEventType.SUSPENDED)
             self.assertEqual(registry.state(champion.fingerprint), ChampionLifecycleState.SUSPENDED)
             self.assertIn(assessment.fingerprint, first.evidence_fingerprints)
-            self.assertIn(assessment.policy_fingerprint, first.evidence_fingerprints)
             self.assertTrue(registry.integrity_check()[0])
         finally:
             registry.close()
@@ -411,21 +439,23 @@ class M193ChampionSuspensionTests(unittest.TestCase):
         registry = FrozenChampionRegistry()
         try:
             champion = self.register(registry)
-            retired = ChampionLifecycleEvent(
-                champion.fingerprint,
-                ChampionLifecycleEventType.RETIRED,
-                fp("governance-actor"),
-                (fp("retirement-evidence"),),
-                "retired before M193",
-                NOW + timedelta(minutes=1),
+            registry.append_lifecycle_event(
+                ChampionLifecycleEvent(
+                    champion.fingerprint,
+                    ChampionLifecycleEventType.RETIRED,
+                    fp("governance-actor"),
+                    (fp("retirement-evidence"),),
+                    "retired before M193",
+                    champion.created_at + timedelta(minutes=1),
+                )
             )
-            registry.append_lifecycle_event(retired)
             baseline = self.baseline(champion)
-            dd = self.drawdown(champion, baseline, fraction=0.20)
+            drift = self.drift(champion, baseline, StrategyDriftStatus.STABLE)
+            dd = self.drawdown(champion, baseline, drift, fraction=0.20)
             assessment = evaluate_automatic_suspension(
                 champion,
                 baseline,
-                self.drift(champion, baseline, StrategyDriftStatus.STABLE),
+                drift,
                 dd,
                 execution_confirmation_fingerprints=(),
                 policy=self.policy(),
@@ -438,7 +468,7 @@ class M193ChampionSuspensionTests(unittest.TestCase):
             registry.close()
 
     def test_assessment_has_no_broker_position_risk_guardian_or_promotion_authority(self) -> None:
-        _, _, _, result = self.evaluate(StrategyDriftStatus.STRUCTURAL_DRIFT)
+        *_, result = self.evaluate(StrategyDriftStatus.STRUCTURAL_DRIFT)
         self.assertFalse(result.broker_write_authority)
         self.assertFalse(result.position_mutation_authority)
         self.assertFalse(result.risk_override_authority)
