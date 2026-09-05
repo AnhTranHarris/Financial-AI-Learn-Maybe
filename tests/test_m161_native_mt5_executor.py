@@ -129,11 +129,11 @@ class M161NativeMT5ExecutorTests(unittest.TestCase):
     def _fixture(self, temp: str):
         root = Path(temp)
         terminal = root / "terminal" / "terminal64.exe"
-        terminal.parent.mkdir(parents=True)
+        terminal.parent.mkdir(parents=True, exist_ok=True)
         terminal.write_bytes(b"terminal-binary-v1")
         data_root = root / "data"
         expert = data_root / "MQL5" / "Experts" / "DustyResearchEA.ex5"
-        expert.parent.mkdir(parents=True)
+        expert.parent.mkdir(parents=True, exist_ok=True)
         expert.write_bytes(b"expert-binary-v1")
         manifest = _manifest()
         package = compile_native_mt5_job(
