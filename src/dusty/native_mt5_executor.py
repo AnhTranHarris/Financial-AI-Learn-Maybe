@@ -341,14 +341,16 @@ def render_native_set(package: NativeMT5JobPackage) -> str:
 
     manifest_path = package.manifest_relative_path.replace("/", "\\")
     deals_path = package.deals_relative_path.replace("/", "\\")
+    magic = str(package.magic)
+    deviation = str(package.deviation_points)
     return "\n".join(
         (
             "; Dusty Dragon M161 deterministic Strategy Tester inputs",
             f"InpManifestFile={manifest_path}",
             f"InpDealsFile={deals_path}",
             f"InpStrategyHash={package.strategy_fingerprint}",
-            f"InpMagic={package.magic}",
-            f"InpDeviationPoints={package.deviation_points}",
+            f"InpMagic={magic}||{magic}||1||{magic}||N",
+            f"InpDeviationPoints={deviation}||{deviation}||1||{deviation}||N",
             "",
         )
     )
