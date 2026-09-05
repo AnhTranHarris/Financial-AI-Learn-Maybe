@@ -141,36 +141,6 @@ class DemoExecutionCostSample:
             self.fee,
         ))
 
-    @property
-    def calibration_observation(self) -> BrokerExecutionObservation:
-        side = CalibrationSide.BUY if self.side is TradeSide.LONG else CalibrationSide.SELL
-        return BrokerExecutionObservation(
-            self.broker_profile_fingerprint,
-            self.symbol,
-            side,
-            # M165 needs an observation timestamp. M188 identity already binds the
-            # actual broker timestamp, while the shadow capture is the exact
-            # contemporaneous quote used for spread measurement.
-            # BrokerExecutionObservation accepts a datetime, supplied separately
-            # by from_reconciliation through a private stored attribute is avoided;
-            # use reconciliation time when constructing via to_observation().
-            raise_not_used(),
-            self.point_size,
-            self.captured_bid,
-            self.captured_ask,
-            self.requested_price,
-            self.fill_price,
-            self.filled_volume,
-            self.commission,
-            self.fee,
-            self.swap,
-            self.reconciliation_fingerprint,
-        )
-
-
-def raise_not_used():
-    raise RuntimeError("use sample_to_observation with explicit reconciliation timestamp")
-
 
 def sample_from_reconciliation(
     shadow: ShadowExecutionIntent,
@@ -290,7 +260,9 @@ def learn_demo_execution_costs(
     if not symbol_norm:
         raise ValueError("learning symbol required")
     if not pairs:
-        calibration = calibrate_broker_economics((), broker_profile_fingerprint=broker, symbol=symbol_norm, policy=policy)
+        calibration = calibrate_broker_economics(
+            (), broker_profile_fingerprint=broker, symbol=symbol_norm, policy=policy
+        )
         return DemoExecutionCostLearning(
             DemoCostLearningStatus.UNCALIBRATED,
             calibration,
@@ -298,7 +270,6 @@ def learn_demo_execution_costs(
             "no reconciled Demo fills",
         )
     samples = tuple(row[0] for row in pairs)
-    reconciliations = tuple(row[1] for row in pairs)
     fingerprints = tuple(row.fingerprint for row in samples)
     if len(fingerprints) != len(set(fingerprints)):
         raise ValueError("M189 cannot learn from duplicate execution samples")
@@ -307,8 +278,7 @@ def learn_demo_execution_costs(
             raise ValueError("M189 cannot mix broker profiles or symbols")
         if sample.reconciliation_fingerprint != reconciliation.fingerprint:
             raise ValueError("M189 sample/reconciliation identity drift")
-    point_sizes = {row.point_size for row in samples}
-    if len(point_sizes) != 1:
+    if len({row.point_size for row in samples}) != 1:
         raise ValueError("M189 cannot mix point-size economics")
     observations = tuple(_to_observation(sample, reconciliation) for sample, reconciliation in pairs)
     calibration = calibrate_broker_economics(
@@ -318,12 +288,11 @@ def learn_demo_execution_costs(
         policy=policy,
     )
     if calibration.status is CalibrationStatus.CALIBRATED:
-        status = DemoCostLearningStatus.CALIBRATED
         fractions = tuple(row.fill_fraction for row in samples)
         first = tuple(row.first_fill_latency_ms for row in samples)
         last = tuple(row.last_fill_latency_ms for row in samples)
         return DemoExecutionCostLearning(
-            status,
+            DemoCostLearningStatus.CALIBRATED,
             calibration,
             tuple(sorted(fingerprints)),
             _quantile(fractions, 0.50),
@@ -333,9 +302,8 @@ def learn_demo_execution_costs(
             _quantile(last, 0.95),
             "observed Demo execution costs calibrated",
         )
-    status = DemoCostLearningStatus.INSUFFICIENT
     return DemoExecutionCostLearning(
-        status,
+        DemoCostLearningStatus.INSUFFICIENT,
         calibration,
         tuple(sorted(fingerprints)),
         None, None, None, None, None,
