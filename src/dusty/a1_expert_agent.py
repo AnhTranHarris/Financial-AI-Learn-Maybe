@@ -60,8 +60,12 @@ def _hashes(values: Iterable[str], label: str) -> tuple[str, ...]:
 
 
 def _strings(value: object, label: str, *, maximum_items: int, maximum_length: int) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > maximum_items:
-        raise ValueError(f"{label} must be an array with at most {maximum_items} items")
+    if (
+        not isinstance(value, list)
+        or len(value) > maximum_items
+        or any(not isinstance(item, str) for item in value)
+    ):
+        raise ValueError(f"{label} must be a string array with at most {maximum_items} items")
     rows = tuple(_line(item, label, maximum=maximum_length) for item in value)
     if len(rows) != len(set(rows)):
         raise ValueError(f"{label} values must be unique")
@@ -362,8 +366,10 @@ def parse_a1_expert_response(request: A1ExpertRequest, response_text: str) -> A1
     raw = json.loads(response_text)
     if not isinstance(raw, dict) or set(raw) != {"state", "rationale_codes", "hypotheses"}:
         raise ValueError("A1 expert response schema mismatch")
+    if not isinstance(raw["state"], str):
+        raise ValueError("A1 expert state must be a string")
     try:
-        state = A1ExpertState(str(raw["state"]))
+        state = A1ExpertState(raw["state"])
     except ValueError as exc:
         raise ValueError("A1 expert state invalid") from exc
     rationale = _strings(raw["rationale_codes"], "A1 rationale_codes", maximum_items=12, maximum_length=96)
@@ -374,9 +380,12 @@ def parse_a1_expert_response(request: A1ExpertRequest, response_text: str) -> A1
         raise ValueError("A1 hypotheses must be a bounded array")
     hypotheses: list[A1Hypothesis] = []
     expected = {"hypothesis_key", "statement", "falsification", "test_family", "test_plan", "cited_fingerprints"}
+    text_fields = ("hypothesis_key", "statement", "falsification", "test_family", "test_plan")
     for item in hypotheses_raw:
         if not isinstance(item, dict) or set(item) != expected:
             raise ValueError("A1 hypothesis schema mismatch")
+        if any(not isinstance(item[name], str) for name in text_fields):
+            raise ValueError("A1 hypothesis text fields must be strings")
         citations = _strings(
             item["cited_fingerprints"],
             "A1 cited_fingerprints",
@@ -387,16 +396,16 @@ def parse_a1_expert_response(request: A1ExpertRequest, response_text: str) -> A1
         if any(value not in request.allowed_citations for value in normalized):
             raise ValueError("A1 hypothesis cited evidence not supplied")
         try:
-            family = A1TestFamily(str(item["test_family"]))
+            family = A1TestFamily(item["test_family"])
         except ValueError as exc:
             raise ValueError("A1 hypothesis test family is outside A1 scope") from exc
         hypotheses.append(
             A1Hypothesis(
-                hypothesis_key=str(item["hypothesis_key"]),
-                statement=str(item["statement"]),
-                falsification=str(item["falsification"]),
+                hypothesis_key=item["hypothesis_key"],
+                statement=item["statement"],
+                falsification=item["falsification"],
                 test_family=family,
-                test_plan=str(item["test_plan"]),
+                test_plan=item["test_plan"],
                 cited_fingerprints=normalized,
             )
         )
