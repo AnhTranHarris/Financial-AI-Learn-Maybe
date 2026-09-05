@@ -1,4 +1,4 @@
-name: m135-m161-research-organism
+name: m135-m162-research-organism
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Compile M135-M161 surfaces
+      - name: Compile M135-M162 surfaces
         run: >-
           python -m py_compile
           src/dusty/integrated_research_cycle.py
@@ -38,6 +38,7 @@ jobs:
           src/dusty/strategy_family.py
           src/dusty/research_loop_governor.py
           src/dusty/native_mt5_executor.py
+          src/dusty/resource_governor.py
           tests/test_m135_integrated_research_cycle.py
           tests/test_m136_m154_research_organism.py
           tests/test_m1541_hardware_certification.py
@@ -53,6 +54,7 @@ jobs:
           tests/test_m161_native_mt5_executor.py
           tests/test_m161_mt5_set_contract.py
           tests/test_m161_hardware_contract.py
+          tests/test_m162_resource_governor.py
           tests/test_m67_tester_contract.py
           tools/smoke_m135_m154.py
           tools/smoke_m135_m154_hardware.py
@@ -106,6 +108,9 @@ jobs:
           tests.test_m161_hardware_contract
           tests.test_m67_tester_contract
           -v
+
+      - name: M162 resource-governed parallel factory gate
+        run: python -m unittest discover -s tests -p "test_m162_resource_governor.py" -v
 
       - name: M135-M154 durable runtime smoke
         shell: bash
