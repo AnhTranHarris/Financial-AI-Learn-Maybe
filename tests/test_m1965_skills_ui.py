@@ -11,6 +11,7 @@ from unittest.mock import patch
 from dusty.experience import TradeSide
 from dusty.research import Clause, RuleOp
 from dusty.source_intake import EvidenceClass, ProposalCompleteness, SourceAccess, SourceSnapshot, StrategyProposal
+from dusty.strategy_discovery import StrategyDiscoveryService
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from dusty.strategy_library_snapshot import LIBRARY_PATH_ENV, LIBRARY_SHA256_ENV, write_reconstruction_library
 from dusty.skills_ui import main
@@ -57,13 +58,18 @@ def reconstruction():
 
 
 class M1965SkillsUILauncherTests(unittest.TestCase):
-    def test_no_library_delegates_to_existing_ui_unchanged(self) -> None:
-        with patch("dusty.skills_ui.basic_ui.main", return_value=7) as delegated:
+    def test_no_library_launches_discovery_ui_with_default_service(self) -> None:
+        with TemporaryDirectory() as temp, patch(
+            "dusty.skills_ui.default_strategy_estate_path",
+            return_value=Path(temp) / "missing-estate.json",
+        ), patch("dusty.skills_ui.run_strategy_discovery_ui", return_value=7) as delegated:
             result = main(["--repository", ".", "--terminal", "C:/MT5/terminal64.exe"])
         self.assertEqual(result, 7)
-        delegated.assert_called_once_with(["--repository", ".", "--terminal", "C:/MT5/terminal64.exe"])
+        argv, discovery = delegated.call_args.args
+        self.assertEqual(argv, ["--repository", ".", "--terminal", "C:/MT5/terminal64.exe"])
+        self.assertIsInstance(discovery, StrategyDiscoveryService)
 
-    def test_library_projects_reconstruction_and_pins_worker_environment(self) -> None:
+    def test_explicit_library_projects_reconstruction_and_disables_discovery_mutation(self) -> None:
         row = reconstruction()
         old_path = os.environ.get(LIBRARY_PATH_ENV)
         old_digest = os.environ.get(LIBRARY_SHA256_ENV)
@@ -72,7 +78,8 @@ class M1965SkillsUILauncherTests(unittest.TestCase):
             digest = write_reconstruction_library(library, (row,))
             observed: dict[str, object] = {}
 
-            def fake_ui(argv):
+            def fake_ui(argv, discovery):
+                self.assertIsNone(discovery)
                 self.assertEqual(os.environ[LIBRARY_PATH_ENV], str(library.resolve()))
                 self.assertEqual(os.environ[LIBRARY_SHA256_ENV], digest)
                 index = argv.index("--catalog")
@@ -81,7 +88,7 @@ class M1965SkillsUILauncherTests(unittest.TestCase):
                 observed["argv"] = argv
                 return 11
 
-            with patch("dusty.skills_ui.basic_ui.main", side_effect=fake_ui):
+            with patch("dusty.skills_ui.run_strategy_discovery_ui", side_effect=fake_ui):
                 result = main(["--strategy-library", str(library), "--repository", "."])
         self.assertEqual(result, 11)
         ids = {entry["strategy_id"] for entry in observed["catalog"]}
