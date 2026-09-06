@@ -20,7 +20,7 @@ from dusty.research import Clause, RuleOp
 from dusty.source_intake import EvidenceClass, ProposalCompleteness, SourceAccess, SourceSnapshot, StrategyProposal
 from dusty.strategy_estate import load_strategy_estate, register_reconstruction
 from dusty.strategy_estate_builder import EstatePopulationStatus, StrategyEstateBuilder
-from dusty.strategy_estate_cli import DEFAULT_SESSIONS, installed_model_digest
+from dusty.strategy_estate_cli import DEFAULT_SESSIONS, _missing_seed_proposals, installed_model_digest
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from dusty.strategy_seed_proposals import starter_strategy_proposals
 from dusty.strategy_taxonomy import (
@@ -154,6 +154,16 @@ class M1965StrategyEstatePopulationTests(unittest.TestCase):
         self.assertTrue(all(row.completeness is ProposalCompleteness.CONCEPT_ONLY for row in rows))
         self.assertTrue(all(row.timeframes == ("M15",) for row in rows))
         self.assertTrue(all("research_only" in row.tags for row in rows))
+
+    def test_seed_retry_skips_proposal_already_persisted_in_estate(self) -> None:
+        seed = starter_strategy_proposals()[0]
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "estate.json"
+            register_reconstruction(_reconstruction(seed), path=path)
+            missing, skipped = _missing_seed_proposals(path)
+        self.assertEqual(skipped, 1)
+        self.assertEqual(len(missing), 5)
+        self.assertNotIn(seed.fingerprint, {row.fingerprint for row in missing})
 
     def test_sub_m5_proposal_is_rejected_without_calling_ollama(self) -> None:
         reconstructor = _Reconstructor()
