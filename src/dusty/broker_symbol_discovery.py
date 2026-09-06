@@ -38,6 +38,11 @@ MAX_SYMBOL_WEB_QUERIES_BOTH = 2
 MAX_WEB_RESULTS_PER_SYMBOL = 3
 MAX_OLLAMA_RECONSTRUCTIONS_PER_SCAN = 2
 MAX_RESULT_TEXT = 20_000
+# MetaQuotes ENUM_SYMBOL_TRADE_MODE_FULL. Until the reconstruction request can
+# bind one-sided direction constraints, LONGONLY/SHORTONLY are excluded rather
+# than allowing Ollama to hypothesize an inexpressible direction. CLOSEONLY and
+# DISABLED are never research candidates for a new-entry strategy.
+FULL_TRADE_MODE = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,11 +115,14 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
         self._application = application
 
     def broker_symbol_universe(self) -> tuple[str, ...]:
-        """Return exact broker symbols when connected, else the conservative fallback.
+        """Return exact fully-tradable broker symbols, else a disconnected fallback.
 
-        Discovery excludes custom/disabled or economically empty symbols, but it
-        does not call symbol_select(), subscribe to market depth, or mutate Market
-        Watch. The LocalDustyApplication snapshot was already obtained read-only.
+        Discovery excludes custom, disabled, close-only and one-sided symbols,
+        plus economically empty rows. It does not call symbol_select(), subscribe
+        to market depth, or mutate Market Watch. The LocalDustyApplication snapshot
+        was already obtained read-only. A connected broker inventory that contains
+        no eligible full-trade symbol fails closed instead of silently falling back
+        to symbols that were not verified against that terminal.
         """
 
         if self._application is None:
@@ -124,6 +132,8 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
             options = tuple(getattr(view, "symbols", ()) or ())
         except Exception:
             return _normalize_symbols(self.config.allowed_symbols)
+        if not options:
+            return _normalize_symbols(self.config.allowed_symbols)
 
         selected: list[str] = []
         seen: set[str] = set()
@@ -131,7 +141,7 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
             try:
                 if bool(getattr(row, "custom", False)):
                     continue
-                if int(getattr(row, "trade_mode", 0)) == 0:
+                if int(getattr(row, "trade_mode", 0)) != FULL_TRADE_MODE:
                     continue
                 if float(getattr(row, "tick_size", 0.0)) <= 0.0:
                     continue
@@ -147,7 +157,9 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
             selected.append(symbol)
             if len(selected) >= MAX_BROKER_SYMBOLS:
                 break
-        return tuple(selected) if selected else _normalize_symbols(self.config.allowed_symbols)
+        if not selected:
+            raise ValueError("connected broker inventory has no eligible full-trade research symbols")
+        return tuple(selected)
 
     def discover(
         self,
