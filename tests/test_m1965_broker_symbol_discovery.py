@@ -188,7 +188,7 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             digest_resolver=lambda _tag: H("d"),
         )
 
-    def test_broker_inventory_filters_custom_disabled_and_invalid_symbols(self) -> None:
+    def test_broker_inventory_requires_full_trade_and_valid_economics(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             service = self.service(root, FakeContractor(), FakeBuilder())
@@ -198,6 +198,9 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
                         option("EURUSD"),
                         option("XAUUSD", custom=True),
                         option("NASUSD", trade_mode=0),
+                        option("LONGONLY", trade_mode=1),
+                        option("SHORTONLY", trade_mode=2),
+                        option("CLOSEONLY", trade_mode=3),
                         option("GBPUSD", tick_size=0.0),
                         option("USDJPY", volume_min=0.0),
                         option("AUDUSD"),
@@ -205,6 +208,16 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
                 )
             )
             self.assertEqual(service.broker_symbol_universe(), ("EURUSD", "AUDUSD"))
+
+    def test_connected_inventory_without_full_trade_symbol_fails_closed(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            service = self.service(root, FakeContractor(), FakeBuilder())
+            service.bind_application(
+                FakeApplication((option("CLOSEONLY", trade_mode=3), option("DISABLED", trade_mode=0)))
+            )
+            with self.assertRaisesRegex(ValueError, "no eligible full-trade"):
+                service.broker_symbol_universe()
 
     def test_new_strategy_scan_rotates_broker_symbols_and_uses_one_exact_ollama_target(self) -> None:
         with TemporaryDirectory() as temp:
