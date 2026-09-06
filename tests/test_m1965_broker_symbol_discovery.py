@@ -219,7 +219,7 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no eligible full-trade"):
                 service.broker_symbol_universe()
 
-    def test_new_strategy_scan_rotates_broker_symbols_and_uses_one_exact_ollama_target(self) -> None:
+    def test_new_strategy_scan_rotates_without_duplicate_symbol_searches_inside_cycle(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             contractor = FakeContractor()
@@ -245,8 +245,9 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             second = service.discover(DiscoveryMode.NEW_STRATEGIES, now=NOW)
             summary = service.last_symbol_summary
             assert summary is not None
-            self.assertEqual(summary.symbols_scanned, ("GBPUSD", "EURUSD", "XAUUSD"))
+            self.assertEqual(summary.symbols_scanned, ("GBPUSD",))
             self.assertEqual(summary.reconstruction_target, "GBPUSD")
+            self.assertEqual(summary.web_queries_completed, 1)
             self.assertEqual(builder.calls[1][1]["allowed_symbols"], ("GBPUSD",))
 
             symbol_queries = [
@@ -254,7 +255,16 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
                 for tool, args in contractor.calls
                 if tool == "web_search" and args["query"].split()[0] in {"EURUSD", "XAUUSD", "NASUSD", "GBPUSD"}
             ]
-            self.assertEqual(len(symbol_queries), 6)
+            self.assertEqual(len(symbol_queries), 4)
+            self.assertEqual(
+                {query.split()[0] for query in symbol_queries},
+                {"EURUSD", "XAUUSD", "NASUSD", "GBPUSD"},
+            )
+
+            third = service.discover(DiscoveryMode.NEW_STRATEGIES, now=NOW)
+            summary = service.last_symbol_summary
+            assert summary is not None
+            self.assertEqual(summary.symbols_scanned, ("EURUSD", "XAUUSD", "NASUSD"))
 
     def test_both_mode_caps_total_web_searches_and_keeps_website_leads_outside_ollama(self) -> None:
         with TemporaryDirectory() as temp:
