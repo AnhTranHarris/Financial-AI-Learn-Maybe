@@ -227,10 +227,15 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
             return ()
         digest = _universe_sha(universe)
         state = _load_scan_state(self._symbol_state_path, digest)
-        count = min(limit, len(universe))
-        start = state.cursor % len(universe)
-        batch = tuple(universe[(start + offset) % len(universe)] for offset in range(count))
-        next_cursor = (start + count) % len(universe)
+        start = state.cursor
+        if start >= len(universe):
+            start = 0
+        # Do not wrap inside one batch. This means each broker symbol is scouted
+        # at most once per rotation cycle even when the batch size does not divide
+        # the universe size (for example 4 symbols with a batch size of 3).
+        stop = min(start + limit, len(universe))
+        batch = universe[start:stop]
+        next_cursor = 0 if stop >= len(universe) else stop
         _write_scan_state(
             self._symbol_state_path,
             BrokerSymbolScanState(digest, next_cursor, batch),
