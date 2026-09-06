@@ -19,6 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable
 
+from .broker_symbol_discovery import BrokerAwareStrategyDiscoveryService
 from .strategy_catalog import StrategyCatalogEntry
 from .strategy_discovery import StrategyDiscoveryConfig, StrategyDiscoveryService
 from .strategy_discovery_ui import run_strategy_discovery_ui
@@ -79,7 +80,9 @@ def _discovery_service(
     if explicit_library is not None or no_estate:
         return None
     destination = estate_path.resolve() if estate_path is not None else default_strategy_estate_path()
-    return StrategyDiscoveryService(StrategyDiscoveryConfig.default(estate_path=destination))
+    return BrokerAwareStrategyDiscoveryService(
+        StrategyDiscoveryConfig.default(estate_path=destination)
+    )
 
 
 
