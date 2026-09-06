@@ -3,11 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 from dusty.experience import TradeSide
 from dusty.ollama_strategy_classifier import (
@@ -20,7 +18,6 @@ from dusty.research import Clause, RuleOp
 from dusty.source_intake import EvidenceClass, ProposalCompleteness, SourceAccess, SourceSnapshot, StrategyProposal
 from dusty.strategy_estate import default_strategy_estate_path, load_strategy_estate, register_reconstruction
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
-from dusty.strategy_library_snapshot import write_reconstruction_library
 from dusty.strategy_taxonomy import (
     QuantStrategyIdentity,
     StrategyArchetype,
@@ -96,13 +93,13 @@ def classified(row, identity: QuantStrategyIdentity):
 
 class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
     def test_legacy_breakout_gets_quant_title_not_source_marketing_title(self) -> None:
-        title = quant_title_for_reconstruction(reconstruction(title="BEST PROFIT EA 9000"))
+        title = quant_title_for_reconstruction(reconstruction(title="BEST PROFIT EA 9000 breakout"))
         self.assertEqual(title, "Price-Structure Breakout · EURUSD · M15 · Long")
         self.assertNotIn("BEST", title)
 
     def test_fibonacci_asia_to_london_ny_title_is_deterministic(self) -> None:
         row = classified(
-            reconstruction(),
+            reconstruction(title="Fibonacci Asian session to London/New York continuation"),
             QuantStrategyIdentity(
                 StrategyArchetype.SESSION_HANDOFF,
                 StrategyCatalyst.SESSION_OPEN,
@@ -117,7 +114,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
 
     def test_tech_news_and_sec_runner_titles_are_quant_titles(self) -> None:
         tech = classified(
-            reconstruction(strategy_id="tech-v1"),
+            reconstruction(strategy_id="tech-v1", title="technology news volatility breakout"),
             QuantStrategyIdentity(
                 StrategyArchetype.BREAKOUT,
                 StrategyCatalyst.TECH_NEWS,
@@ -125,7 +122,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
             ),
         )
         sec = classified(
-            reconstruction(strategy_id="sec-v1"),
+            reconstruction(strategy_id="sec-v1", title="SEC filing momentum runner"),
             QuantStrategyIdentity(
                 StrategyArchetype.CATALYST_RUNNER,
                 StrategyCatalyst.SEC_FILING,
@@ -175,7 +172,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
 
     def test_estate_rejects_same_strategy_id_with_different_identity(self) -> None:
         row = reconstruction()
-        other = reconstruction(strategy_id=row.candidate_spec.strategy_id, title="different source title")
+        other = reconstruction(strategy_id=row.candidate_spec.strategy_id, title="different source breakout title")
         with TemporaryDirectory() as temp:
             path = Path(temp) / "estate.json"
             register_reconstruction(row, path=path)
@@ -187,9 +184,6 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             path = Path(temp) / "estate.json"
             register_reconstruction(row, path=path)
-            path.write_bytes(path.read_bytes() + b" ")
-            # load_strategy_estate computes the digest of current bytes; strict
-            # schema/fingerprint validation still prevents attacker-added data.
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["unexpected"] = True
             path.write_text(json.dumps(payload), encoding="utf-8")
@@ -199,7 +193,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
     def test_classifier_revalidates_schema_and_rejects_marketing_title_field(self) -> None:
         def transport(method, url, payload, timeout):
             if method == "GET":
-                return {"models": [{"name": "qwen-test", "digest": H("c")} ]}
+                return {"models": [{"name": "qwen-test", "digest": H("c")}]}
             return {"message": {"content": json.dumps({
                 "archetype": "breakout",
                 "catalyst": "none",
@@ -214,10 +208,38 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
         self.assertEqual(result.status, ClassificationAvailability.UNAVAILABLE)
         self.assertIn("schema mismatch", result.error)
 
+    def test_classifier_rejects_unsupported_sec_or_session_claim(self) -> None:
+        responses = (
+            {
+                "archetype": "catalyst_runner",
+                "catalyst": "sec_filing",
+                "structure": "momentum",
+                "session_profile": "unrestricted",
+            },
+            {
+                "archetype": "session_handoff",
+                "catalyst": "session_open",
+                "structure": "compression",
+                "session_profile": "asia_to_london_ny",
+            },
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                def transport(method, url, payload, timeout, response=response):
+                    if method == "GET":
+                        return {"models": [{"name": "qwen-test", "digest": H("c")}]}
+                    return {"message": {"content": json.dumps(response)}}
+
+                result = OllamaStrategyClassifier(transport=transport).classify(
+                    reconstruction(), model_tag="qwen-test", model_digest=H("c")
+                )
+                self.assertEqual(result.status, ClassificationAvailability.UNAVAILABLE)
+                self.assertIn("evidence support", result.error)
+
     def test_classifier_valid_enums_attach_provenance_and_render_title(self) -> None:
         def transport(method, url, payload, timeout):
             if method == "GET":
-                return {"models": [{"model": "qwen-test", "digest": H("c")} ]}
+                return {"models": [{"model": "qwen-test", "digest": H("c")}]}
             return {"message": {"content": json.dumps({
                 "archetype": "session_handoff",
                 "catalyst": "session_open",
@@ -225,11 +247,12 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
                 "session_profile": "asia_to_london_ny",
             })}}
 
+        source = reconstruction(title="Asian compression session handoff to London/New York")
         result = OllamaStrategyClassifier(transport=transport).classify(
-            reconstruction(), model_tag="qwen-test", model_digest=H("c")
+            source, model_tag="qwen-test", model_digest=H("c")
         )
-        self.assertTrue(result.available)
-        attached = attach_quant_identity(reconstruction(), result.classification)
+        self.assertTrue(result.available, result.error)
+        attached = attach_quant_identity(source, result.classification)
         self.assertEqual(
             quant_title_for_reconstruction(attached),
             "Asian Compression → London/NY Expansion · EURUSD · M15 · Long",
@@ -240,7 +263,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
 
     def test_classifier_model_digest_mismatch_is_unavailable(self) -> None:
         def transport(method, url, payload, timeout):
-            return {"models": [{"name": "qwen-test", "digest": H("d")} ]}
+            return {"models": [{"name": "qwen-test", "digest": H("d")}]}
 
         result = OllamaStrategyClassifier(transport=transport).classify(
             reconstruction(), model_tag="qwen-test", model_digest=H("c")
