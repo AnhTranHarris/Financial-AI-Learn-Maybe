@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
-from dusty.broker_symbol_discovery import BrokerAwareStrategyDiscoveryService
+from dusty.broker_symbol_discovery import (
+    BrokerAwareStrategyDiscoveryService,
+    TARGET_TAG_PREFIX,
+    _target_proposal,
+)
+from dusty.source_intake import proposals_from_vibe
 from dusty.strategy_discovery import (
     DiscoveryMode,
     DiscoveryStatus,
@@ -219,6 +226,29 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no eligible full-trade"):
                 service.broker_symbol_universe()
 
+    def test_generic_source_hypothesis_is_derived_per_symbol_without_rewriting_source_rules(self) -> None:
+        evidence = catalog_result().evidence
+        assert evidence is not None
+        proposal = proposals_from_vibe(evidence)[0]
+        eur = _target_proposal(proposal, "EURUSD")
+        gbp = _target_proposal(proposal, "GBPUSD")
+        assert eur is not None and gbp is not None
+
+        self.assertEqual(eur.symbols, ("EURUSD",))
+        self.assertEqual(gbp.symbols, ("GBPUSD",))
+        self.assertIn(TARGET_TAG_PREFIX + "EURUSD", eur.tags)
+        self.assertIn(TARGET_TAG_PREFIX + "GBPUSD", gbp.tags)
+        self.assertNotEqual(eur.proposal_id, gbp.proposal_id)
+        self.assertNotEqual(eur.fingerprint, gbp.fingerprint)
+        self.assertEqual(eur.snapshot, proposal.snapshot)
+        self.assertEqual(gbp.snapshot, proposal.snapshot)
+        self.assertEqual(eur.declared_rules, proposal.declared_rules)
+        self.assertEqual(gbp.declared_rules, proposal.declared_rules)
+
+        explicitly_eurusd = replace(proposal, symbols=("EURUSD",))
+        self.assertIsNone(_target_proposal(explicitly_eurusd, "GBPUSD"))
+        self.assertEqual(_target_proposal(eur, "EURUSD"), eur)
+
     def test_new_strategy_scan_rotates_without_duplicate_symbol_searches_inside_cycle(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -241,6 +271,10 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             self.assertEqual(summary.web_queries_completed, 3)
             self.assertEqual(builder.calls[0][1]["allowed_symbols"], ("EURUSD",))
             self.assertLessEqual(len(builder.calls[0][0]), 2)
+            eur_rows = builder.calls[0][0]
+            self.assertTrue(eur_rows)
+            self.assertTrue(all(row.symbols == ("EURUSD",) for row in eur_rows))
+            self.assertTrue(all(TARGET_TAG_PREFIX + "EURUSD" in row.tags for row in eur_rows))
 
             second = service.discover(DiscoveryMode.NEW_STRATEGIES, now=NOW)
             summary = service.last_symbol_summary
@@ -249,6 +283,11 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             self.assertEqual(summary.reconstruction_target, "GBPUSD")
             self.assertEqual(summary.web_queries_completed, 1)
             self.assertEqual(builder.calls[1][1]["allowed_symbols"], ("GBPUSD",))
+            gbp_rows = builder.calls[1][0]
+            self.assertTrue(gbp_rows)
+            self.assertTrue(all(row.symbols == ("GBPUSD",) for row in gbp_rows))
+            self.assertTrue(all(TARGET_TAG_PREFIX + "GBPUSD" in row.tags for row in gbp_rows))
+            self.assertNotEqual(eur_rows[0].fingerprint, gbp_rows[0].fingerprint)
 
             symbol_queries = [
                 args["query"]
@@ -265,6 +304,31 @@ class M1965BrokerSymbolDiscoveryTests(unittest.TestCase):
             summary = service.last_symbol_summary
             assert summary is not None
             self.assertEqual(summary.symbols_scanned, ("EURUSD", "XAUUSD", "NASUSD"))
+
+    def test_existing_targeted_proposals_are_skipped_before_ollama_builder(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            contractor = FakeContractor()
+            builder = FakeBuilder()
+            service = self.service(root, contractor, builder)
+            service.bind_application(FakeApplication((option("EURUSD"),)))
+
+            evidence = catalog_result().evidence
+            assert evidence is not None
+            generic = proposals_from_vibe(evidence)
+            targeted = tuple(_target_proposal(row, "EURUSD") for row in generic)
+            represented = tuple(
+                SimpleNamespace(proposal_fingerprint=row.fingerprint)
+                for row in targeted
+                if row is not None
+            )
+
+            with patch("dusty.broker_symbol_discovery.load_strategy_estate", return_value=represented):
+                result = service.discover(DiscoveryMode.NEW_STRATEGIES, now=NOW)
+
+            self.assertEqual(result.new_single_symbol_candidates, 0)
+            self.assertEqual(result.added_to_estate, 0)
+            self.assertFalse(builder.calls)
 
     def test_both_mode_caps_total_web_searches_and_keeps_website_leads_outside_ollama(self) -> None:
         with TemporaryDirectory() as temp:
