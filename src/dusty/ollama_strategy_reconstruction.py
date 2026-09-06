@@ -37,7 +37,11 @@ from .trading_skills import (
 
 
 KEEP_ALIVE = "10m"
-NUM_PREDICT = 768
+# The user's certified qwen3:1.7b workstation can be CPU-bound. A bounded 4096
+# context and shorter generation ceiling keep structured reconstruction inside a
+# practical wall-clock budget without relaxing any post-parse validation.
+NUM_CTX = 4096
+NUM_PREDICT = 384
 
 
 def _canonical(value: object) -> str:
@@ -187,7 +191,7 @@ class OllamaStrategyReconstructor:
         self,
         *,
         base_url: str = "http://127.0.0.1:11434",
-        timeout_seconds: float = 180.0,
+        timeout_seconds: float = 240.0,
         transport: Transport = _urllib_transport,
     ) -> None:
         parsed = urlparse(base_url)
@@ -227,7 +231,11 @@ class OllamaStrategyReconstructor:
                     "think": False,
                     "format": schema,
                     "keep_alive": KEEP_ALIVE,
-                    "options": {"temperature": 0, "num_predict": NUM_PREDICT},
+                    "options": {
+                        "temperature": 0,
+                        "num_ctx": NUM_CTX,
+                        "num_predict": NUM_PREDICT,
+                    },
                 },
                 self.timeout_seconds,
             )
