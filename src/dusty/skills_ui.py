@@ -87,7 +87,10 @@ def main(argv: list[str] | None = None) -> int:
             library = estate
 
     if library is None:
-        return basic_ui.main(raw)
+        # Wrapper-only flags must not leak into the legacy UI parser.  With no
+        # special flag present, ``remaining`` is exactly the caller's original
+        # basic-UI argument list, preserving the pre-estate behavior.
+        return basic_ui.main(remaining)
     if _has_catalog_argument(remaining):
         parser.error("strategy snapshots and --catalog are mutually exclusive")
 
