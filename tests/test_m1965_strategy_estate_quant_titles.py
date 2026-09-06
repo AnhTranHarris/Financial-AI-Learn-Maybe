@@ -236,6 +236,36 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
                 self.assertEqual(result.status, ClassificationAvailability.UNAVAILABLE)
                 self.assertIn("evidence support", result.error)
 
+    def test_classifier_schema_removes_unsupported_special_labels_before_model_call(self) -> None:
+        payloads = []
+
+        def transport(method, url, payload, timeout):
+            if method == "GET":
+                return {"models": [{"name": "qwen-test", "digest": H("c")}]}
+            payloads.append(payload)
+            return {"message": {"content": json.dumps({
+                "archetype": "session_handoff",
+                "catalyst": "session_open",
+                "structure": "compression",
+                "session_profile": "asia_to_london_ny",
+            })}}
+
+        source = reconstruction(title="Asian compression session handoff to London/New York")
+        result = OllamaStrategyClassifier(transport=transport).classify(
+            source, model_tag="qwen-test", model_digest=H("c")
+        )
+        self.assertTrue(result.available, result.error)
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertNotIn("macro_news", payload["format"]["properties"]["catalyst"]["enum"])
+        self.assertNotIn("sec_filing", payload["format"]["properties"]["catalyst"]["enum"])
+        self.assertIn("session_open", payload["format"]["properties"]["catalyst"]["enum"])
+        user_payload = json.loads(payload["messages"][1]["content"])
+        self.assertEqual(
+            user_payload["taxonomy"]["catalyst"],
+            payload["format"]["properties"]["catalyst"]["enum"],
+        )
+
     def test_classifier_valid_enums_attach_provenance_and_render_title(self) -> None:
         def transport(method, url, payload, timeout):
             if method == "GET":
