@@ -5,6 +5,8 @@ import json
 import unittest
 
 from dusty.ollama_strategy_reconstruction import (
+    NUM_CTX,
+    NUM_PREDICT,
     OllamaReconstructionRequest,
     OllamaStrategyReconstructor,
     ReconstructionAvailability,
@@ -114,6 +116,22 @@ class M1965OllamaReconstructionTests(unittest.TestCase):
         self.assertEqual(row.candidate_spec.strategy_id.split("-")[0:2], ["ollama", "recon"])
         self.assertFalse(adapter.broker_write_authority)
         self.assertFalse(adapter.promotion_authority)
+
+    def test_workstation_profile_bounds_context_generation_and_timeout(self) -> None:
+        transport = FakeTransport(valid_response())
+        result = OllamaStrategyReconstructor(transport=transport).reconstruct(request(), created_at=NOW)
+        self.assertTrue(result.available, result.error)
+        post = next(call for call in transport.calls if call[0] == "POST")
+        payload = post[2]
+        self.assertEqual(post[3], 240.0)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["options"]["num_ctx"], NUM_CTX)
+        self.assertEqual(payload["options"]["num_predict"], NUM_PREDICT)
+        self.assertEqual(NUM_CTX, 4096)
+        self.assertEqual(NUM_PREDICT, 384)
+        self.assertFalse(payload["think"])
+        self.assertFalse(payload["stream"])
 
     def test_prompt_excludes_marketing_performance_claims(self) -> None:
         transport = FakeTransport(valid_response())
