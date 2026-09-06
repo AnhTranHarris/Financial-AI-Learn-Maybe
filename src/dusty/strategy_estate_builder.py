@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Populate the persistent Strategy Estate from already-governed proposals.
 
-Source acquisition remains owned by source_intake/Vibe/manual review.  This
-service starts only after a StrategyProposal exists.  It reconstructs one bounded
+Source acquisition remains owned by source_intake/Vibe/manual review. This
+service starts only after a StrategyProposal exists. It reconstructs one bounded
 candidate with the existing Ollama adapter, obtains a bounded quant taxonomy
 classification, and atomically registers successful immutable reconstructions.
 No result can promote a Champion, unlock Demo/Live, size risk, or send an order.
@@ -85,13 +85,16 @@ class StrategyEstateBuilder:
         estate_path: str | Path | None = None,
         created_at: datetime | None = None,
     ) -> EstatePopulationResult:
-        now = (created_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if now.tzinfo is None or now.utcoffset() is None:
+        chosen_time = created_at or datetime.now(timezone.utc)
+        if chosen_time.tzinfo is None or chosen_time.utcoffset() is None:
             raise ValueError("strategy estate population time must be timezone-aware")
+        now = chosen_time.astimezone(timezone.utc)
 
         universe_symbols = tuple(dict.fromkeys(value.strip().upper() for value in allowed_symbols if value.strip()))
         universe_timeframes = tuple(dict.fromkeys(value.strip().upper() for value in allowed_timeframes if value.strip()))
-        if not universe_symbols or not universe_timeframes or not allowed_features:
+        features = tuple(dict.fromkeys(value.strip() for value in allowed_features if value.strip()))
+        sessions = tuple(dict.fromkeys(value.strip().upper() for value in allowed_sessions if value.strip()))
+        if not universe_symbols or not universe_timeframes or not features:
             raise ValueError("strategy estate builder requires symbol, timeframe, and feature universes")
 
         successful: list[StrategyReconstruction] = []
@@ -129,8 +132,8 @@ class StrategyEstateBuilder:
                 model_digest=model_digest,
                 allowed_symbols=symbols,
                 allowed_timeframes=timeframes,
-                allowed_features=allowed_features,
-                allowed_sessions=allowed_sessions,
+                allowed_features=features,
+                allowed_sessions=sessions,
             )
             reconstructed = self.reconstructor.reconstruct(request, created_at=now)
             if not reconstructed.available or reconstructed.reconstruction is None:
