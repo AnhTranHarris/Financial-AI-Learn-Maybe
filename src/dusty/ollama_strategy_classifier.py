@@ -117,7 +117,8 @@ class OllamaStrategyClassifier:
             expected = _sha(model_digest, "classifier model digest")
             if self._model_digest(model_tag) != expected:
                 return self._unavailable("ollama_classifier_model_digest_mismatch")
-            schema = _response_schema()
+            taxonomy = _supported_taxonomy(reconstruction)
+            schema = _response_schema(taxonomy)
             response = self._transport(
                 "POST",
                 f"{self.base_url}/api/chat",
@@ -130,10 +131,18 @@ class OllamaStrategyClassifier:
                                 "Classify one trading research hypothesis into Dusty Dragon's bounded quant taxonomy. "
                                 "Return only the required JSON enums. Do not create a marketing title, claim profitability, "
                                 "infer hidden source authorship, alter strategy rules, or grant any trading authority. "
-                                "Named catalysts, Fibonacci structure, and geographic/session handoffs must be explicit in the supplied evidence."
+                                "The supplied taxonomy has already removed named catalysts, Fibonacci structure, and "
+                                "geographic/session handoffs that lack explicit evidence. Use only the supplied values."
                             ),
                         },
-                        {"role": "user", "content": json.dumps(_prompt(reconstruction), sort_keys=True, separators=(",", ":"))},
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                _prompt(reconstruction, taxonomy),
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                        },
                     ],
                     "stream": False,
                     "think": False,
@@ -150,7 +159,7 @@ class OllamaStrategyClassifier:
                 return self._unavailable("ollama_strategy_classification_missing_content")
             raw_text = message["content"]
             raw_sha = sha256(raw_text.encode("utf-8")).hexdigest()
-            identity = _parse(raw_text)
+            identity = _parse(raw_text, taxonomy)
             validate_quant_identity_support(reconstruction, identity)
             return QuantStrategyClassificationResult(
                 ClassificationAvailability.AVAILABLE,
@@ -196,7 +205,93 @@ def _sha(value: object, label: str) -> str:
     return rendered
 
 
-def _prompt(row: StrategyReconstruction) -> dict[str, object]:
+def _supported(value: QuantStrategyIdentity, reconstruction: StrategyReconstruction) -> bool:
+    try:
+        validate_quant_identity_support(reconstruction, value)
+    except ValueError:
+        return False
+    return True
+
+
+def _supported_taxonomy(row: StrategyReconstruction) -> dict[str, tuple[str, ...]]:
+    catalysts = tuple(
+        value.value
+        for value in StrategyCatalyst
+        if _supported(
+            QuantStrategyIdentity(
+                StrategyArchetype.BREAKOUT,
+                value,
+                StrategyStructure.PRICE_ACTION,
+                StrategySessionProfile.UNRESTRICTED,
+            ),
+            row,
+        )
+    )
+    structures = tuple(
+        value.value
+        for value in StrategyStructure
+        if _supported(
+            QuantStrategyIdentity(
+                StrategyArchetype.BREAKOUT,
+                StrategyCatalyst.NONE,
+                value,
+                StrategySessionProfile.UNRESTRICTED,
+            ),
+            row,
+        )
+    )
+    sessions = tuple(
+        value.value
+        for value in StrategySessionProfile
+        if _supported(
+            QuantStrategyIdentity(
+                StrategyArchetype.BREAKOUT,
+                StrategyCatalyst.NONE,
+                StrategyStructure.PRICE_ACTION,
+                value,
+            ),
+            row,
+        )
+    )
+
+    non_none_catalyst = next(
+        (StrategyCatalyst(value) for value in catalysts if value != StrategyCatalyst.NONE.value),
+        StrategyCatalyst.NONE,
+    )
+    non_unrestricted_session = next(
+        (
+            StrategySessionProfile(value)
+            for value in sessions
+            if value != StrategySessionProfile.UNRESTRICTED.value
+        ),
+        StrategySessionProfile.UNRESTRICTED,
+    )
+    archetypes = tuple(
+        value.value
+        for value in StrategyArchetype
+        if _supported(
+            QuantStrategyIdentity(
+                value,
+                non_none_catalyst if value is StrategyArchetype.CATALYST_RUNNER else StrategyCatalyst.NONE,
+                StrategyStructure.PRICE_ACTION,
+                non_unrestricted_session
+                if value is StrategyArchetype.SESSION_HANDOFF
+                else StrategySessionProfile.UNRESTRICTED,
+            ),
+            row,
+        )
+    )
+    if not archetypes or not catalysts or not structures or not sessions:
+        raise ValueError("deterministic quant taxonomy unexpectedly became empty")
+    return {
+        "archetype": archetypes,
+        "catalyst": catalysts,
+        "structure": structures,
+        "session_profile": sessions,
+    }
+
+
+def _prompt(row: StrategyReconstruction, taxonomy: dict[str, tuple[str, ...]]) -> dict[str, object]:
     return {
         "protocol": "dusty-m1965-quant-strategy-classification-v1",
         "source_title": row.title,
@@ -206,39 +301,49 @@ def _prompt(row: StrategyReconstruction) -> dict[str, object]:
         "session_filters": row.candidate_spec.session_filters,
         "rules": [(rule.name, rule.value, rule.basis.value) for rule in row.rules],
         "unresolved_source_rules": row.unresolved_source_rules,
-        "taxonomy": {
-            "archetype": [value.value for value in StrategyArchetype],
-            "catalyst": [value.value for value in StrategyCatalyst],
-            "structure": [value.value for value in StrategyStructure],
-            "session_profile": [value.value for value in StrategySessionProfile],
-        },
+        "taxonomy": {key: list(values) for key, values in taxonomy.items()},
     }
 
 
-def _response_schema() -> dict[str, object]:
+def _response_schema(taxonomy: dict[str, tuple[str, ...]]) -> dict[str, object]:
     return {
         "type": "object",
         "properties": {
-            "archetype": {"type": "string", "enum": [value.value for value in StrategyArchetype]},
-            "catalyst": {"type": "string", "enum": [value.value for value in StrategyCatalyst]},
-            "structure": {"type": "string", "enum": [value.value for value in StrategyStructure]},
-            "session_profile": {"type": "string", "enum": [value.value for value in StrategySessionProfile]},
+            "archetype": {"type": "string", "enum": list(taxonomy["archetype"])},
+            "catalyst": {"type": "string", "enum": list(taxonomy["catalyst"])},
+            "structure": {"type": "string", "enum": list(taxonomy["structure"])},
+            "session_profile": {"type": "string", "enum": list(taxonomy["session_profile"])},
         },
         "required": ["archetype", "catalyst", "structure", "session_profile"],
         "additionalProperties": False,
     }
 
 
-def _parse(text: str) -> QuantStrategyIdentity:
+def _parse(text: str, taxonomy: dict[str, tuple[str, ...]]) -> QuantStrategyIdentity:
     raw = json.loads(text)
     expected = {"archetype", "catalyst", "structure", "session_profile"}
     if not isinstance(raw, dict) or set(raw) != expected:
         raise ValueError("Ollama strategy classification schema mismatch")
+
+    rendered = {
+        key: _one_line(raw[key], key, 64)
+        for key in expected
+    }
+    for key, value in rendered.items():
+        if value not in taxonomy[key]:
+            if key == "catalyst":
+                raise ValueError(f"quant strategy catalyst lacks evidence support: {value}")
+            if key == "session_profile":
+                raise ValueError(f"quant strategy session lacks evidence support: {value}")
+            if key == "structure" and value == StrategyStructure.FIBONACCI.value:
+                raise ValueError("Fibonacci quant strategy identity lacks evidence support")
+            raise ValueError(f"quant strategy {key} is outside deterministic evidence-supported taxonomy: {value}")
+
     return QuantStrategyIdentity(
-        StrategyArchetype(_one_line(raw["archetype"], "archetype", 64)),
-        StrategyCatalyst(_one_line(raw["catalyst"], "catalyst", 64)),
-        StrategyStructure(_one_line(raw["structure"], "structure", 64)),
-        StrategySessionProfile(_one_line(raw["session_profile"], "session_profile", 64)),
+        StrategyArchetype(rendered["archetype"]),
+        StrategyCatalyst(rendered["catalyst"]),
+        StrategyStructure(rendered["structure"]),
+        StrategySessionProfile(rendered["session_profile"]),
     )
 
 
