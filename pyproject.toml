@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-dusty-dragon = "dusty.basic_ui:main"
+dusty-dragon = "dusty.skills_ui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
