@@ -2,11 +2,12 @@ from __future__ import annotations
 
 """Bounded local Ollama classifier for human-facing quant strategy identity.
 
-The classifier cannot name a strategy freely.  It may only select one value from
-each Dusty-owned taxonomy enum.  The final UI title is rendered deterministically
-by ``strategy_taxonomy``.  JSON-schema enforcement is treated as advisory; every
+The classifier cannot name a strategy freely. It may only select one value from
+each Dusty-owned taxonomy enum. The final UI title is rendered deterministically
+by ``strategy_taxonomy``. JSON-schema enforcement is treated as advisory; every
 field is validated again after parsing because some Ollama backends have ignored
-structured-output constraints.
+structured-output constraints. Special catalyst/structure/session labels must
+also be supported by explicit reconstruction evidence.
 """
 
 from dataclasses import dataclass, replace
@@ -23,6 +24,7 @@ from .strategy_taxonomy import (
     StrategyCatalyst,
     StrategySessionProfile,
     StrategyStructure,
+    validate_quant_identity_support,
 )
 from .trading_skills import ReconstructionRule, ReconstructionRuleBasis, StrategyReconstruction
 
@@ -127,7 +129,8 @@ class OllamaStrategyClassifier:
                             "content": (
                                 "Classify one trading research hypothesis into Dusty Dragon's bounded quant taxonomy. "
                                 "Return only the required JSON enums. Do not create a marketing title, claim profitability, "
-                                "infer hidden source authorship, alter strategy rules, or grant any trading authority."
+                                "infer hidden source authorship, alter strategy rules, or grant any trading authority. "
+                                "Named catalysts, Fibonacci structure, and geographic/session handoffs must be explicit in the supplied evidence."
                             ),
                         },
                         {"role": "user", "content": json.dumps(_prompt(reconstruction), sort_keys=True, separators=(",", ":"))},
@@ -148,6 +151,7 @@ class OllamaStrategyClassifier:
             raw_text = message["content"]
             raw_sha = sha256(raw_text.encode("utf-8")).hexdigest()
             identity = _parse(raw_text)
+            validate_quant_identity_support(reconstruction, identity)
             return QuantStrategyClassificationResult(
                 ClassificationAvailability.AVAILABLE,
                 QuantStrategyClassification(identity, model_tag, expected, raw_sha),
@@ -244,6 +248,7 @@ def attach_quant_identity(
 ) -> StrategyReconstruction:
     """Return a new immutable reconstruction carrying classification provenance."""
 
+    validate_quant_identity_support(reconstruction, classification.identity)
     rules = tuple(rule for rule in reconstruction.rules if not rule.name.startswith("identity."))
     identity_rules = (
         ReconstructionRule("identity.archetype", classification.identity.archetype.value, ReconstructionRuleBasis.RESEARCH_HYPOTHESIS),
