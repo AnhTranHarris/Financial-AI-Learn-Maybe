@@ -11,8 +11,11 @@ their source-intake artifacts exist. No MT5 terminal or broker API is imported.
 import argparse
 from pathlib import Path
 import sys
+from urllib.parse import urlparse
 
 from .ollama_quant_reviewer import _urllib_transport
+from .ollama_strategy_classifier import OllamaStrategyClassifier
+from .ollama_strategy_reconstruction import OllamaStrategyReconstructor
 from .strategy_estate import default_strategy_estate_path, load_strategy_estate
 from .strategy_estate_builder import StrategyEstateBuilder
 from .strategy_seed_proposals import starter_strategy_proposals
@@ -32,6 +35,8 @@ DEFAULT_FEATURES = (
     "spread_points",
     "tick_volume",
 )
+# Nonempty by design: older Ollama structured-output backends can reject an
+# empty enum even though the post-parser would otherwise accept no sessions.
 DEFAULT_SESSIONS = ("ASIA", "LONDON", "NEW_YORK", "LONDON_NY_OVERLAP")
 
 
@@ -42,12 +47,29 @@ risk_override_authority = False
 guardian_override_authority = False
 
 
+def _local_ollama_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("strategy estate Ollama endpoint must be localhost HTTP")
+    return base_url.rstrip("/")
+
+
 def installed_model_digest(
     model_tag: str,
     *,
     base_url: str = "http://127.0.0.1:11434",
 ) -> str:
-    response = _urllib_transport("GET", f"{base_url.rstrip('/')}/api/tags", None, 30.0)
+    model_tag = str(model_tag).strip()
+    if not model_tag or "\n" in model_tag or "\r" in model_tag:
+        raise ValueError("Ollama model tag invalid")
+    endpoint = _local_ollama_url(base_url)
+    response = _urllib_transport("GET", f"{endpoint}/api/tags", None, 30.0)
     models = response.get("models")
     if not isinstance(models, list):
         raise ValueError("Ollama model list missing")
@@ -93,14 +115,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("select --seed-core or --list")
 
     try:
-        digest = installed_model_digest(args.model, base_url=args.ollama)
+        endpoint = _local_ollama_url(args.ollama)
+        digest = installed_model_digest(args.model, base_url=endpoint)
     except Exception as exc:
         print(f"Ollama model discovery failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
     builder = StrategyEstateBuilder(
-        reconstructor=__import__("dusty.ollama_strategy_reconstruction", fromlist=["OllamaStrategyReconstructor"]).OllamaStrategyReconstructor(base_url=args.ollama),
-        classifier=__import__("dusty.ollama_strategy_classifier", fromlist=["OllamaStrategyClassifier"]).OllamaStrategyClassifier(base_url=args.ollama),
+        reconstructor=OllamaStrategyReconstructor(base_url=endpoint),
+        classifier=OllamaStrategyClassifier(base_url=endpoint),
     )
     result = builder.populate(
         starter_strategy_proposals(),
