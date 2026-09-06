@@ -104,6 +104,17 @@ def _print_estate(path: Path) -> int:
     return 0
 
 
+def _missing_seed_proposals(path: Path):
+    existing = load_strategy_estate(path)
+    existing_proposal_fingerprints = {row.proposal_fingerprint for row in existing}
+    all_seeds = starter_strategy_proposals()
+    missing = tuple(
+        proposal for proposal in all_seeds
+        if proposal.fingerprint not in existing_proposal_fingerprints
+    )
+    return missing, len(all_seeds) - len(missing)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -113,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
         return _print_estate(estate)
     if not args.seed_core:
         parser.error("select --seed-core or --list")
+
+    proposals, skipped_existing = _missing_seed_proposals(estate)
+    if skipped_existing:
+        print(f"Existing governed seed proposals skipped: {skipped_existing}")
+    if not proposals:
+        print("All governed starter proposals are already represented in the Strategy Estate.")
+        return _print_estate(estate)
 
     try:
         endpoint = _local_ollama_url(args.ollama)
@@ -126,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         classifier=OllamaStrategyClassifier(base_url=endpoint),
     )
     result = builder.populate(
-        starter_strategy_proposals(),
+        proposals,
         model_tag=args.model,
         model_digest=digest,
         allowed_symbols=DEFAULT_SYMBOLS,
