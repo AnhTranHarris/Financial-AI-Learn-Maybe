@@ -3,9 +3,9 @@ from __future__ import annotations
 """Hash-pinned disk transport for M196.5 reconstructed research packages.
 
 The Windows research worker is spawned in a fresh Python interpreter, so an
-in-memory registry would silently diverge between the UI and worker.  This
-module transports only research reconstructions through an immutable JSON
-snapshot whose exact bytes are SHA-256 pinned in the process environment.
+in-memory registry would silently diverge between the UI and worker. This module
+transports only research reconstructions through an immutable JSON snapshot
+whose exact bytes are SHA-256 pinned in the process environment.
 
 Trading Skills are intentionally *not* deserialized here: their ACTIVE / Demo
 status must be rebuilt from M185/M194 authoritative evidence rather than trusted
@@ -15,6 +15,7 @@ from a self-described JSON file.
 from dataclasses import asdict
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -22,19 +23,8 @@ from typing import Iterable, Mapping
 
 from .experience import TradeSide
 from .research import Clause, RuleOp
-from .strategy_ir import (
-    ExecutionSensitivity,
-    ExitPlan,
-    GroupMode,
-    RuleGroup,
-    StrategySpecV2,
-)
-from .trading_skills import (
-    ReconstructionActor,
-    ReconstructionRule,
-    ReconstructionRuleBasis,
-    StrategyReconstruction,
-)
+from .strategy_ir import ExecutionSensitivity, ExitPlan, GroupMode, RuleGroup, StrategySpecV2
+from .trading_skills import ReconstructionActor, ReconstructionRule, ReconstructionRuleBasis, StrategyReconstruction
 
 
 LIBRARY_PATH_ENV = "DUSTY_RECONSTRUCTION_LIBRARY"
@@ -59,10 +49,39 @@ def _exact_keys(row: Mapping[str, object], expected: set[str], label: str) -> No
         raise ValueError(f"{label} schema mismatch missing={missing} extra={extra}")
 
 
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    return value
+
+
+def _integer(value: object, label: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{label} must be an integer")
+    return value
+
+
+def _number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{label} must be finite")
+    return result
+
+
 def _scalar(value: object, label: str) -> bool | int | float | str:
-    if not isinstance(value, (bool, int, float, str)):
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{label} numeric value must be finite")
+    if type(value) not in {bool, int, float, str}:
         raise ValueError(f"{label} must be a scalar")
     return value
+
+
+def _string_list(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{label} must be a string list")
+    return tuple(value)
 
 
 def _spec_payload(spec: StrategySpecV2) -> dict[str, object]:
@@ -72,10 +91,7 @@ def _spec_payload(spec: StrategySpecV2) -> dict[str, object]:
         "entry_groups": [
             {
                 "mode": group.mode.value,
-                "clauses": [
-                    {"feature": clause.feature, "op": clause.op.value, "value": clause.value}
-                    for clause in group.clauses
-                ],
+                "clauses": [{"feature": clause.feature, "op": clause.op.value, "value": clause.value} for clause in group.clauses],
             }
             for group in spec.entry_groups
         ],
@@ -101,12 +117,10 @@ def _spec_payload(spec: StrategySpecV2) -> dict[str, object]:
 def _spec_from_payload(value: object) -> StrategySpecV2:
     row = _required_mapping(value, "candidate_spec")
     expected = {
-        "strategy_id", "direction", "entry_groups", "exit_plan",
-        "decision_timeframe_minutes", "intended_horizon_minutes", "session_filters",
-        "event_exclusion_minutes", "cooldown_steps", "scale_in_limit",
-        "scale_out_fractions", "cost_bps", "execution_sensitivity", "is_scalping",
-        "is_hft", "martingale", "loss_recovery_sizing", "unbounded_averaging",
-        "schema_version",
+        "strategy_id", "direction", "entry_groups", "exit_plan", "decision_timeframe_minutes",
+        "intended_horizon_minutes", "session_filters", "event_exclusion_minutes", "cooldown_steps",
+        "scale_in_limit", "scale_out_fractions", "cost_bps", "execution_sensitivity", "is_scalping",
+        "is_hft", "martingale", "loss_recovery_sizing", "unbounded_averaging", "schema_version",
     }
     _exact_keys(row, expected, "candidate_spec")
     groups_raw = row["entry_groups"]
@@ -123,45 +137,50 @@ def _spec_from_payload(value: object) -> StrategySpecV2:
         for clause_raw in clauses_raw:
             clause = _required_mapping(clause_raw, "clause")
             _exact_keys(clause, {"feature", "op", "value"}, "clause")
-            clauses.append(Clause(str(clause["feature"]), RuleOp(str(clause["op"])), _scalar(clause["value"], "clause value")))
-        groups.append(RuleGroup(tuple(clauses), GroupMode(str(group["mode"]))))
+            clauses.append(Clause(
+                _string(clause["feature"], "clause feature"),
+                RuleOp(_string(clause["op"], "clause op")),
+                _scalar(clause["value"], "clause value"),
+            ))
+        groups.append(RuleGroup(tuple(clauses), GroupMode(_string(group["mode"], "entry group mode"))))
+
     exit_raw = _required_mapping(row["exit_plan"], "exit_plan")
     _exact_keys(exit_raw, {"stop_rule", "target_rule", "trailing_rule", "breakeven_rule", "max_hold_steps"}, "exit_plan")
-    filters = row["session_filters"]
-    fractions = row["scale_out_fractions"]
-    if not isinstance(filters, list) or any(not isinstance(v, str) for v in filters):
-        raise ValueError("session_filters must be strings")
-    if not isinstance(fractions, list):
+    filters = _string_list(row["session_filters"], "session_filters")
+    fractions_raw = row["scale_out_fractions"]
+    if not isinstance(fractions_raw, list):
         raise ValueError("scale_out_fractions must be a list")
+    fractions = tuple(_number(value, "scale_out fraction") for value in fractions_raw)
     for flag in ("is_scalping", "is_hft", "martingale", "loss_recovery_sizing", "unbounded_averaging"):
         if type(row[flag]) is not bool:
             raise ValueError(f"{flag} must be boolean")
+
     return StrategySpecV2(
-        strategy_id=str(row["strategy_id"]),
-        direction=TradeSide(str(row["direction"])),
+        strategy_id=_string(row["strategy_id"], "strategy_id"),
+        direction=TradeSide(_string(row["direction"], "direction")),
         entry_groups=tuple(groups),
         exit_plan=ExitPlan(
-            str(exit_raw["stop_rule"]),
-            str(exit_raw["target_rule"]),
-            str(exit_raw["trailing_rule"]),
-            str(exit_raw["breakeven_rule"]),
-            int(exit_raw["max_hold_steps"]),
+            _string(exit_raw["stop_rule"], "stop_rule"),
+            _string(exit_raw["target_rule"], "target_rule"),
+            _string(exit_raw["trailing_rule"], "trailing_rule"),
+            _string(exit_raw["breakeven_rule"], "breakeven_rule"),
+            _integer(exit_raw["max_hold_steps"], "max_hold_steps"),
         ),
-        decision_timeframe_minutes=int(row["decision_timeframe_minutes"]),
-        intended_horizon_minutes=int(row["intended_horizon_minutes"]),
-        session_filters=tuple(filters),
-        event_exclusion_minutes=int(row["event_exclusion_minutes"]),
-        cooldown_steps=int(row["cooldown_steps"]),
-        scale_in_limit=int(row["scale_in_limit"]),
-        scale_out_fractions=tuple(float(v) for v in fractions),
-        cost_bps=float(row["cost_bps"]),
-        execution_sensitivity=ExecutionSensitivity(str(row["execution_sensitivity"])),
+        decision_timeframe_minutes=_integer(row["decision_timeframe_minutes"], "decision_timeframe_minutes"),
+        intended_horizon_minutes=_integer(row["intended_horizon_minutes"], "intended_horizon_minutes"),
+        session_filters=filters,
+        event_exclusion_minutes=_integer(row["event_exclusion_minutes"], "event_exclusion_minutes"),
+        cooldown_steps=_integer(row["cooldown_steps"], "cooldown_steps"),
+        scale_in_limit=_integer(row["scale_in_limit"], "scale_in_limit"),
+        scale_out_fractions=fractions,
+        cost_bps=_number(row["cost_bps"], "cost_bps"),
+        execution_sensitivity=ExecutionSensitivity(_string(row["execution_sensitivity"], "execution_sensitivity")),
         is_scalping=row["is_scalping"],
         is_hft=row["is_hft"],
         martingale=row["martingale"],
         loss_recovery_sizing=row["loss_recovery_sizing"],
         unbounded_averaging=row["unbounded_averaging"],
-        schema_version=int(row["schema_version"]),
+        schema_version=_integer(row["schema_version"], "schema_version"),
     )
 
 
@@ -221,42 +240,44 @@ def write_reconstruction_library(path: str | Path, rows: Iterable[StrategyRecons
 def _reconstruction_from_payload(value: object) -> StrategyReconstruction:
     row = _required_mapping(value, "reconstruction")
     expected = {
-        "fingerprint", "proposal_fingerprint", "source_id", "source_url",
-        "source_content_sha256", "source_family_fingerprint", "title", "symbols",
-        "timeframe", "candidate_spec", "rules", "unresolved_source_rules", "actor",
-        "actor_fingerprint", "created_at", "schema_version",
+        "fingerprint", "proposal_fingerprint", "source_id", "source_url", "source_content_sha256",
+        "source_family_fingerprint", "title", "symbols", "timeframe", "candidate_spec", "rules",
+        "unresolved_source_rules", "actor", "actor_fingerprint", "created_at", "schema_version",
     }
     _exact_keys(row, expected, "reconstruction")
-    symbols, unresolved, rules_raw = row["symbols"], row["unresolved_source_rules"], row["rules"]
-    if not isinstance(symbols, list) or any(not isinstance(v, str) for v in symbols):
-        raise ValueError("reconstruction symbols must be strings")
-    if not isinstance(unresolved, list) or any(not isinstance(v, str) for v in unresolved):
-        raise ValueError("unresolved_source_rules must be strings")
+    symbols = _string_list(row["symbols"], "reconstruction symbols")
+    unresolved = _string_list(row["unresolved_source_rules"], "unresolved_source_rules")
+    rules_raw = row["rules"]
     if not isinstance(rules_raw, list) or not rules_raw:
         raise ValueError("reconstruction rules must be a nonempty list")
     rules = []
     for raw in rules_raw:
         rule = _required_mapping(raw, "reconstruction rule")
         _exact_keys(rule, {"name", "value", "basis"}, "reconstruction rule")
-        rules.append(ReconstructionRule(str(rule["name"]), str(rule["value"]), ReconstructionRuleBasis(str(rule["basis"]))))
+        rules.append(ReconstructionRule(
+            _string(rule["name"], "reconstruction rule name"),
+            _string(rule["value"], "reconstruction rule value"),
+            ReconstructionRuleBasis(_string(rule["basis"], "reconstruction rule basis")),
+        ))
     result = StrategyReconstruction(
-        str(row["proposal_fingerprint"]),
-        str(row["source_id"]),
-        str(row["source_url"]),
-        str(row["source_content_sha256"]),
-        str(row["source_family_fingerprint"]),
-        str(row["title"]),
-        tuple(symbols),
-        str(row["timeframe"]),
+        _string(row["proposal_fingerprint"], "proposal_fingerprint"),
+        _string(row["source_id"], "source_id"),
+        _string(row["source_url"], "source_url"),
+        _string(row["source_content_sha256"], "source_content_sha256"),
+        _string(row["source_family_fingerprint"], "source_family_fingerprint"),
+        _string(row["title"], "title"),
+        symbols,
+        _string(row["timeframe"], "timeframe"),
         _spec_from_payload(row["candidate_spec"]),
         tuple(rules),
-        tuple(unresolved),
-        ReconstructionActor(str(row["actor"])),
-        str(row["actor_fingerprint"]),
-        datetime_from_iso(str(row["created_at"])),
-        int(row["schema_version"]),
+        unresolved,
+        ReconstructionActor(_string(row["actor"], "actor")),
+        _string(row["actor_fingerprint"], "actor_fingerprint"),
+        datetime_from_iso(_string(row["created_at"], "created_at")),
+        _integer(row["schema_version"], "schema_version"),
     )
-    if result.fingerprint != str(row["fingerprint"]).lower():
+    stored_fingerprint = _string(row["fingerprint"], "reconstruction fingerprint").lower()
+    if result.fingerprint != stored_fingerprint:
         raise ValueError("reconstruction fingerprint does not match payload")
     return result
 
@@ -277,12 +298,12 @@ def load_reconstruction_library(path: str | Path, expected_sha256: str) -> tuple
     if sha256(content).hexdigest() != expected:
         raise ValueError("reconstruction library byte digest mismatch")
     try:
-        payload = json.loads(content.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("reconstruction library is not canonical UTF-8 JSON") from exc
+        payload = json.loads(content.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"nonfinite JSON constant: {value}")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("reconstruction library is not strict UTF-8 JSON") from exc
     root = _required_mapping(payload, "reconstruction library")
     _exact_keys(root, {"protocol", "reconstructions"}, "reconstruction library")
-    if root["protocol"] != _PROTOCOL:
+    if _string(root["protocol"], "reconstruction library protocol") != _PROTOCOL:
         raise ValueError("unsupported reconstruction library protocol")
     raw_rows = root["reconstructions"]
     if not isinstance(raw_rows, list):
