@@ -45,6 +45,9 @@ class DustyStrategyDiscoveryUI(DustyBasicUI):
         strategy_discovery: StrategyDiscoveryService,
     ) -> None:
         self._strategy_discovery = strategy_discovery
+        binder = getattr(strategy_discovery, "bind_application", None)
+        if callable(binder):
+            binder(application)
         super().__init__(
             application,
             codex,
@@ -86,18 +89,30 @@ class DustyStrategyDiscoveryUI(DustyBasicUI):
         window.transient(self._root)
         window.grab_set()
         mode = self._tk.StringVar(value=DiscoveryMode.BOTH.value)
+        universe = getattr(self._strategy_discovery, "broker_symbol_universe", None)
+        try:
+            broker_count = len(universe()) if callable(universe) else 0
+        except Exception:
+            broker_count = 0
+        broker_line = (
+            f"Connected broker research universe: {broker_count} bounded symbols.\n"
+            if broker_count
+            else "Broker inventory not connected yet; the conservative fallback symbol universe will be used.\n"
+        )
         self._ttk.Label(
             window,
             text=(
-                "Dusty may inspect allowlisted Vibe research sources and local web-search leads.\n"
-                "Single-symbol hypotheses can enter the Strategy Estate only through bounded Ollama reconstruction.\n"
-                "Cross-symbol web results remain untrusted leads until Dusty has an explicit multi-symbol strategy compiler.\n"
+                broker_line
+                + "Dusty rotates through only a small symbol batch per scan; website searches are sequential and capped.\n"
+                "Website snippets remain untrusted leads and are not bulk-fetched or sent directly to Ollama.\n"
+                "Governed Vibe/source proposals can enter the Strategy Estate only through bounded Ollama reconstruction.\n"
+                "Cross-symbol web results remain leads until Dusty has an explicit multi-symbol strategy compiler.\n"
                 "No broker orders, Champion promotion, risk override, Guardian bypass, or live hot-swap."
             ),
             padding=12,
         ).pack(anchor="w")
         for text, value in (
-            ("New single-symbol strategies", DiscoveryMode.NEW_STRATEGIES),
+            ("New single-symbol strategies — bounded broker-universe rotation", DiscoveryMode.NEW_STRATEGIES),
             ("Cross-symbol / intermarket leads", DiscoveryMode.CROSS_SYMBOL),
             ("Both", DiscoveryMode.BOTH),
         ):
@@ -164,6 +179,19 @@ class DustyStrategyDiscoveryUI(DustyBasicUI):
             f"Archived cross-symbol web searches: {result.cross_symbol_web_leads}\n"
             f"Report: {result.report_path}"
         )
+        summary = getattr(self._strategy_discovery, "last_symbol_summary", None)
+        if summary is not None:
+            scanned = ", ".join(summary.symbols_scanned) if summary.symbols_scanned else "none"
+            source = "connected broker inventory" if summary.used_broker_inventory else "fallback universe"
+            body += (
+                f"\nBroker-universe source: {source} ({summary.universe_size} symbols)"
+                f"\nSymbols scouted this pass: {scanned}"
+                f"\nExact Ollama reconstruction target: {summary.reconstruction_target or 'none'}"
+                f"\nSymbol website queries: {summary.web_queries_completed} completed / "
+                f"{summary.web_queries_failed} failed"
+            )
+            if summary.report_path is not None:
+                body += f"\nSymbol scout report: {summary.report_path}"
         if result.errors:
             body += f"\nPartial/unavailable findings: {len(result.errors)} — inspect the saved report."
         if result.restart_required:
