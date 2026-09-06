@@ -1,13 +1,16 @@
-"""Small, code-reviewed research hypotheses, not profitable or certified strategies.
+"""Small, code-reviewed executable research packages.
 
-No downloaded Python/MQL is evaluated. Catalog metadata cannot supply executable rules.
-Changing a rule, indicator period or policy creates a different package fingerprint.
+Built-in RSI seeds remain infrastructure benchmarks. M196.5 additionally allows
+an explicitly configured, SHA-256-pinned reconstruction snapshot to supply exact
+research packages to both the UI process and its spawned Windows worker. Ordinary
+catalog JSON remains metadata-only and cannot supply executable rules.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
+from typing import Any
 
 from .cognition import CognitionPolicy
 from .experience import TradeSide
@@ -44,6 +47,41 @@ class ReviewedResearchPackage:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ConfiguredReconstructionPackage:
+    """Structural adapter; keeps reconstruction provenance in the package hash."""
+
+    inner: Any
+
+    @property
+    def spec(self) -> StrategySpecV2:
+        return self.inner.reconstruction.candidate_spec
+
+    @property
+    def title(self) -> str:
+        return self.inner.catalog_entry.title
+
+    @property
+    def features(self) -> FeatureConfig:
+        return self.inner.features
+
+    @property
+    def cognition(self) -> CognitionPolicy:
+        return self.inner.cognition
+
+    @property
+    def compiled(self) -> CompiledStrategy:
+        return self.inner.compiled
+
+    @property
+    def fingerprint(self) -> str:
+        return self.inner.fingerprint
+
+    @property
+    def catalog_entry(self) -> StrategyCatalogEntry:
+        return self.inner.catalog_entry
+
+
 def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
     """Symmetric RSI momentum seeds: infrastructure benchmarks, not online recommendations.
 
@@ -68,10 +106,29 @@ def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
     )
 
 
-def resolve_research_package(entry: StrategyCatalogEntry) -> ReviewedResearchPackage:
+def _configured_reconstruction_packages() -> tuple[_ConfiguredReconstructionPackage, ...]:
+    # Lazy imports avoid a module-import cycle: trading_skills itself reuses the
+    # built-in package type for the UI projection.  Resolution happens only after
+    # both modules have finished importing.
+    from .strategy_library_snapshot import configured_reconstructions
+    from .trading_skills import ReconstructedResearchPackage
+
+    return tuple(
+        _ConfiguredReconstructionPackage(ReconstructedResearchPackage(row))
+        for row in configured_reconstructions()
+    )
+
+
+def resolve_research_package(entry: StrategyCatalogEntry) -> ReviewedResearchPackage | _ConfiguredReconstructionPackage:
+    """Resolve exact executable artifacts; catalog metadata alone never suffices."""
     for package in reviewed_research_packages():
         if entry.strategy_id == package.spec.strategy_id:
             if entry != package.catalog_entry:
                 raise ValueError("reviewed_package_metadata_mismatch")
+            return package
+    for package in _configured_reconstruction_packages():
+        if entry.strategy_id == package.spec.strategy_id:
+            if entry != package.catalog_entry:
+                raise ValueError("configured_reconstruction_metadata_mismatch")
             return package
     raise ValueError("strategy_has_no_reviewed_executable_package")
