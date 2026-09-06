@@ -25,11 +25,28 @@ Unknown source rules remain recorded as unknown even when the candidate fills th
 
 Reconstructed strategies continue to use the existing `StrategySpecV2` execution semantics and existing eligibility constitution. M196.5 cannot bypass the minimum signal/horizon, HFT/scalping, martingale, or other strategy restrictions.
 
-## Ollama / LLM boundary
+## Ollama reconstruction boundary
 
-Structured output is useful transport, not truth. LLM output has zero broker, promotion, risk, Guardian, or capital-allocation authority. Every reconstruction must be post-validated by deterministic Dusty types.
+M196.5 includes a bounded `OllamaStrategyReconstructor` using the already-certified local Ollama HTTP transport pattern rather than introducing another network client or agent framework.
 
-M196.5 deliberately adds no agent framework and no LLM trade-selection agent.
+A reconstruction request must bind:
+
+- exact strategy-proposal fingerprint;
+- exact installed Ollama model tag and SHA-256 digest;
+- caller-approved symbols;
+- caller-approved timeframes;
+- caller-approved numeric features; and
+- caller-approved sessions.
+
+Ollama can return only a small typed research grammar: long/short direction, bounded entry groups/clauses, typed stop/target/trailing rules, hold horizon, cooldown, session filters, event exclusion, and non-latency-critical execution sensitivity.
+
+The model cannot provide source-rule attribution. Source-declared rules are copied by deterministic code from the archived `StrategyProposal`; everything introduced by the model is automatically recorded as `RESEARCH_HYPOTHESIS`.
+
+The prompt deliberately excludes advertised/claimed performance so marketing numbers do not bias reconstruction.
+
+Structured output is useful transport, not truth. Current Ollama implementations can fail or ignore requested schema behavior, so Dusty independently checks exact JSON keys, native JSON types, allowed enums, finite numeric values, model digest, allowed feature/symbol/session/timeframe membership, and the existing Strategy Constitution. Transport, model-identity, truncation, JSON, schema, or semantic failure returns `UNAVAILABLE` and creates no partial candidate.
+
+The Ollama adapter has zero broker, live-write, promotion, risk, Guardian, capital-allocation, tool, or credential authority.
 
 ## PC strategy library transport
 
@@ -41,11 +58,11 @@ The installed `dusty-dragon` launcher gains an optional `--strategy-library` arg
 
 1. serialized as strict JSON;
 2. SHA-256 pinned by exact bytes;
-3. validated before display;
+3. validated with exact schema and native JSON types before display;
 4. exposed to the existing UI as temporary **metadata** catalog rows; and
 5. independently resolved again by the existing research package resolver.
 
-The path and digest are inherited by the fresh Windows worker process. If the file changes after the digest is frozen, resolution fails closed.
+The path and digest are inherited by the fresh Windows worker process. If the file changes after the digest is frozen, resolution fails closed. Nonfinite JSON and type coercion such as `"15" -> 15` are rejected.
 
 An ordinary `--catalog` JSON file remains metadata-only and cannot execute a reconstructed strategy.
 
@@ -71,6 +88,8 @@ Lifecycle projection is conservative:
 - RETIRED/SUPERSEDED -> `RETIRED`
 
 M196.5 creates no `LIVE_ELIGIBLE` state. Actual M194 operational evidence remains pending until it is produced by the target Coinexx Demo workstation.
+
+The M185 registry does not by itself carry sufficient symbol/timeframe execution semantics to fabricate complete skills. Consequently the PC launcher displays reconstructed research packages now, while authoritative Demo Trading Skills are projected only when the required operational evidence exists. M196.5 does not create a cosmetic `skills.json` escape hatch.
 
 ## AUTO router
 
@@ -139,6 +158,7 @@ M196.5 uses patterns, not wholesale dependencies:
 M196.5 is software-certified only after:
 
 - reconstruction provenance tests;
+- bounded Ollama/model-digest/schema tests;
 - hostile/invalid snapshot tests;
 - fresh-process worker transport test;
 - UI projection tests;
