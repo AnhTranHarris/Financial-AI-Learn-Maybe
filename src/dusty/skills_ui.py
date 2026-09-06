@@ -2,13 +2,13 @@ from __future__ import annotations
 
 """M196.5 launcher that projects the strategy estate into the existing PC UI.
 
-The Tk UI and LocalResearchRuntime remain unchanged. This wrapper can use an
-explicit hash-pinned ``--strategy-library`` snapshot or, by default, the local
-persistent Strategy Estate. It pins the exact reconstruction snapshot in the
-environment inherited by spawned workers and generates a temporary metadata
-catalog for display/selection. The catalog itself remains incapable of
-execution; ``reviewed_strategies.resolve_research_package`` must independently
-resolve the same hash-pinned package.
+The wrapper can use an explicit hash-pinned ``--strategy-library`` snapshot or,
+by default, the local persistent Strategy Estate. It pins the exact
+reconstruction snapshot in the environment inherited by spawned workers and
+generates a temporary metadata catalog for display/selection. Normal estate
+operation also wires the research-only Strategy Discovery UI extension; an
+explicit ``--strategy-library`` remains a frozen test/replay snapshot and cannot
+be modified by discovery.
 """
 
 import argparse
@@ -19,8 +19,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable
 
-from . import basic_ui
 from .strategy_catalog import StrategyCatalogEntry
+from .strategy_discovery import StrategyDiscoveryConfig, StrategyDiscoveryService
+from .strategy_discovery_ui import run_strategy_discovery_ui
 from .strategy_estate import default_strategy_estate_path
 from .strategy_library_snapshot import (
     LIBRARY_PATH_ENV,
@@ -67,6 +68,21 @@ def _quant_catalog(reconstructions: tuple[object, ...]) -> tuple[StrategyCatalog
 
 
 
+def _discovery_service(
+    *,
+    explicit_library: Path | None,
+    estate_path: Path | None,
+    no_estate: bool,
+) -> StrategyDiscoveryService | None:
+    # An explicit library is an immutable test/replay snapshot. Discovery must
+    # never mutate it or silently write elsewhere while that snapshot is active.
+    if explicit_library is not None or no_estate:
+        return None
+    destination = estate_path.resolve() if estate_path is not None else default_strategy_estate_path()
+    return StrategyDiscoveryService(StrategyDiscoveryConfig.default(estate_path=destination))
+
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else None
     parser = argparse.ArgumentParser(add_help=False)
@@ -80,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     if known.no_strategy_estate and (known.strategy_library is not None or known.strategy_estate is not None):
         parser.error("--no-strategy-estate cannot be combined with a strategy snapshot")
 
+    discovery = _discovery_service(
+        explicit_library=known.strategy_library,
+        estate_path=known.strategy_estate,
+        no_estate=known.no_strategy_estate,
+    )
+
     library: Path | None = known.strategy_library or known.strategy_estate
     if library is None and not known.no_strategy_estate:
         estate = default_strategy_estate_path()
@@ -87,10 +109,10 @@ def main(argv: list[str] | None = None) -> int:
             library = estate
 
     if library is None:
-        # Wrapper-only flags must not leak into the legacy UI parser.  With no
-        # special flag present, ``remaining`` is exactly the caller's original
-        # basic-UI argument list, preserving the pre-estate behavior.
-        return basic_ui.main(remaining)
+        # Wrapper-only flags must not leak into the underlying UI parser. With no
+        # snapshot present, built-in reviewed strategies still launch normally,
+        # while discovery can create the first persistent estate for next start.
+        return run_strategy_discovery_ui(remaining, discovery)
     if _has_catalog_argument(remaining):
         parser.error("strategy snapshots and --catalog are mutually exclusive")
 
@@ -111,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(projected_catalog_rows(catalog), sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
             )
-            return basic_ui.main([*remaining, "--catalog", str(catalog_path)])
+            return run_strategy_discovery_ui([*remaining, "--catalog", str(catalog_path)], discovery)
     finally:
         if previous_path is None:
             os.environ.pop(LIBRARY_PATH_ENV, None)
