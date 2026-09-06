@@ -93,8 +93,21 @@ def _tokens(values: Iterable[object]) -> str:
 
 
 def _classification_text(reconstruction: object) -> str:
+    """Evidence corpus for validating a display classification.
+
+    ``identity.*`` rules are deliberately excluded.  Classification metadata may
+    record what Ollama concluded, but it cannot become evidence for its own
+    conclusion after serialization/reload.  Only source/reconstruction rules,
+    title context, and actual executable session filters may support a named
+    catalyst, Fibonacci structure, or geographic/session title.
+    """
+
     candidate = getattr(reconstruction, "candidate_spec")
-    rules = getattr(reconstruction, "rules")
+    rules = tuple(
+        rule
+        for rule in getattr(reconstruction, "rules")
+        if not str(getattr(rule, "name", "")).strip().casefold().startswith("identity.")
+    )
     return _tokens((
         getattr(reconstruction, "title", ""),
         *(getattr(rule, "name", "") for rule in rules),
@@ -165,7 +178,6 @@ def _legacy_identity(reconstruction: object) -> QuantStrategyIdentity:
     """
 
     candidate = getattr(reconstruction, "candidate_spec")
-    rules = getattr(reconstruction, "rules")
     text = _classification_text(reconstruction)
 
     catalyst = StrategyCatalyst.NONE
