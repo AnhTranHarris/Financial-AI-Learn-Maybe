@@ -1,0 +1,51 @@
+name: m195-m204-production-certification
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  production-certification:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: src
+      PYTHONHASHSEED: "0"
+      PYTHONWARNINGS: "error::DeprecationWarning"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile production certification surfaces
+        run: python -m compileall -q src/dusty tests tools
+
+      - name: M195-M199 gates
+        run: >-
+          python -c "import pathlib,subprocess,sys;
+          files=[];
+          [files.extend(pathlib.Path('tests').glob(f'test_m{number}*.py')) for number in range(195,200)];
+          files=sorted(set(files));
+          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','-v',*[str(path.with_suffix('')).replace('/','.') .replace('\\','.') for path in files]]) if files else 0)"
+
+      - name: M200-M204 gates
+        run: >-
+          python -c "import pathlib,subprocess,sys;
+          files=[];
+          [files.extend(pathlib.Path('tests').glob(f'test_m{number}*.py')) for number in range(200,205)];
+          files=sorted(set(files));
+          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','-v',*[str(path.with_suffix('')).replace('/','.') .replace('\\','.') for path in files]]) if files else 0)"
+
+      - name: M195 deterministic authority boundary
+        run: >-
+          python -c "from pathlib import Path;
+          path=Path('src/dusty/portfolio_risk_governor.py');
+          text=path.read_text(encoding='utf-8');
+          forbidden=['MetaTrader5','order_send(','portfolio_model','allocate_portfolio'];
+          bad=[token for token in forbidden if token in text];
+          assert not bad, f'M195 crossed deferred/broker authority boundary: {bad}'"
