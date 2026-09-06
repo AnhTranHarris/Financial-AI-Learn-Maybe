@@ -260,7 +260,8 @@ class M1965StrategyEstatePopulationTests(unittest.TestCase):
             register_reconstruction(row, path=estate)
             observed = {}
 
-            def fake_ui(argv):
+            def fake_ui(argv, discovery):
+                self.assertIsNotNone(discovery)
                 index = argv.index("--catalog")
                 import json
                 catalog = json.loads(Path(argv[index + 1]).read_text(encoding="utf-8"))
@@ -268,7 +269,7 @@ class M1965StrategyEstatePopulationTests(unittest.TestCase):
                 return 17
 
             with patch("dusty.skills_ui.default_strategy_estate_path", return_value=estate), patch(
-                "dusty.skills_ui.basic_ui.main", side_effect=fake_ui
+                "dusty.skills_ui.run_strategy_discovery_ui", side_effect=fake_ui
             ):
                 result = skills_ui.main(["--repository", "."])
 
