@@ -26,20 +26,10 @@ jobs:
         run: python -m compileall -q src/dusty tests tools
 
       - name: M195-M199 gates
-        run: >-
-          python -c "import pathlib,subprocess,sys;
-          files=[];
-          [files.extend(pathlib.Path('tests').glob(f'test_m{number}*.py')) for number in range(195,200)];
-          files=sorted(set(files));
-          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','-v',*[str(path.with_suffix('')).replace('/','.') .replace('\\','.') for path in files]]) if files else 0)"
+        run: python -m unittest discover -s tests -p "test_m19[5-9]*.py" -v
 
       - name: M200-M204 gates
-        run: >-
-          python -c "import pathlib,subprocess,sys;
-          files=[];
-          [files.extend(pathlib.Path('tests').glob(f'test_m{number}*.py')) for number in range(200,205)];
-          files=sorted(set(files));
-          raise SystemExit(subprocess.call([sys.executable,'-m','unittest','-v',*[str(path.with_suffix('')).replace('/','.') .replace('\\','.') for path in files]]) if files else 0)"
+        run: python -m unittest discover -s tests -p "test_m20[0-4]*.py" -v
 
       - name: M195 deterministic authority boundary
         run: >-
