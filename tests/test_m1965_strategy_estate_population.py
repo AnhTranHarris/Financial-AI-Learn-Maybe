@@ -42,7 +42,11 @@ NOW = datetime(2026, 9, 6, 3, 0, tzinfo=timezone.utc)
 H = lambda ch: ch * 64
 
 
-def _proposal(symbol: str = "EURUSD", timeframe: str = "M15") -> StrategyProposal:
+def _proposal(
+    symbol: str = "EURUSD",
+    timeframe: str = "M15",
+    title: str = "test breakout",
+) -> StrategyProposal:
     return StrategyProposal(
         f"test:{symbol}:{timeframe}",
         SourceSnapshot(
@@ -55,11 +59,11 @@ def _proposal(symbol: str = "EURUSD", timeframe: str = "M15") -> StrategyProposa
         ),
         EvidenceClass.STRATEGY_HYPOTHESIS,
         ProposalCompleteness.CONCEPT_ONLY,
-        "test breakout",
+        title,
         symbols=(symbol,),
         timeframes=(timeframe,),
         components=("breakout",),
-        declared_rules=(("research_family", "test breakout"),),
+        declared_rules=(("research_family", title),),
         unresolved=("entry_logic", "exit_logic", "risk_logic"),
     )
 
@@ -79,7 +83,7 @@ def _reconstruction(proposal: StrategyProposal):
         symbols=proposal.symbols,
         timeframe="M15",
         rules=(
-            ReconstructionRule("research_family", "test breakout", ReconstructionRuleBasis.SOURCE_DECLARED),
+            ReconstructionRule("research_family", proposal.title, ReconstructionRuleBasis.SOURCE_DECLARED),
             ReconstructionRule("entry_logic", "return_1 > 0", ReconstructionRuleBasis.RESEARCH_HYPOTHESIS),
             ReconstructionRule("exit_logic", "ATR stop / RR target", ReconstructionRuleBasis.RESEARCH_HYPOTHESIS),
             ReconstructionRule("risk_logic", "Dusty constitution", ReconstructionRuleBasis.RESEARCH_HYPOTHESIS),
@@ -238,7 +242,7 @@ class M1965StrategyEstatePopulationTests(unittest.TestCase):
 
     def test_skills_ui_auto_loads_default_estate_and_uses_quant_title(self) -> None:
         from dusty import skills_ui
-        row = _reconstruction(_proposal())
+        row = _reconstruction(_proposal(title="Asian compression session handoff to London/New York"))
         classification = QuantStrategyClassification(
             QuantStrategyIdentity(
                 StrategyArchetype.SESSION_HANDOFF,
