@@ -2,11 +2,14 @@ from __future__ import annotations
 
 """M195 crash-safe master portfolio risk governor.
 
-The governor turns Dusty's existing per-trade risk constitution into one shared,
-atomic capital-risk budget across strategies and symbols.  It does not allocate
-alpha, estimate correlation, size broker lots, send orders, or grant execution
-or Guardian authority.  Reserved and committed planned loss remain charged
-until explicit evidence releases them.
+M195 turns Dusty's existing per-trade RiskConstitution into one shared,
+transactional risk book across strategies and symbols.  It does not allocate
+alpha, estimate correlation, size broker lots, send orders, or grant execution,
+Guardian, promotion, or risk-override authority.
+
+Planned loss is charged when reserved and remains charged through ambiguous or
+committed execution until explicit evidence releases it.  Broker account/margin
+state is an additional constraint; it never expands Dusty's internal risk budget.
 """
 
 from dataclasses import dataclass, fields
@@ -20,7 +23,14 @@ import sqlite3
 from typing import Iterable
 
 from .order_intent import BrokerPreflight, OrderIntent
-from .risk import AccountRiskSnapshot, RiskConstitution, RiskState, TradeRiskRequest, assess_trade_risk
+from .risk import (
+    AccountRiskSnapshot,
+    RiskConstitution,
+    RiskState,
+    TradeRiskRequest,
+    assess_trade_risk,
+    risk_state,
+)
 
 
 def _canonical(value: object) -> str:
@@ -78,8 +88,8 @@ def _evidence(values: Iterable[str], label: str) -> tuple[str, ...]:
     return rows
 
 
-def _constitution_payload(constitution: RiskConstitution) -> tuple[tuple[str, float], ...]:
-    return tuple((field.name, float(getattr(constitution, field.name))) for field in fields(constitution))
+def _constitution_payload(value: RiskConstitution) -> tuple[tuple[str, float], ...]:
+    return tuple((field.name, float(getattr(value, field.name))) for field in fields(value))
 
 
 def _preflight_fingerprint(preflight: BrokerPreflight) -> str:
@@ -158,10 +168,10 @@ class PortfolioCapitalSnapshot:
         for name in ("equity", "balance", "margin_used", "free_margin"):
             object.__setattr__(self, name, _finite_nonnegative(getattr(self, name), name))
         for name in ("high_water_mark", "day_start_equity", "week_start_equity"):
-            value = _finite_nonnegative(getattr(self, name), name)
-            if value <= 0:
+            rendered = _finite_nonnegative(getattr(self, name), name)
+            if rendered <= 0:
                 raise ValueError(f"{name} must be positive")
-            object.__setattr__(self, name, value)
+            object.__setattr__(self, name, rendered)
         if self.high_water_mark + 1e-12 < self.equity:
             raise ValueError("high_water_mark cannot be below equity")
         object.__setattr__(self, "broker_positions_fingerprint", _sha(self.broker_positions_fingerprint, "broker positions"))
@@ -234,94 +244,6 @@ class TerminalRiskReleaseEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class RiskReservationRecord:
-    record_fingerprint: str
-    intent_hash: str
-    strategy_hash: str
-    session_fingerprint: str
-    symbol: str
-    account_fingerprint: str
-    source_commit: str
-    capital_snapshot_fingerprint: str
-    preflight_fingerprint: str
-    policy_fingerprint: str
-    reserved_loss: float
-    required_margin: float
-    created_at: datetime
-    evidence_fingerprints: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "intent_hash", _sha(self.intent_hash, "reservation intent"))
-        object.__setattr__(self, "strategy_hash", _sha(self.strategy_hash, "reservation strategy"))
-        object.__setattr__(self, "session_fingerprint", _sha(self.session_fingerprint, "reservation session"))
-        object.__setattr__(self, "symbol", _text(self.symbol, "reservation symbol", maximum=64).upper())
-        object.__setattr__(self, "account_fingerprint", _sha(self.account_fingerprint, "reservation account"))
-        object.__setattr__(self, "source_commit", _git_sha(self.source_commit, "reservation source commit"))
-        object.__setattr__(self, "capital_snapshot_fingerprint", _sha(self.capital_snapshot_fingerprint, "reservation capital snapshot"))
-        object.__setattr__(self, "preflight_fingerprint", _sha(self.preflight_fingerprint, "reservation preflight"))
-        object.__setattr__(self, "policy_fingerprint", _sha(self.policy_fingerprint, "reservation policy"))
-        object.__setattr__(self, "reserved_loss", _finite_nonnegative(self.reserved_loss, "reserved_loss"))
-        if self.reserved_loss <= 0:
-            raise ValueError("reserved_loss must be positive")
-        object.__setattr__(self, "required_margin", _finite_nonnegative(self.required_margin, "required_margin"))
-        object.__setattr__(self, "created_at", _aware(self.created_at, "reservation created_at"))
-        object.__setattr__(self, "evidence_fingerprints", _evidence(self.evidence_fingerprints, "reservation evidence"))
-        object.__setattr__(self, "record_fingerprint", _sha(self.record_fingerprint, "reservation record"))
-        if self.record_fingerprint != _digest(self.payload):
-            raise ValueError("reservation record fingerprint mismatch")
-
-    @property
-    def payload(self) -> dict[str, object]:
-        return {
-            "protocol": "dusty-m195-risk-reservation-record-v1",
-            "intent_hash": self.intent_hash,
-            "strategy_hash": self.strategy_hash,
-            "session_fingerprint": self.session_fingerprint,
-            "symbol": self.symbol,
-            "account_fingerprint": self.account_fingerprint,
-            "source_commit": self.source_commit,
-            "capital_snapshot_fingerprint": self.capital_snapshot_fingerprint,
-            "preflight_fingerprint": self.preflight_fingerprint,
-            "policy_fingerprint": self.policy_fingerprint,
-            "reserved_loss": self.reserved_loss,
-            "required_margin": self.required_margin,
-            "created_at": self.created_at.isoformat(),
-            "evidence_fingerprints": list(self.evidence_fingerprints),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class RiskReservationEvent:
-    event_fingerprint: str
-    intent_hash: str
-    state: RiskReservationState
-    created_at: datetime
-    previous_event_fingerprint: str | None
-    evidence_fingerprints: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_fingerprint", _sha(self.event_fingerprint, "reservation event"))
-        object.__setattr__(self, "intent_hash", _sha(self.intent_hash, "event intent"))
-        object.__setattr__(self, "created_at", _aware(self.created_at, "event created_at"))
-        if self.previous_event_fingerprint is not None:
-            object.__setattr__(self, "previous_event_fingerprint", _sha(self.previous_event_fingerprint, "previous event"))
-        object.__setattr__(self, "evidence_fingerprints", _evidence(self.evidence_fingerprints, "event evidence"))
-        if self.event_fingerprint != _digest(self.payload):
-            raise ValueError("reservation event fingerprint mismatch")
-
-    @property
-    def payload(self) -> dict[str, object]:
-        return {
-            "protocol": "dusty-m195-risk-reservation-event-v1",
-            "intent_hash": self.intent_hash,
-            "state": self.state.value,
-            "created_at": self.created_at.isoformat(),
-            "previous_event_fingerprint": self.previous_event_fingerprint,
-            "evidence_fingerprints": list(self.evidence_fingerprints),
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class PortfolioRiskDecision:
     decision: RiskReservationDecision
     intent_hash: str
@@ -358,12 +280,24 @@ class PortfolioRiskDecision:
         return False
 
 
-class SQLitePortfolioRiskGovernor:
-    """One durable master risk book per account fingerprint.
+@dataclass(frozen=True, slots=True)
+class RiskLifecycleReceipt:
+    intent_hash: str
+    state: RiskReservationState
+    event_fingerprint: str
+    created_at: datetime
 
-    `BEGIN IMMEDIATE` makes the read-current-heat/insert-reservation sequence a
-    single-writer operation across independent processes using the same DB file.
-    """
+    @property
+    def broker_write_authority(self) -> bool:
+        return False
+
+    @property
+    def live_write_authority(self) -> bool:
+        return False
+
+
+class SQLitePortfolioRiskGovernor:
+    """Durable account-level risk book with atomic compare-and-reserve semantics."""
 
     def __init__(
         self,
@@ -417,195 +351,78 @@ class SQLitePortfolioRiskGovernor:
     def risk_override_authorized(self) -> bool:
         return False
 
+    @property
+    def guardian_override_authorized(self) -> bool:
+        return False
+
     def close(self) -> None:
         self._db.close()
 
-    def _begin_write(self) -> None:
+    def _begin(self) -> None:
         self._db.execute("BEGIN IMMEDIATE")
 
-    def _commit_write(self) -> None:
+    def _commit(self) -> None:
         self._db.execute("COMMIT")
 
-    def _rollback_write(self) -> None:
+    def _rollback(self) -> None:
         self._db.execute("ROLLBACK")
 
-    def _make_record(
-        self,
-        intent: OrderIntent,
-        preflight: BrokerPreflight,
-        snapshot: PortfolioCapitalSnapshot,
-        *,
-        now: datetime,
-        evidence_fingerprints: tuple[str, ...],
-    ) -> RiskReservationRecord:
-        payload = {
-            "protocol": "dusty-m195-risk-reservation-record-v1",
-            "intent_hash": intent.intent_hash,
-            "strategy_hash": _sha(intent.strategy_hash, "intent strategy"),
-            "session_fingerprint": _sha(intent.session_fingerprint, "intent session"),
-            "symbol": _text(intent.symbol, "intent symbol", maximum=64).upper(),
-            "account_fingerprint": snapshot.account_fingerprint,
-            "source_commit": self.source_commit,
-            "capital_snapshot_fingerprint": snapshot.fingerprint,
-            "preflight_fingerprint": _preflight_fingerprint(preflight),
-            "policy_fingerprint": self.policy.fingerprint,
-            "reserved_loss": float(intent.allowed_loss),
-            "required_margin": float(preflight.required_margin),
-            "created_at": now.isoformat(),
-            "evidence_fingerprints": list(evidence_fingerprints),
-        }
-        return RiskReservationRecord(
-            _digest(payload),
-            intent.intent_hash,
-            _sha(intent.strategy_hash, "intent strategy"),
-            _sha(intent.session_fingerprint, "intent session"),
-            intent.symbol,
-            snapshot.account_fingerprint,
-            self.source_commit,
-            snapshot.fingerprint,
-            _preflight_fingerprint(preflight),
-            self.policy.fingerprint,
-            intent.allowed_loss,
-            preflight.required_margin,
-            now,
-            evidence_fingerprints,
-        )
-
-    def _make_event(
-        self,
-        intent_hash: str,
-        state: RiskReservationState,
-        *,
-        now: datetime,
-        previous: str | None,
-        evidence_fingerprints: tuple[str, ...],
-    ) -> RiskReservationEvent:
-        payload = {
-            "protocol": "dusty-m195-risk-reservation-event-v1",
-            "intent_hash": _sha(intent_hash, "event intent"),
-            "state": state.value,
-            "created_at": now.isoformat(),
-            "previous_event_fingerprint": previous,
-            "evidence_fingerprints": list(evidence_fingerprints),
-        }
-        return RiskReservationEvent(
-            _digest(payload), intent_hash, state, now, previous, evidence_fingerprints
-        )
-
-    def _insert_record(self, record: RiskReservationRecord) -> None:
-        self._db.execute(
-            "INSERT INTO portfolio_risk_records("
-            "intent_hash,record_fingerprint,strategy_hash,session_fingerprint,symbol,account_fingerprint,"
-            "source_commit,capital_snapshot_fingerprint,preflight_fingerprint,policy_fingerprint,reserved_loss,"
-            "required_margin,created_at,evidence_fingerprints) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                record.intent_hash,
-                record.record_fingerprint,
-                record.strategy_hash,
-                record.session_fingerprint,
-                record.symbol,
-                record.account_fingerprint,
-                record.source_commit,
-                record.capital_snapshot_fingerprint,
-                record.preflight_fingerprint,
-                record.policy_fingerprint,
-                record.reserved_loss,
-                record.required_margin,
-                record.created_at.isoformat(),
-                _canonical(list(record.evidence_fingerprints)),
-            ),
-        )
-
-    def _insert_event(self, event: RiskReservationEvent) -> None:
-        self._db.execute(
-            "INSERT INTO portfolio_risk_events("
-            "event_fingerprint,intent_hash,state,created_at,previous_event_fingerprint,evidence_fingerprints) "
-            "VALUES(?,?,?,?,?,?)",
-            (
-                event.event_fingerprint,
-                event.intent_hash,
-                event.state.value,
-                event.created_at.isoformat(),
-                event.previous_event_fingerprint,
-                _canonical(list(event.evidence_fingerprints)),
-            ),
-        )
-
-    def _record(self, intent_hash: str) -> RiskReservationRecord | None:
+    def _record_row(self, intent_hash: str) -> tuple[object, ...] | None:
         intent = _sha(intent_hash, "record lookup intent")
-        row = self._db.execute(
-            "SELECT record_fingerprint,strategy_hash,session_fingerprint,symbol,account_fingerprint,source_commit,"
-            "capital_snapshot_fingerprint,preflight_fingerprint,policy_fingerprint,reserved_loss,required_margin,"
-            "created_at,evidence_fingerprints FROM portfolio_risk_records WHERE intent_hash=?",
+        return self._db.execute(
+            "SELECT intent_hash,record_fingerprint,strategy_hash,session_fingerprint,symbol,account_fingerprint,"
+            "source_commit,capital_snapshot_fingerprint,preflight_fingerprint,policy_fingerprint,reserved_loss,"
+            "required_margin,created_at,evidence_fingerprints FROM portfolio_risk_records WHERE intent_hash=?",
             (intent,),
         ).fetchone()
-        if row is None:
-            return None
-        try:
-            evidence_raw = json.loads(str(row[12]))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("portfolio risk record evidence JSON is corrupt") from exc
-        if not isinstance(evidence_raw, list):
-            raise RuntimeError("portfolio risk record evidence is corrupt")
-        return RiskReservationRecord(
-            str(row[0]), intent, str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]),
-            str(row[6]), str(row[7]), str(row[8]), float(row[9]), float(row[10]),
-            datetime.fromisoformat(str(row[11])), tuple(str(value) for value in evidence_raw),
-        )
 
-    def _events(self, intent_hash: str) -> tuple[RiskReservationEvent, ...]:
+    def _event_rows(self, intent_hash: str) -> tuple[tuple[object, ...], ...]:
         intent = _sha(intent_hash, "event lookup intent")
-        rows = self._db.execute(
+        return tuple(self._db.execute(
             "SELECT event_fingerprint,state,created_at,previous_event_fingerprint,evidence_fingerprints "
             "FROM portfolio_risk_events WHERE intent_hash=? ORDER BY seq",
             (intent,),
-        ).fetchall()
-        result: list[RiskReservationEvent] = []
-        for row in rows:
-            try:
-                evidence_raw = json.loads(str(row[4]))
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("portfolio risk event evidence JSON is corrupt") from exc
-            if not isinstance(evidence_raw, list):
-                raise RuntimeError("portfolio risk event evidence is corrupt")
-            result.append(
-                RiskReservationEvent(
-                    str(row[0]), intent, RiskReservationState(str(row[1])), datetime.fromisoformat(str(row[2])),
-                    None if row[3] is None else str(row[3]), tuple(str(value) for value in evidence_raw),
-                )
-            )
-        return tuple(result)
+        ).fetchall())
 
-    def state(self, intent_hash: str) -> RiskReservationState:
-        events = self._events(intent_hash)
-        if not events:
-            raise KeyError(intent_hash)
-        return events[-1].state
+    @staticmethod
+    def _decode_evidence(raw: object, label: str) -> tuple[str, ...]:
+        try:
+            values = json.loads(str(raw))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{label} evidence JSON is corrupt") from exc
+        if not isinstance(values, list):
+            raise RuntimeError(f"{label} evidence JSON is corrupt")
+        return tuple(str(value) for value in values)
 
-    def get_record(self, intent_hash: str) -> RiskReservationRecord | None:
-        return self._record(intent_hash)
+    def _record_payload_from_row(self, row: tuple[object, ...]) -> dict[str, object]:
+        evidence = self._decode_evidence(row[13], "record")
+        return {
+            "protocol": "dusty-m195-risk-reservation-record-v1",
+            "intent_hash": str(row[0]),
+            "strategy_hash": str(row[2]),
+            "session_fingerprint": str(row[3]),
+            "symbol": str(row[4]),
+            "account_fingerprint": str(row[5]),
+            "source_commit": str(row[6]),
+            "capital_snapshot_fingerprint": str(row[7]),
+            "preflight_fingerprint": str(row[8]),
+            "policy_fingerprint": str(row[9]),
+            "reserved_loss": float(row[10]),
+            "required_margin": float(row[11]),
+            "created_at": str(row[12]),
+            "evidence_fingerprints": list(evidence),
+        }
 
-    def _active_rows(self, account_fingerprint: str) -> tuple[tuple[RiskReservationRecord, RiskReservationState], ...]:
-        account = _sha(account_fingerprint, "active account")
-        intents = self._db.execute(
-            "SELECT intent_hash FROM portfolio_risk_records WHERE account_fingerprint=? ORDER BY intent_hash",
-            (account,),
-        ).fetchall()
-        rows: list[tuple[RiskReservationRecord, RiskReservationState]] = []
-        for (intent_hash,) in intents:
-            record = self._record(str(intent_hash))
-            if record is None:
-                raise RuntimeError("portfolio risk record disappeared during read")
-            events = self._events(record.intent_hash)
-            if not events:
-                raise RuntimeError("portfolio risk record has no lifecycle event")
-            state = events[-1].state
-            if state in {RiskReservationState.RESERVED, RiskReservationState.COMMITTED}:
-                rows.append((record, state))
-        return tuple(rows)
-
-    def active_reserved_loss(self, account_fingerprint: str) -> float:
-        return sum(record.reserved_loss for record, _ in self._active_rows(account_fingerprint))
+    def _event_payload_from_row(self, intent_hash: str, row: tuple[object, ...]) -> dict[str, object]:
+        evidence = self._decode_evidence(row[4], "event")
+        return {
+            "protocol": "dusty-m195-risk-reservation-event-v1",
+            "intent_hash": intent_hash,
+            "state": str(row[1]),
+            "created_at": str(row[2]),
+            "previous_event_fingerprint": None if row[3] is None else str(row[3]),
+            "evidence_fingerprints": list(evidence),
+        }
 
     def _integrity_errors(self) -> tuple[str, ...]:
         errors: list[str] = []
@@ -615,33 +432,46 @@ class SQLitePortfolioRiskGovernor:
             return (f"sqlite:{type(exc).__name__}",)
         if db_result.lower() != "ok":
             errors.append(f"sqlite:{db_result}")
-        intent_rows = self._db.execute("SELECT intent_hash FROM portfolio_risk_records ORDER BY intent_hash").fetchall()
-        for (intent_hash,) in intent_rows:
+        rows = self._db.execute("SELECT intent_hash FROM portfolio_risk_records ORDER BY intent_hash").fetchall()
+        for (intent_hash_raw,) in rows:
+            intent_hash = str(intent_hash_raw)
             try:
-                record = self._record(str(intent_hash))
+                record = self._record_row(intent_hash)
                 if record is None:
                     errors.append(f"missing_record:{intent_hash}")
                     continue
-                events = self._events(record.intent_hash)
+                if _sha(intent_hash, "stored intent") != intent_hash:
+                    errors.append(f"invalid_intent_identity:{intent_hash}")
+                payload = self._record_payload_from_row(record)
+                if _digest(payload) != str(record[1]):
+                    errors.append(f"record_fingerprint:{intent_hash}")
+                events = self._event_rows(intent_hash)
                 if not events:
-                    errors.append(f"missing_event:{record.intent_hash}")
+                    errors.append(f"missing_event:{intent_hash}")
                     continue
-                previous: RiskReservationEvent | None = None
+                previous_fingerprint: str | None = None
+                previous_state: RiskReservationState | None = None
                 for index, event in enumerate(events):
+                    payload = self._event_payload_from_row(intent_hash, event)
+                    if _digest(payload) != str(event[0]):
+                        errors.append(f"event_fingerprint:{intent_hash}:{index}")
+                    state = RiskReservationState(str(event[1]))
+                    previous = None if event[3] is None else str(event[3])
                     if index == 0:
-                        if event.state is not RiskReservationState.RESERVED or event.previous_event_fingerprint is not None:
-                            errors.append(f"invalid_initial_event:{record.intent_hash}")
+                        if state is not RiskReservationState.RESERVED or previous is not None:
+                            errors.append(f"invalid_initial_event:{intent_hash}")
                     else:
-                        if previous is None or event.previous_event_fingerprint != previous.event_fingerprint:
-                            errors.append(f"broken_event_chain:{record.intent_hash}")
+                        if previous != previous_fingerprint:
+                            errors.append(f"broken_event_chain:{intent_hash}:{index}")
                         allowed = {
                             RiskReservationState.RESERVED: {RiskReservationState.COMMITTED, RiskReservationState.RELEASED},
                             RiskReservationState.COMMITTED: {RiskReservationState.RELEASED},
                             RiskReservationState.RELEASED: set(),
-                        }[previous.state]
-                        if event.state not in allowed:
-                            errors.append(f"illegal_event_transition:{record.intent_hash}")
-                    previous = event
+                        }[previous_state]  # type: ignore[index]
+                        if state not in allowed:
+                            errors.append(f"illegal_event_transition:{intent_hash}:{index}")
+                    previous_fingerprint = str(event[0])
+                    previous_state = state
             except (ValueError, RuntimeError, sqlite3.DatabaseError) as exc:
                 errors.append(f"record:{intent_hash}:{type(exc).__name__}")
         orphan_count = int(self._db.execute(
@@ -656,32 +486,152 @@ class SQLitePortfolioRiskGovernor:
         errors = self._integrity_errors()
         return (not errors, errors)
 
-    def _denied(
+    def state(self, intent_hash: str) -> RiskReservationState:
+        events = self._event_rows(intent_hash)
+        if not events:
+            raise KeyError(intent_hash)
+        return RiskReservationState(str(events[-1][1]))
+
+    def _active_rows(self, account_fingerprint: str) -> tuple[tuple[tuple[object, ...], RiskReservationState], ...]:
+        account = _sha(account_fingerprint, "active account")
+        intents = self._db.execute(
+            "SELECT intent_hash FROM portfolio_risk_records WHERE account_fingerprint=? ORDER BY intent_hash",
+            (account,),
+        ).fetchall()
+        result: list[tuple[tuple[object, ...], RiskReservationState]] = []
+        for (intent_hash_raw,) in intents:
+            intent_hash = str(intent_hash_raw)
+            record = self._record_row(intent_hash)
+            events = self._event_rows(intent_hash)
+            if record is None or not events:
+                raise RuntimeError("portfolio risk lifecycle is incomplete")
+            current = RiskReservationState(str(events[-1][1]))
+            if current in {RiskReservationState.RESERVED, RiskReservationState.COMMITTED}:
+                result.append((record, current))
+        return tuple(result)
+
+    def active_reserved_loss(self, account_fingerprint: str) -> float:
+        return sum(float(record[10]) for record, _ in self._active_rows(account_fingerprint))
+
+    def _account_snapshot(self, snapshot: PortfolioCapitalSnapshot, active_loss: float, same_loss: float) -> AccountRiskSnapshot:
+        equity = snapshot.equity
+        portfolio_heat = active_loss / equity if equity > 0 else active_loss
+        same_heat = same_loss / equity if equity > 0 else same_loss
+        return AccountRiskSnapshot(
+            snapshot.equity,
+            snapshot.balance,
+            snapshot.high_water_mark,
+            snapshot.day_start_equity,
+            snapshot.week_start_equity,
+            snapshot.margin_used,
+            portfolio_heat,
+            same_heat,
+        )
+
+    def _decision(
         self,
+        decision: RiskReservationDecision,
         intent: OrderIntent,
         snapshot: PortfolioCapitalSnapshot,
         *,
         reserved_loss: float,
         active_loss: float,
-        post_heat: float,
-        same_symbol_heat: float,
-        margin_fraction: float,
-        risk_state: RiskState,
-        reasons: Iterable[str],
+        same_loss_after: float,
+        post_margin: float,
+        risk_state_value: RiskState,
+        reasons: Iterable[str] = (),
+        record_fingerprint: str | None = None,
+        event_fingerprint: str | None = None,
     ) -> PortfolioRiskDecision:
+        equity = snapshot.equity
+        post_loss = active_loss + (reserved_loss if decision is not RiskReservationDecision.EXISTING else 0.0)
+        post_heat = math.inf if equity == 0 and post_loss > 0 else (post_loss / equity if equity > 0 else 0.0)
+        same_heat = math.inf if equity == 0 and same_loss_after > 0 else (same_loss_after / equity if equity > 0 else 0.0)
+        margin_fraction = math.inf if equity == 0 and post_margin > 0 else (post_margin / equity if equity > 0 else 0.0)
         return PortfolioRiskDecision(
-            RiskReservationDecision.DENIED,
+            decision,
             intent.intent_hash,
             snapshot.account_fingerprint,
             reserved_loss,
             active_loss,
             snapshot.equity,
             post_heat,
-            same_symbol_heat,
+            same_heat,
             margin_fraction,
-            risk_state,
+            risk_state_value,
             tuple(sorted(set(reasons))),
+            record_fingerprint,
+            event_fingerprint,
         )
+
+    def _insert_record_and_initial_event(
+        self,
+        intent: OrderIntent,
+        preflight: BrokerPreflight,
+        snapshot: PortfolioCapitalSnapshot,
+        *,
+        now: datetime,
+        evidence: tuple[str, ...],
+    ) -> tuple[str, str]:
+        strategy = _sha(intent.strategy_hash, "intent strategy")
+        session = _sha(intent.session_fingerprint, "intent session")
+        symbol = _text(intent.symbol, "intent symbol", maximum=64).upper()
+        record_payload = {
+            "protocol": "dusty-m195-risk-reservation-record-v1",
+            "intent_hash": intent.intent_hash,
+            "strategy_hash": strategy,
+            "session_fingerprint": session,
+            "symbol": symbol,
+            "account_fingerprint": snapshot.account_fingerprint,
+            "source_commit": self.source_commit,
+            "capital_snapshot_fingerprint": snapshot.fingerprint,
+            "preflight_fingerprint": _preflight_fingerprint(preflight),
+            "policy_fingerprint": self.policy.fingerprint,
+            "reserved_loss": float(intent.allowed_loss),
+            "required_margin": float(preflight.required_margin),
+            "created_at": now.isoformat(),
+            "evidence_fingerprints": list(evidence),
+        }
+        record_fingerprint = _digest(record_payload)
+        self._db.execute(
+            "INSERT INTO portfolio_risk_records("
+            "intent_hash,record_fingerprint,strategy_hash,session_fingerprint,symbol,account_fingerprint,"
+            "source_commit,capital_snapshot_fingerprint,preflight_fingerprint,policy_fingerprint,reserved_loss,"
+            "required_margin,created_at,evidence_fingerprints) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                intent.intent_hash,
+                record_fingerprint,
+                strategy,
+                session,
+                symbol,
+                snapshot.account_fingerprint,
+                self.source_commit,
+                snapshot.fingerprint,
+                _preflight_fingerprint(preflight),
+                self.policy.fingerprint,
+                intent.allowed_loss,
+                preflight.required_margin,
+                now.isoformat(),
+                _canonical(list(evidence)),
+            ),
+        )
+        event_evidence = tuple(sorted({record_fingerprint, *evidence}))
+        event_payload = {
+            "protocol": "dusty-m195-risk-reservation-event-v1",
+            "intent_hash": intent.intent_hash,
+            "state": RiskReservationState.RESERVED.value,
+            "created_at": now.isoformat(),
+            "previous_event_fingerprint": None,
+            "evidence_fingerprints": list(event_evidence),
+        }
+        event_fingerprint = _digest(event_payload)
+        self._db.execute(
+            "INSERT INTO portfolio_risk_events("
+            "event_fingerprint,intent_hash,state,created_at,previous_event_fingerprint,evidence_fingerprints) "
+            "VALUES(?,?,?,?,?,?)",
+            (event_fingerprint, intent.intent_hash, RiskReservationState.RESERVED.value, now.isoformat(), None, _canonical(list(event_evidence))),
+        )
+        return record_fingerprint, event_fingerprint
 
     def reserve(
         self,
@@ -694,53 +644,54 @@ class SQLitePortfolioRiskGovernor:
     ) -> PortfolioRiskDecision:
         moment = _aware(now, "reservation timestamp")
         evidence = _evidence(evidence_fingerprints, "reservation evidence")
-        self._begin_write()
+        self._begin()
         try:
-            integrity_errors = self._integrity_errors()
-            if integrity_errors:
-                raise RuntimeError("portfolio risk ledger integrity failure: " + ",".join(integrity_errors))
+            errors = self._integrity_errors()
+            if errors:
+                raise RuntimeError("portfolio risk ledger integrity failure: " + ",".join(errors))
 
-            existing = self._record(intent.intent_hash)
+            existing = self._record_row(intent.intent_hash)
             if existing is not None:
-                events = self._events(existing.intent_hash)
+                events = self._event_rows(intent.intent_hash)
                 if not events:
                     raise RuntimeError("existing reservation has no lifecycle event")
-                if existing.account_fingerprint != snapshot.account_fingerprint:
+                if str(existing[5]) != snapshot.account_fingerprint:
                     raise ValueError("existing intent is bound to another account risk book")
-                if existing.strategy_hash != _sha(intent.strategy_hash, "intent strategy") or existing.symbol != intent.symbol.upper():
+                if str(existing[2]) != _sha(intent.strategy_hash, "intent strategy") or str(existing[4]) != intent.symbol.upper():
                     raise ValueError("existing intent reservation identity mismatch")
-                if existing.session_fingerprint != _sha(intent.session_fingerprint, "intent session"):
+                if str(existing[3]) != _sha(intent.session_fingerprint, "intent session"):
                     raise ValueError("existing intent reservation session mismatch")
-                if events[-1].state is RiskReservationState.RELEASED:
+                current = RiskReservationState(str(events[-1][1]))
+                if current is RiskReservationState.RELEASED:
                     raise ValueError("released intent reservation cannot be resurrected")
                 active_rows = self._active_rows(snapshot.account_fingerprint)
-                active_loss = sum(record.reserved_loss for record, _ in active_rows)
-                same_loss = sum(record.reserved_loss for record, _ in active_rows if record.symbol == intent.symbol.upper())
+                total = sum(float(row[10]) for row, _ in active_rows)
+                same = sum(float(row[10]) for row, _ in active_rows if str(row[4]) == intent.symbol.upper())
+                state_value = risk_state(self._account_snapshot(snapshot, total, same), self.policy.constitution)
+                self._commit()
                 equity = snapshot.equity
-                current_heat = math.inf if equity == 0 and active_loss > 0 else (active_loss / equity if equity > 0 else 0.0)
-                same_heat = math.inf if equity == 0 and same_loss > 0 else (same_loss / equity if equity > 0 else 0.0)
                 margin_fraction = math.inf if equity == 0 and snapshot.margin_used > 0 else (snapshot.margin_used / equity if equity > 0 else 0.0)
-                self._commit_write()
                 return PortfolioRiskDecision(
                     RiskReservationDecision.EXISTING,
-                    existing.intent_hash,
-                    existing.account_fingerprint,
-                    existing.reserved_loss,
-                    max(0.0, active_loss - existing.reserved_loss),
+                    intent.intent_hash,
+                    snapshot.account_fingerprint,
+                    float(existing[10]),
+                    max(0.0, total - float(existing[10])),
                     equity,
-                    current_heat,
-                    same_heat,
+                    math.inf if equity == 0 and total > 0 else (total / equity if equity > 0 else 0.0),
+                    math.inf if equity == 0 and same > 0 else (same / equity if equity > 0 else 0.0),
                     margin_fraction,
-                    RiskState.NORMAL,
+                    state_value,
                     ("existing_active_reservation_reused",),
-                    existing.record_fingerprint,
-                    events[-1].event_fingerprint,
+                    str(existing[1]),
+                    str(events[-1][0]),
                 )
 
             active_rows = self._active_rows(snapshot.account_fingerprint)
-            active_loss = sum(record.reserved_loss for record, _ in active_rows)
-            same_loss = sum(record.reserved_loss for record, _ in active_rows if record.symbol == intent.symbol.upper())
+            active_loss = sum(float(row[10]) for row, _ in active_rows)
+            same_loss = sum(float(row[10]) for row, _ in active_rows if str(row[4]) == intent.symbol.upper())
             reserved_loss = float(intent.allowed_loss)
+            required_margin = float(preflight.required_margin)
             reasons: list[str] = []
 
             if snapshot.source_commit != self.source_commit:
@@ -765,104 +716,81 @@ class SQLitePortfolioRiskGovernor:
                 reasons.append("intent_governance_not_approved")
             if not math.isfinite(reserved_loss) or reserved_loss <= 0:
                 reasons.append("planned_loss_invalid")
-            if not math.isfinite(preflight.required_margin) or preflight.required_margin < 0:
+            if not math.isfinite(required_margin) or required_margin < 0:
                 reasons.append("required_margin_invalid")
             if not math.isfinite(preflight.loss_at_stop) or preflight.loss_at_stop < 0:
                 reasons.append("broker_stop_loss_invalid")
             elif preflight.loss_at_stop > reserved_loss + 1e-9:
                 reasons.append("broker_stop_loss_exceeds_intent_budget")
 
+            account_snapshot = self._account_snapshot(snapshot, active_loss, same_loss)
+            state_value = risk_state(account_snapshot, self.policy.constitution)
             equity = snapshot.equity
-            post_loss = active_loss + max(0.0, reserved_loss if math.isfinite(reserved_loss) else 0.0)
-            post_same_loss = same_loss + max(0.0, reserved_loss if math.isfinite(reserved_loss) else 0.0)
+            safe_reserved = reserved_loss if math.isfinite(reserved_loss) and reserved_loss > 0 else 0.0
+            safe_margin = required_margin if math.isfinite(required_margin) and required_margin >= 0 else 0.0
+            post_loss = active_loss + safe_reserved
+            post_same_loss = same_loss + safe_reserved
+            post_margin = snapshot.margin_used + safe_margin
             post_heat = math.inf if equity == 0 and post_loss > 0 else (post_loss / equity if equity > 0 else 0.0)
             same_heat = math.inf if equity == 0 and post_same_loss > 0 else (post_same_loss / equity if equity > 0 else 0.0)
-            proposed_risk = math.inf if equity == 0 and reserved_loss > 0 else (reserved_loss / equity if equity > 0 else 0.0)
-            post_margin = snapshot.margin_used + max(0.0, preflight.required_margin if math.isfinite(preflight.required_margin) else 0.0)
-            margin_fraction = math.inf if equity == 0 and post_margin > 0 else (post_margin / equity if equity > 0 else 0.0)
 
-            static_snapshot = AccountRiskSnapshot(
-                snapshot.equity,
-                snapshot.balance,
-                snapshot.high_water_mark,
-                snapshot.day_start_equity,
-                snapshot.week_start_equity,
-                snapshot.margin_used,
-                math.inf if not math.isfinite(active_loss / equity) else (active_loss / equity if equity > 0 else 0.0),
-                math.inf if not math.isfinite(same_loss / equity) else (same_loss / equity if equity > 0 else 0.0),
-            ) if equity > 0 else AccountRiskSnapshot(
-                snapshot.equity,
-                snapshot.balance,
-                snapshot.high_water_mark,
-                snapshot.day_start_equity,
-                snapshot.week_start_equity,
-                snapshot.margin_used,
-                active_loss,
-                same_loss,
-            )
-            risk_assessment = assess_trade_risk(
-                static_snapshot,
-                TradeRiskRequest(
-                    proposed_risk=proposed_risk,
-                    post_trade_portfolio_heat=post_heat,
-                    post_trade_same_symbol_heat=same_heat,
-                    post_trade_margin_used=post_margin,
-                    has_initial_stop=True,
-                    complete_risk_data=(
-                        snapshot.complete_exposure_data
-                        and snapshot.unexplained_position_count == 0
-                        and snapshot.unexplained_order_count == 0
+            if equity <= 0:
+                reasons.extend(("account_state:failed", "trade_risk_ceiling", "portfolio_heat_ceiling"))
+            else:
+                assessment = assess_trade_risk(
+                    account_snapshot,
+                    TradeRiskRequest(
+                        proposed_risk=safe_reserved / equity,
+                        post_trade_portfolio_heat=post_heat,
+                        post_trade_same_symbol_heat=same_heat,
+                        post_trade_margin_used=post_margin,
+                        has_initial_stop=True,
+                        complete_risk_data=(
+                            snapshot.complete_exposure_data
+                            and snapshot.unexplained_position_count == 0
+                            and snapshot.unexplained_order_count == 0
+                        ),
                     ),
-                ),
-                self.policy.constitution,
-            )
-            reasons.extend(risk_assessment.reasons)
-            if snapshot.free_margin + 1e-9 < preflight.required_margin:
+                    self.policy.constitution,
+                )
+                state_value = assessment.state
+                reasons.extend(assessment.reasons)
+            if snapshot.free_margin + 1e-9 < safe_margin:
                 reasons.append("broker_free_margin_insufficient")
 
             if reasons:
-                self._commit_write()
-                return self._denied(
+                self._commit()
+                return self._decision(
+                    RiskReservationDecision.DENIED,
                     intent,
                     snapshot,
                     reserved_loss=reserved_loss,
                     active_loss=active_loss,
-                    post_heat=post_heat,
-                    same_symbol_heat=same_heat,
-                    margin_fraction=margin_fraction,
-                    risk_state=risk_assessment.state,
+                    same_loss_after=post_same_loss,
+                    post_margin=post_margin,
+                    risk_state_value=state_value,
                     reasons=reasons,
                 )
 
-            record = self._make_record(intent, preflight, snapshot, now=moment, evidence_fingerprints=evidence)
-            event = self._make_event(
-                intent.intent_hash,
-                RiskReservationState.RESERVED,
-                now=moment,
-                previous=None,
-                evidence_fingerprints=(record.record_fingerprint, *evidence),
+            record_fingerprint, event_fingerprint = self._insert_record_and_initial_event(
+                intent, preflight, snapshot, now=moment, evidence=evidence
             )
-            self._insert_record(record)
-            self._insert_event(event)
-            self._commit_write()
-            return PortfolioRiskDecision(
+            self._commit()
+            return self._decision(
                 RiskReservationDecision.APPROVED,
-                intent.intent_hash,
-                snapshot.account_fingerprint,
-                record.reserved_loss,
-                active_loss,
-                snapshot.equity,
-                post_heat,
-                same_heat,
-                margin_fraction,
-                risk_assessment.state,
-                (),
-                record.record_fingerprint,
-                event.event_fingerprint,
+                intent,
+                snapshot,
+                reserved_loss=reserved_loss,
+                active_loss=active_loss,
+                same_loss_after=post_same_loss,
+                post_margin=post_margin,
+                risk_state_value=state_value,
+                record_fingerprint=record_fingerprint,
+                event_fingerprint=event_fingerprint,
             )
         except Exception:
             try:
-                self._rollback_write()
+                self._rollback()
             except sqlite3.DatabaseError:
                 pass
             raise
@@ -874,57 +802,69 @@ class SQLitePortfolioRiskGovernor:
         *,
         now: datetime,
         evidence_fingerprints: Iterable[str],
-    ) -> RiskReservationEvent:
+        required_current: RiskReservationState,
+    ) -> RiskLifecycleReceipt:
         moment = _aware(now, "reservation transition timestamp")
         evidence = _evidence(evidence_fingerprints, "reservation transition evidence")
-        self._begin_write()
+        self._begin()
         try:
             errors = self._integrity_errors()
             if errors:
                 raise RuntimeError("portfolio risk ledger integrity failure: " + ",".join(errors))
-            record = self._record(intent_hash)
+            record = self._record_row(intent_hash)
             if record is None:
                 raise KeyError(intent_hash)
-            events = self._events(record.intent_hash)
+            events = self._event_rows(intent_hash)
             if not events:
                 raise RuntimeError("reservation missing lifecycle event")
-            current = events[-1]
-            if target is current.state:
-                self._commit_write()
-                return current
-            allowed = {
-                RiskReservationState.RESERVED: {RiskReservationState.COMMITTED, RiskReservationState.RELEASED},
-                RiskReservationState.COMMITTED: {RiskReservationState.RELEASED},
-                RiskReservationState.RELEASED: set(),
-            }[current.state]
-            if target not in allowed:
-                raise ValueError(f"illegal risk reservation transition: {current.state.value}->{target.value}")
-            if moment < current.created_at:
+            current = RiskReservationState(str(events[-1][1]))
+            if current is target:
+                self._commit()
+                return RiskLifecycleReceipt(_sha(intent_hash, "receipt intent"), current, str(events[-1][0]), datetime.fromisoformat(str(events[-1][2])))
+            if current is not required_current:
+                raise ValueError(f"transition requires {required_current.value} state; found {current.value}")
+            if moment < datetime.fromisoformat(str(events[-1][2])).astimezone(timezone.utc):
                 raise ValueError("reservation transition cannot predate current lifecycle event")
-            event = self._make_event(
-                record.intent_hash,
-                target,
-                now=moment,
-                previous=current.event_fingerprint,
-                evidence_fingerprints=(record.record_fingerprint, *evidence),
+            previous = str(events[-1][0])
+            event_evidence = tuple(sorted({str(record[1]), *evidence}))
+            event_payload = {
+                "protocol": "dusty-m195-risk-reservation-event-v1",
+                "intent_hash": str(record[0]),
+                "state": target.value,
+                "created_at": moment.isoformat(),
+                "previous_event_fingerprint": previous,
+                "evidence_fingerprints": list(event_evidence),
+            }
+            event_fingerprint = _digest(event_payload)
+            self._db.execute(
+                "INSERT INTO portfolio_risk_events("
+                "event_fingerprint,intent_hash,state,created_at,previous_event_fingerprint,evidence_fingerprints) "
+                "VALUES(?,?,?,?,?,?)",
+                (event_fingerprint, str(record[0]), target.value, moment.isoformat(), previous, _canonical(list(event_evidence))),
             )
-            self._insert_event(event)
-            self._commit_write()
-            return event
+            self._commit()
+            return RiskLifecycleReceipt(str(record[0]), target, event_fingerprint, moment)
         except Exception:
             try:
-                self._rollback_write()
+                self._rollback()
             except sqlite3.DatabaseError:
                 pass
             raise
 
-    def commit(self, intent_hash: str, *, now: datetime, evidence_fingerprints: Iterable[str]) -> RiskReservationEvent:
-        """Mark broker exposure as possible/real; no broker call is performed here."""
+    def commit(
+        self,
+        intent_hash: str,
+        *,
+        now: datetime,
+        evidence_fingerprints: Iterable[str],
+    ) -> RiskLifecycleReceipt:
+        """Record that broker exposure may now exist; this method never calls a broker."""
         return self._transition(
             intent_hash,
             RiskReservationState.COMMITTED,
             now=now,
             evidence_fingerprints=evidence_fingerprints,
+            required_current=RiskReservationState.RESERVED,
         )
 
     def release_pre_send(
@@ -933,34 +873,29 @@ class SQLitePortfolioRiskGovernor:
         *,
         now: datetime,
         no_send_evidence_fingerprints: Iterable[str],
-    ) -> RiskReservationEvent:
-        """Release only a never-sent reservation with explicit no-send evidence."""
-        if self.state(intent_hash) is not RiskReservationState.RESERVED:
-            raise ValueError("pre-send release requires RESERVED state")
+    ) -> RiskLifecycleReceipt:
+        """Release only if the same atomic transaction still sees RESERVED/no-send state."""
         return self._transition(
             intent_hash,
             RiskReservationState.RELEASED,
             now=now,
             evidence_fingerprints=no_send_evidence_fingerprints,
+            required_current=RiskReservationState.RESERVED,
         )
 
-    def release_terminal(self, release: TerminalRiskReleaseEvidence) -> RiskReservationEvent:
-        """Release committed heat only after broker/reconciliation evidence proves no exposure remains."""
-        record = self._record(release.intent_hash)
+    def release_terminal(self, release: TerminalRiskReleaseEvidence) -> RiskLifecycleReceipt:
+        """Release committed heat only after explicit broker/reconciliation terminal evidence."""
+        record = self._record_row(release.intent_hash)
         if record is None:
             raise KeyError(release.intent_hash)
-        if record.account_fingerprint != release.account_fingerprint:
+        if str(record[5]) != release.account_fingerprint:
             raise ValueError("terminal release account identity mismatch")
-        state = self.state(release.intent_hash)
-        if state is RiskReservationState.RELEASED:
-            return self._events(release.intent_hash)[-1]
-        if state is not RiskReservationState.COMMITTED:
-            raise ValueError("terminal release requires COMMITTED state")
         if not release.position_absent_or_closed or not release.pending_order_absent:
-            raise ValueError("terminal release requires broker proof of no remaining position or pending order")
+            raise ValueError("terminal release requires proof of no remaining position or pending order")
         return self._transition(
             release.intent_hash,
             RiskReservationState.RELEASED,
             now=release.captured_at,
             evidence_fingerprints=(release.fingerprint, *release.evidence_fingerprints),
+            required_current=RiskReservationState.COMMITTED,
         )
