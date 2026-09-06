@@ -20,14 +20,17 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+from .source_intake import StrategyProposal
 from .strategy_discovery import (
     DiscoveryMode,
     DiscoveryTrigger,
     StrategyDiscoveryResult,
     StrategyDiscoveryService,
 )
+from .strategy_estate import load_strategy_estate
+from .strategy_estate_builder import EstatePopulationResult
 
 
 SYMBOL_SCAN_STATE_SCHEMA = "dusty-broker-symbol-scan-state-v1"
@@ -43,6 +46,7 @@ MAX_RESULT_TEXT = 20_000
 # than allowing Ollama to hypothesize an inexpressible direction. CLOSEONLY and
 # DISABLED are never research candidates for a new-entry strategy.
 FULL_TRADE_MODE = 4
+TARGET_TAG_PREFIX = "dusty_research_target_symbol:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,12 +83,78 @@ class BrokerSymbolScanSummary:
             raise ValueError("reconstruction target must belong to scanned symbols")
 
 
+class _SymbolTargetingEstateBuilder:
+    """Derive one exact-symbol hypothesis without mutating source attribution.
+
+    A generic Vibe strategy concept is not a claim that the source traded every
+    Coinexx symbol. The derived proposal therefore adds an explicit Dusty research
+    target tag and exact symbol while preserving the original immutable source
+    snapshot and source-declared rules. Its fingerprint is symbol-specific, so a
+    concept already studied on EURUSD can still be falsified independently on
+    GBPUSD. Repeated scans of the same concept/symbol pair are idempotently skipped
+    before Ollama is called.
+    """
+
+    broker_write_authority = False
+    live_write_authority = False
+    promotion_authority = False
+    risk_override_authority = False
+    guardian_override_authority = False
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self.last_missing_count = 0
+
+    def populate(
+        self,
+        proposals: Iterable[StrategyProposal],
+        *,
+        model_tag: str,
+        model_digest: str,
+        allowed_symbols: tuple[str, ...],
+        allowed_timeframes: tuple[str, ...],
+        allowed_features: tuple[str, ...],
+        allowed_sessions: tuple[str, ...] = (),
+        estate_path: str | Path | None = None,
+        created_at: datetime | None = None,
+    ) -> EstatePopulationResult:
+        normalized = tuple(dict.fromkeys(_symbol(value).upper() for value in allowed_symbols))
+        if len(normalized) != 1:
+            raise ValueError("broker-targeted estate population requires exactly one symbol")
+        target = normalized[0]
+
+        targeted: list[StrategyProposal] = []
+        for proposal in proposals:
+            row = _target_proposal(proposal, target)
+            if row is not None:
+                targeted.append(row)
+
+        existing = {row.proposal_fingerprint for row in load_strategy_estate(estate_path)}
+        missing = tuple(row for row in targeted if row.fingerprint not in existing)
+        self.last_missing_count = len(missing)
+        if not missing:
+            return EstatePopulationResult((), None)
+
+        return self._delegate.populate(
+            missing,
+            model_tag=model_tag,
+            model_digest=model_digest,
+            allowed_symbols=(target,),
+            allowed_timeframes=allowed_timeframes,
+            allowed_features=allowed_features,
+            allowed_sessions=allowed_sessions,
+            estate_path=estate_path,
+            created_at=created_at,
+        )
+
+
 class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
     """Adds bounded broker-universe rotation without broadening authority.
 
     The underlying M196.5 discovery service remains the only component that can
-    call the Strategy Estate builder. This extension chooses the symbol universe
-    and does lead-only website scouting. All expensive work is sequential.
+    call the Strategy Estate builder. This extension chooses the symbol universe,
+    binds generic hypotheses to one exact research target, and does lead-only
+    website scouting. All expensive work is sequential.
     """
 
     broker_write_authority = False
@@ -196,13 +266,19 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
                 ),
             )
 
+        targeting_builder = _SymbolTargetingEstateBuilder(self._builder)
         delegate = StrategyDiscoveryService(
             delegate_config,
             contractor_factory=self._contractor_factory,
-            builder=self._builder,
+            builder=targeting_builder,
             digest_resolver=self._digest_resolver,
         )
         result = delegate.discover(mode, trigger=trigger, now=current)
+        if mode in {DiscoveryMode.NEW_STRATEGIES, DiscoveryMode.BOTH} and reconstruction_target:
+            result = replace(
+                result,
+                new_single_symbol_candidates=targeting_builder.last_missing_count,
+            )
         self._last_symbol_summary = BrokerSymbolScanSummary(
             universe_size=len(universe),
             symbols_scanned=symbols_scanned,
@@ -338,6 +414,26 @@ class BrokerAwareStrategyDiscoveryService(StrategyDiscoveryService):
             },
         )
         return completed, failed, report_path.resolve()
+
+
+def _target_proposal(proposal: StrategyProposal, target: str) -> StrategyProposal | None:
+    target = _symbol(target).upper()
+    source_symbols = {value.strip().upper() for value in proposal.symbols if value.strip()}
+    if source_symbols and target not in source_symbols:
+        return None
+
+    target_tags = tuple(tag for tag in proposal.tags if tag.startswith(TARGET_TAG_PREFIX))
+    expected_tag = TARGET_TAG_PREFIX + target
+    if target_tags and target_tags != (expected_tag,):
+        return None
+    tags = proposal.tags if expected_tag in proposal.tags else (*proposal.tags, expected_tag)
+    target_digest = sha256(target.encode("utf-8")).hexdigest()
+    return replace(
+        proposal,
+        proposal_id=f"{proposal.proposal_id}:target-sha256:{target_digest}",
+        symbols=(target,),
+        tags=tags,
+    )
 
 
 def _scan_limit(mode: DiscoveryMode) -> int:
