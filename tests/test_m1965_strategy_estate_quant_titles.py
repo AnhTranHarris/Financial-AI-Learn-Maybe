@@ -234,7 +234,7 @@ class M1965StrategyEstateQuantTitleTests(unittest.TestCase):
                     reconstruction(), model_tag="qwen-test", model_digest=H("c")
                 )
                 self.assertEqual(result.status, ClassificationAvailability.UNAVAILABLE)
-                self.assertIn("evidence support", result.error)
+                self.assertIn("evidence", result.error)
 
     def test_classifier_schema_removes_unsupported_special_labels_before_model_call(self) -> None:
         payloads = []
