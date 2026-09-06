@@ -19,6 +19,7 @@ from .research import Clause, RuleOp
 from .runtime import CompiledStrategy, compile_strategy
 from .strategy_catalog import StrategyCatalogEntry, StrategyStage
 from .strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
+from .strategy_taxonomy import catalog_entry_for_reconstruction
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +60,7 @@ class _ConfiguredReconstructionPackage:
 
     @property
     def title(self) -> str:
-        return self.inner.catalog_entry.title
+        return self.catalog_entry.title
 
     @property
     def features(self) -> FeatureConfig:
@@ -79,7 +80,8 @@ class _ConfiguredReconstructionPackage:
 
     @property
     def catalog_entry(self) -> StrategyCatalogEntry:
-        return self.inner.catalog_entry
+        return catalog_entry_for_reconstruction(self.inner.reconstruction)
+
 
 
 def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
@@ -106,9 +108,10 @@ def reviewed_research_packages() -> tuple[ReviewedResearchPackage, ...]:
     )
 
 
+
 def _configured_reconstruction_packages() -> tuple[_ConfiguredReconstructionPackage, ...]:
     # Lazy imports avoid a module-import cycle: trading_skills itself reuses the
-    # built-in package type for the UI projection.  Resolution happens only after
+    # built-in package type for the UI projection. Resolution happens only after
     # both modules have finished importing.
     from .strategy_library_snapshot import configured_reconstructions
     from .trading_skills import ReconstructedResearchPackage
@@ -119,8 +122,15 @@ def _configured_reconstruction_packages() -> tuple[_ConfiguredReconstructionPack
     )
 
 
+
 def resolve_research_package(entry: StrategyCatalogEntry) -> ReviewedResearchPackage | _ConfiguredReconstructionPackage:
-    """Resolve exact executable artifacts; catalog metadata alone never suffices."""
+    """Resolve exact executable artifacts; catalog metadata alone never suffices.
+
+    Pre-taxonomy snapshots remain executable through their exact legacy catalog
+    projection, while the new PC estate uses the deterministic quant-title
+    projection. Both views bind the same immutable reconstruction and strategy
+    hash; arbitrary caller-edited metadata still fails closed.
+    """
     for package in reviewed_research_packages():
         if entry.strategy_id == package.spec.strategy_id:
             if entry != package.catalog_entry:
@@ -128,7 +138,8 @@ def resolve_research_package(entry: StrategyCatalogEntry) -> ReviewedResearchPac
             return package
     for package in _configured_reconstruction_packages():
         if entry.strategy_id == package.spec.strategy_id:
-            if entry != package.catalog_entry:
+            legacy_entry = package.inner.catalog_entry
+            if entry not in (package.catalog_entry, legacy_entry):
                 raise ValueError("configured_reconstruction_metadata_mismatch")
             return package
     raise ValueError("strategy_has_no_reviewed_executable_package")
