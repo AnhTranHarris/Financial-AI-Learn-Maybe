@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
@@ -142,7 +141,7 @@ def competency(skill_row, score: float = 0.8, *, eligible: bool = True, evaluate
         "trend_expansion",
         eligible,
         score,
-        H("7"),
+        skill_row.fingerprint,
         evaluated_at or NOW - timedelta(minutes=30),
         valid_until or NOW + timedelta(hours=1),
     )
