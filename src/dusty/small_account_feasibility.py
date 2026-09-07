@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-"""M197 small-account feasibility engine.
+"""M197 small-account feasibility and capital-compression engine.
 
-This layer answers one question only: can a broker/symbol/strategy stop be
-expressed at a given equity without relaxing Dusty's Risk Constitution?
-It never increases percentage risk, never rounds volume upward, and never
-grants trading authority.
+M197 never invents strategy profitability.  It owns only the capital experiment:
+keep the strategy/broker assumptions frozen, start from a successful reference
+backtest, reduce starting capital by 25%, and ask the upstream quantitative gate
+to rerun the same experiment.  Compression stops at the first failed rerun or
+a successful run below the configured capital target.
+
+The lower-level feasibility calculation remains useful for identifying a hard
+broker/risk floor.  Neither layer can grant execution or promotion authority.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -38,6 +43,12 @@ class CapitalState(StrEnum):
 class FeasibilityDecision(StrEnum):
     TRADEABLE = "tradeable"
     NO_TRADE = "no_trade"
+
+
+class CapitalCompressionStatus(StrEnum):
+    BELOW_TARGET_PROVEN = "below_target_proven"
+    MINIMUM_BOUND_FOUND = "minimum_bound_found"
+    REFERENCE_FAILED = "reference_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +142,56 @@ class SmallAccountFeasibility:
     guardian_override_authority = False
 
 
+@dataclass(frozen=True, slots=True)
+class CapitalBacktestEvidence:
+    """One upstream quantitative rerun at one starting-capital level.
+
+    ``passed`` is supplied by the already-governed A1/A2/A3/robustness policy.
+    M197 deliberately does not reinterpret P&L into a pass.
+    """
+
+    equity: float
+    passed: bool
+    evidence_fingerprint: str
+    reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.equity) or self.equity <= 0:
+            raise ValueError("M197 backtest evidence equity must be finite and positive")
+        if not self.evidence_fingerprint.strip():
+            raise ValueError("M197 backtest evidence requires immutable evidence identity")
+
+
+@dataclass(frozen=True, slots=True)
+class CapitalCompressionAssessment:
+    status: CapitalCompressionStatus
+    starting_equity: float
+    reduction_fraction: float
+    target_equity: float
+    evidence: tuple[CapitalBacktestEvidence, ...]
+    lowest_passing_equity: float | None
+    first_failing_equity: float | None
+
+    @property
+    def fingerprint(self) -> str:
+        return _digest({
+            "protocol": "dusty-m197-capital-compression-v1",
+            "status": self.status.value,
+            "starting_equity": self.starting_equity,
+            "reduction_fraction": self.reduction_fraction,
+            "target_equity": self.target_equity,
+            "evidence": tuple((row.equity, row.passed, row.evidence_fingerprint, row.reasons) for row in self.evidence),
+            "lowest_passing_equity": self.lowest_passing_equity,
+            "first_failing_equity": self.first_failing_equity,
+        })
+
+    broker_write_authority = False
+    live_write_authority = False
+    promotion_authority = False
+    risk_override_authority = False
+    guardian_override_authority = False
+
+
 def _required_stop(request: SmallAccountFeasibilityRequest) -> tuple[float, float, bool]:
     strategy_distance = abs(request.entry_price - request.strategy_stop_price)
     economics = request.economics
@@ -208,14 +269,99 @@ def assess_small_account_feasibility(request: SmallAccountFeasibilityRequest) ->
     )
 
 
+def capital_compression_equities(
+    *,
+    starting_equity: float = 100_000.0,
+    reduction_fraction: float = 0.25,
+    target_equity: float = 100.0,
+    max_steps: int = 64,
+) -> tuple[float, ...]:
+    """Return the exact 100% -> 75% -> ... experiment schedule.
+
+    One value below the target is included so Dusty can prove sub-$100 success
+    instead of stopping merely because the next mathematical step crossed $100.
+    """
+    values = (starting_equity, reduction_fraction, target_equity)
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("M197 capital compression parameters must be finite")
+    if starting_equity <= 0 or target_equity <= 0:
+        raise ValueError("M197 capital compression equities must be positive")
+    if not 0.0 < reduction_fraction < 1.0:
+        raise ValueError("M197 reduction fraction must be in (0,1)")
+    if max_steps < 2:
+        raise ValueError("M197 capital compression requires at least two steps")
+
+    multiplier = 1.0 - reduction_fraction
+    rows: list[float] = []
+    equity = float(starting_equity)
+    for _ in range(max_steps):
+        rows.append(equity)
+        if equity < target_equity:
+            return tuple(rows)
+        equity *= multiplier
+    raise ValueError("M197 capital compression exceeded bounded step count")
+
+
+def run_capital_compression_campaign(
+    evaluate: Callable[[float], CapitalBacktestEvidence],
+    *,
+    starting_equity: float = 100_000.0,
+    reduction_fraction: float = 0.25,
+    target_equity: float = 100.0,
+    max_steps: int = 64,
+) -> CapitalCompressionAssessment:
+    """Rerun a frozen strategy until capital fails or sub-target success is proven."""
+    schedule = capital_compression_equities(
+        starting_equity=starting_equity,
+        reduction_fraction=reduction_fraction,
+        target_equity=target_equity,
+        max_steps=max_steps,
+    )
+    rows: list[CapitalBacktestEvidence] = []
+    lowest_pass: float | None = None
+    first_fail: float | None = None
+
+    for expected_equity in schedule:
+        row = evaluate(expected_equity)
+        if abs(row.equity - expected_equity) > max(1e-9, expected_equity * 1e-12):
+            raise ValueError("M197 evaluator returned evidence for the wrong starting equity")
+        if any(existing.evidence_fingerprint == row.evidence_fingerprint for existing in rows):
+            raise ValueError("M197 capital reruns require distinct immutable evidence identities")
+        rows.append(row)
+
+        if not row.passed:
+            first_fail = row.equity
+            status = CapitalCompressionStatus.REFERENCE_FAILED if len(rows) == 1 else CapitalCompressionStatus.MINIMUM_BOUND_FOUND
+            break
+
+        lowest_pass = row.equity
+        if row.equity < target_equity:
+            status = CapitalCompressionStatus.BELOW_TARGET_PROVEN
+            break
+    else:  # pragma: no cover - bounded schedule always terminates below target
+        raise AssertionError("M197 capital compression schedule did not terminate")
+
+    return CapitalCompressionAssessment(
+        status=status,
+        starting_equity=starting_equity,
+        reduction_fraction=reduction_fraction,
+        target_equity=target_equity,
+        evidence=tuple(rows),
+        lowest_passing_equity=lowest_pass,
+        first_failing_equity=first_fail,
+    )
+
+
 def assess_capital_ladder(
     request: SmallAccountFeasibilityRequest,
-    equities: tuple[float, ...] = (100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0, 25000.0),
+    equities: tuple[float, ...] | None = None,
 ) -> tuple[SmallAccountFeasibility, ...]:
-    if not equities:
+    """Evaluate a supplied ladder, or the canonical descending 25% compression schedule."""
+    selected = capital_compression_equities() if equities is None else equities
+    if not selected:
         raise ValueError("M197 capital ladder cannot be empty")
     rows = []
-    for equity in equities:
+    for equity in selected:
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError("M197 capital ladder equities must be finite and positive")
         rows.append(assess_small_account_feasibility(SmallAccountFeasibilityRequest(
