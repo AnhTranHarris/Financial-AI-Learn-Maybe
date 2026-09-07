@@ -34,7 +34,12 @@ H = lambda ch: ch * 64
 NOW = datetime(2026, 9, 6, 20, 0, tzinfo=timezone.utc)
 
 
-def proposal(name: str, *, symbols: tuple[str, ...] = ()) -> StrategyProposal:
+def proposal(
+    name: str,
+    *,
+    symbols: tuple[str, ...] = (),
+    component: str = "momentum",
+) -> StrategyProposal:
     return StrategyProposal(
         f"vibe:{name}",
         SourceSnapshot(
@@ -50,7 +55,7 @@ def proposal(name: str, *, symbols: tuple[str, ...] = ()) -> StrategyProposal:
         name,
         symbols=symbols,
         timeframes=("M15",),
-        components=("momentum",),
+        components=(component,),
         unresolved=("entry_logic", "exit_logic", "risk_logic"),
         tags=("source:vibe", "research_only"),
     )
@@ -120,8 +125,8 @@ class BoundedStrategyDiscoveryTests(unittest.TestCase):
     def test_generic_proposals_get_distinct_one_symbol_research_lanes(self) -> None:
         delegate = FakeDelegate()
         builder = SymbolDiversifyingEstateBuilder(delegate)
-        first = proposal("generic-a")
-        second = proposal("generic-b")
+        first = proposal("generic-a", component="momentum")
+        second = proposal("generic-b", component="breakout")
         with TemporaryDirectory() as temp:
             result = builder.populate(
                 (first, second),
