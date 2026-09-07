@@ -8,6 +8,7 @@ from dusty.long_running_soak import (
     LongRunningSoakStatus,
     SoakDisturbanceEvidence,
     SoakDisturbanceKind,
+    SoakEvidenceMode,
     SoakRecoveryStatus,
     certify_long_running_soak,
 )
@@ -111,6 +112,23 @@ class M200LongRunningSoakTests(unittest.TestCase):
         result = certify_long_running_soak(_policy(), replace(_evidence(), disturbances=tuple(rows)))
         self.assertIs(result.status, LongRunningSoakStatus.REJECTED)
         self.assertIn("unresolved_disturbance", result.blockers)
+
+    def test_unapproved_controlled_exercise_rejects(self):
+        rows = list(_evidence().disturbances)
+        rows[0] = replace(rows[0], mode=SoakEvidenceMode.CONTROLLED_EXERCISE)
+        result = certify_long_running_soak(_policy(), replace(_evidence(), disturbances=tuple(rows)))
+        self.assertIs(result.status, LongRunningSoakStatus.REJECTED)
+        self.assertIn("unapproved_controlled_exercise:market_closure", result.blockers)
+
+    def test_explicitly_allowed_controlled_exercise_can_satisfy_kind(self):
+        rows = list(_evidence().disturbances)
+        rows[0] = replace(rows[0], mode=SoakEvidenceMode.CONTROLLED_EXERCISE)
+        policy = replace(
+            _policy(),
+            controlled_exercises_allowed=(SoakDisturbanceKind.MARKET_CLOSURE,),
+        )
+        result = certify_long_running_soak(policy, replace(_evidence(), disturbances=tuple(rows)))
+        self.assertIs(result.status, LongRunningSoakStatus.CERTIFIED)
 
     def test_duplicate_action_rejects(self):
         result = certify_long_running_soak(_policy(), replace(_evidence(), duplicate_action_count=1))
