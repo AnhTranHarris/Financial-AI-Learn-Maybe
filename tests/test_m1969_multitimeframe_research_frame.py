@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dusty.analysis_runtime import replay_analysis_strategy
 from dusty.chart_intelligence import AnalysisNode, MarketAnalysisGraph, NodeOperation, ValueUnit
@@ -166,7 +167,7 @@ class M1969MultiTimeframeResearchFrameTests(unittest.TestCase):
         import dusty.multitimeframe_research_frame as module
 
         forbidden = ("order_send", "OrderSend", "broker_write_authority", "live_write_authority")
-        source = open(module.__file__, encoding="utf-8").read()
+        source = Path(module.__file__).read_text(encoding="utf-8")
         for token in forbidden:
             self.assertNotIn(token, source)
 
