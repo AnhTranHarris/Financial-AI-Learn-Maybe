@@ -8,6 +8,7 @@ from dusty.markets import InstrumentEconomics
 from dusty.multitimeframe_financial_backtest import (
     ResearchFriction,
     run_minimum_lot_financial_replay,
+    summarize_minimum_lot_financial_replay,
 )
 
 
@@ -83,6 +84,36 @@ class M19610MultiTimeframeFinancialBacktestTests(unittest.TestCase):
         self.assertAlmostEqual(result.backtest.net_pnl, expected)
         self.assertAlmostEqual(result.backtest.ending_equity, 100_000.0 + expected)
         self.assertGreaterEqual(result.backtest.max_drawdown_fraction, 0.0)
+
+    def test_summary_exposes_derived_metrics_without_backtest_schema_assumptions(self):
+        friction = ResearchFriction(entry_cost_per_lot=8.0, exit_cost_per_lot=3.0, basis="test")
+        result = run_minimum_lot_financial_replay(
+            replay(),
+            (
+                PriceMark(T0, "EURUSD", 1.1000),
+                PriceMark(T0 + timedelta(minutes=15), "EURUSD", 1.1005),
+                PriceMark(T0 + timedelta(minutes=30), "EURUSD", 1.1010),
+            ),
+            symbol="EURUSD",
+            economics=economics(),
+            starting_equity=100_000.0,
+            friction=friction,
+        )
+        summary = summarize_minimum_lot_financial_replay(result, economics())
+        gross = sum(trade_gross_pnl(trade, economics()) for trade in result.simulated_trades)
+        net = sum(trade_net_pnl(trade, economics()) for trade in result.simulated_trades)
+        self.assertAlmostEqual(summary.gross_pnl, gross)
+        self.assertAlmostEqual(summary.net_pnl, net)
+        self.assertAlmostEqual(summary.total_costs, gross - net)
+        self.assertAlmostEqual(summary.ending_equity, result.backtest.ending_equity)
+        self.assertAlmostEqual(summary.max_drawdown_fraction, result.backtest.max_drawdown_fraction)
+        self.assertAlmostEqual(
+            summary.max_margin_used,
+            max(point.margin_used for point in result.backtest.ledger),
+        )
+        self.assertEqual(summary.trade_count, result.backtest.trade_count)
+        self.assertFalse(hasattr(result.backtest, "gross_pnl"))
+        self.assertFalse(hasattr(result.backtest, "max_margin_used"))
 
     def test_explicit_friction_is_charged_and_never_silently_invented(self):
         no_cost = run_minimum_lot_financial_replay(
@@ -164,9 +195,14 @@ class M19610MultiTimeframeFinancialBacktestTests(unittest.TestCase):
             economics=economics(),
             starting_equity=100_000.0,
         )
+        summary = summarize_minimum_lot_financial_replay(result, economics())
         self.assertEqual(result.backtest.trade_count, 0)
         self.assertEqual(result.backtest.net_pnl, 0.0)
         self.assertEqual(result.backtest.ending_equity, 100_000.0)
+        self.assertEqual(summary.gross_pnl, 0.0)
+        self.assertEqual(summary.net_pnl, 0.0)
+        self.assertEqual(summary.total_costs, 0.0)
+        self.assertEqual(summary.max_margin_used, 0.0)
 
 
 if __name__ == "__main__":
