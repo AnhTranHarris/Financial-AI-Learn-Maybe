@@ -29,8 +29,6 @@ from .strategy_estate_builder import EstatePopulationResult, EstatePopulationRow
 
 RECONSTRUCTION_BATCH_SIZE = 6
 MAX_PROFILE_SYMBOLS = 3
-# Deliberately human-readable canonical ladder rather than every exotic MT5
-# interval. D1/M1 are context-capable; primary execution remains M5+ here.
 CONTEXT_TIMEFRAME_LADDER = ("D1", "H4", "H1", "M30", "M15", "M5", "M1")
 DECISION_TIMEFRAME_LADDER = ("H4", "H1", "M30", "M15", "M5")
 
@@ -126,10 +124,12 @@ class ReconstructionCampaign:
     batches: tuple[tuple[ReconstructionPlan, ...], ...]
 
     def __post_init__(self) -> None:
-        if self.proposals_seen < self.proposals_after_dedupe < 0:
+        if self.proposals_seen < 0 or self.proposals_after_dedupe < 0 or self.proposals_after_dedupe > self.proposals_seen:
             raise ValueError("invalid M196.6 campaign counts")
         if self.duplicates_removed != self.proposals_seen - self.proposals_after_dedupe:
             raise ValueError("M196.6 duplicate count mismatch")
+        if len(self.plans) != self.proposals_after_dedupe:
+            raise ValueError("M196.6 plan count must equal deduplicated proposal count")
         if any(not 1 <= len(batch) <= RECONSTRUCTION_BATCH_SIZE for batch in self.batches):
             raise ValueError("M196.6 batch exceeds reconstruction governor")
         flattened = tuple(plan for batch in self.batches for plan in batch)
@@ -165,20 +165,15 @@ def _declared_profile(proposal: StrategyProposal) -> TimeframeProfile | None:
     primary = next((value for value in declared if value in DECISION_TIMEFRAME_LADDER), None)
     if primary is None:
         return None
-    context = tuple(
-        value for value in CONTEXT_TIMEFRAME_LADDER
-        if value in declared and value != primary
-    )[:2]
+    context = tuple(value for value in CONTEXT_TIMEFRAME_LADDER if value in declared and value != primary)[:2]
     if context:
         return TimeframeProfile(primary, context, TimeframeMode.MULTI, AssignmentBasis.SOURCE_DECLARED)
     return TimeframeProfile(primary, (), TimeframeMode.SINGLE, AssignmentBasis.SOURCE_DECLARED)
 
 
 def _exploration_profile(proposal: StrategyProposal) -> TimeframeProfile:
-    # Family identity, not source URL/order, controls exploratory assignment.
     raw = bytes.fromhex(proposal.family_fingerprint)
-    primary_index = raw[0] % len(DECISION_TIMEFRAME_LADDER)
-    primary = DECISION_TIMEFRAME_LADDER[primary_index]
+    primary = DECISION_TIMEFRAME_LADDER[raw[0] % len(DECISION_TIMEFRAME_LADDER)]
     if raw[1] % 2 == 0:
         return TimeframeProfile(primary, (), TimeframeMode.SINGLE, AssignmentBasis.RESEARCH_EXPLORATION)
 
@@ -201,7 +196,6 @@ def _symbols_for(proposal: StrategyProposal, allowed_symbols: tuple[str, ...]) -
         allowed = set(universe)
         candidates = tuple(dict.fromkeys(value.upper() for value in proposal.symbols if value.upper() in allowed))
     else:
-        # No Cartesian expansion: unbound research receives one deterministic symbol.
         candidates = (universe[int(proposal.family_fingerprint[:8], 16) % len(universe)],)
     return candidates[:MAX_PROFILE_SYMBOLS], candidates[MAX_PROFILE_SYMBOLS:]
 
@@ -243,10 +237,7 @@ def plan_reconstruction_campaign(
         plans.append(ReconstructionPlan(proposal, PlanStatus.READY, profile, symbols, deferred_symbols=deferred))
 
     ready = tuple(plan for plan in plans if plan.status is PlanStatus.READY)
-    batches = tuple(
-        ready[index:index + RECONSTRUCTION_BATCH_SIZE]
-        for index in range(0, len(ready), RECONSTRUCTION_BATCH_SIZE)
-    )
+    batches = tuple(ready[index:index + RECONSTRUCTION_BATCH_SIZE] for index in range(0, len(ready), RECONSTRUCTION_BATCH_SIZE))
     return ReconstructionCampaign(
         proposals_seen=len(incoming),
         proposals_after_dedupe=len(deduped),
@@ -266,12 +257,7 @@ def execute_reconstruction_campaign(
     allowed_sessions: tuple[str, ...],
     estate_path: str | Path,
 ) -> CampaignExecutionResult:
-    """Drain six-item windows sequentially and persist after every candidate.
-
-    Each ``builder.populate`` receives exactly one proposal. That guarantees at
-    most one active Ollama reconstruction from this campaign and makes each
-    successfully reconstructed candidate durable before the next model call.
-    """
+    """Drain six-item windows sequentially and persist after every candidate."""
 
     rows: list[EstatePopulationRow] = []
     added = 0
@@ -286,7 +272,6 @@ def execute_reconstruction_campaign(
                 model_tag=model_tag,
                 model_digest=model_digest,
                 allowed_symbols=plan.target_symbols,
-                # Context TFs are not executable until PIT feature binding lands.
                 allowed_timeframes=(plan.profile.primary,),
                 allowed_features=allowed_features,
                 allowed_sessions=allowed_sessions,
