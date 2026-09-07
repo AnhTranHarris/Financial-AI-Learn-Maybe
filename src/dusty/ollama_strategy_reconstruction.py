@@ -37,11 +37,12 @@ from .trading_skills import (
 
 
 KEEP_ALIVE = "10m"
-# The user's certified qwen3:1.7b workstation can be CPU-bound. A bounded 4096
-# context and shorter generation ceiling keep structured reconstruction inside a
-# practical wall-clock budget without relaxing any post-parse validation.
+# The user's certified qwen3:1.7b workstation can be CPU-bound. Keep the normal
+# path small, but permit one bounded escalation when Ollama explicitly reports
+# that the structured response exhausted the generation ceiling.
 NUM_CTX = 4096
 NUM_PREDICT = 384
+TRUNCATION_RETRY_NUM_PREDICT = 640
 
 
 def _canonical(value: object) -> str:
@@ -211,36 +212,11 @@ class OllamaStrategyReconstructor:
             if installed != request.model_digest:
                 return self._unavailable("ollama_model_digest_mismatch")
             schema = _response_schema(request)
-            response = self._transport(
-                "POST",
-                f"{self.base_url}/api/chat",
-                {
-                    "model": request.model_tag,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You reconstruct trading theories for research only. Return only the required JSON. "
-                                "Every field you add is a hypothesis to falsify, never a claim about what the source used. "
-                                "You have no broker, trading, promotion, risk, Guardian, capital, tool, or credential authority."
-                            ),
-                        },
-                        {"role": "user", "content": _canonical(_prompt_payload(request))},
-                    ],
-                    "stream": False,
-                    "think": False,
-                    "format": schema,
-                    "keep_alive": KEEP_ALIVE,
-                    "options": {
-                        "temperature": 0,
-                        "num_ctx": NUM_CTX,
-                        "num_predict": NUM_PREDICT,
-                    },
-                },
-                self.timeout_seconds,
-            )
+            response = self._chat(request, schema, num_predict=NUM_PREDICT)
             if response.get("done_reason") == "length":
-                return self._unavailable("ollama_reconstruction_truncated")
+                response = self._chat(request, schema, num_predict=TRUNCATION_RETRY_NUM_PREDICT)
+                if response.get("done_reason") == "length":
+                    return self._unavailable("ollama_reconstruction_truncated")
             message = response.get("message")
             if not isinstance(message, dict) or not isinstance(message.get("content"), str):
                 return self._unavailable("ollama_chat_response_missing_content")
@@ -255,6 +231,42 @@ class OllamaStrategyReconstructor:
             )
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
             return self._unavailable(f"ollama_strategy_reconstruction_failed:{type(exc).__name__}:{exc}")
+
+    def _chat(
+        self,
+        request: OllamaReconstructionRequest,
+        schema: dict[str, object],
+        *,
+        num_predict: int,
+    ) -> dict[str, object]:
+        return self._transport(
+            "POST",
+            f"{self.base_url}/api/chat",
+            {
+                "model": request.model_tag,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You reconstruct trading theories for research only. Return only the required JSON. "
+                            "Every field you add is a hypothesis to falsify, never a claim about what the source used. "
+                            "You have no broker, trading, promotion, risk, Guardian, capital, tool, or credential authority."
+                        ),
+                    },
+                    {"role": "user", "content": _canonical(_prompt_payload(request))},
+                ],
+                "stream": False,
+                "think": False,
+                "format": schema,
+                "keep_alive": KEEP_ALIVE,
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": NUM_CTX,
+                    "num_predict": num_predict,
+                },
+            },
+            self.timeout_seconds,
+        )
 
     def _model_digest(self, model_tag: str) -> str:
         response = self._transport("GET", f"{self.base_url}/api/tags", None, min(self.timeout_seconds, 30.0))
