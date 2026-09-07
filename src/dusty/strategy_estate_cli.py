@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 from .ollama_quant_reviewer import _urllib_transport
 from .ollama_strategy_classifier import OllamaStrategyClassifier
-from .ollama_strategy_reconstruction import OllamaStrategyReconstructor
+from .ollama_strategy_reconstruction_retry import BoundedRetryOllamaStrategyReconstructor
 from .strategy_estate import default_strategy_estate_path, load_strategy_estate
 from .strategy_estate_builder import StrategyEstateBuilder
 from .strategy_seed_proposals import starter_strategy_proposals
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     builder = StrategyEstateBuilder(
-        reconstructor=OllamaStrategyReconstructor(base_url=endpoint),
+        reconstructor=BoundedRetryOllamaStrategyReconstructor(base_url=endpoint),
         classifier=OllamaStrategyClassifier(base_url=endpoint),
     )
     result = builder.populate(
