@@ -2,20 +2,21 @@ from __future__ import annotations
 
 """Workstation-friendly M196.5 strategy-discovery policy.
 
-This layer intentionally stays small.  It reuses the certified discovery service,
+This layer intentionally stays small. It reuses the certified discovery service,
 Strategy Estate builder, and Vibe contractor while adding only the resource
 constraints that the native workstation demonstrated it needs:
 
 * one local Ollama generation at a time (the builder is sequential);
-* four Ollama CPU threads per request so background research does not seize the PC;
+* at most four Ollama CPU threads and at most half the visible logical CPUs;
+* a 2048-token context floor/ceiling for calls that did not already choose one;
 * two reconstruction proposals per discovery pass;
 * a smaller Vibe catalog and a bounded provider subprocess timeout;
 * deterministic symbol diversification for source proposals that do not name a
   symbol themselves.
 
 No source claim is rewritten: an unspecified source symbol remains unspecified in
-the StrategyProposal.  Dusty merely narrows the *research universe* supplied to
-Ollama for that experiment.  The model receives no broker, risk, promotion,
+the StrategyProposal. Dusty merely narrows the *research universe* supplied to
+Ollama for that experiment. The model receives no broker, risk, promotion,
 Guardian, or live-trading authority.
 """
 
@@ -38,7 +39,7 @@ from .vibe_research_service import VibeResearchContractor
 
 
 # Put the user's currently exercised broker symbols first, then broaden into a
-# conservative liquid research universe.  These strings are research identities,
+# conservative liquid research universe. These strings are research identities,
 # not aliases: runtime compatibility still requires an exact terminal symbol.
 DEFAULT_RESEARCH_SYMBOLS = (
     "EURUSD",
@@ -56,7 +57,8 @@ DEFAULT_RESEARCH_SYMBOLS = (
     "XAGUSD",
 )
 
-OLLAMA_NUM_THREAD = 4
+OLLAMA_NUM_THREAD_CAP = 4
+OLLAMA_DEFAULT_NUM_CTX = 2048
 DISCOVERY_CATALOG_LIMIT = 50
 DISCOVERY_MAX_RECONSTRUCTIONS = 2
 DISCOVERY_PROVIDER_TIMEOUT_SECONDS = 30
@@ -64,14 +66,14 @@ _SYMBOL = re.compile(r"^[A-Z0-9._-]{3,32}$")
 
 
 def _configured_symbols() -> tuple[str, ...]:
-    """Optional exact-symbol override without weakening exact-match semantics."""
+    """Optional bounded research-symbol override without adding alias logic."""
 
     raw = os.environ.get("DUSTY_STRATEGY_SYMBOLS", "").strip()
     if not raw:
         return DEFAULT_RESEARCH_SYMBOLS
     values = tuple(dict.fromkeys(part.strip().upper() for part in raw.split(",") if part.strip()))
     if not values or len(values) > 64 or any(_SYMBOL.fullmatch(value) is None for value in values):
-        raise ValueError("DUSTY_STRATEGY_SYMBOLS must be 1..64 comma-separated exact symbol names")
+        raise ValueError("DUSTY_STRATEGY_SYMBOLS must be 1..64 comma-separated research symbol names")
     return values
 
 
@@ -87,6 +89,13 @@ def workstation_discovery_config(*, estate_path: Path | None = None) -> Strategy
     )
 
 
+def ollama_thread_budget() -> int:
+    """Reserve at least half the visible logical CPU capacity for the workstation."""
+
+    visible = os.cpu_count() or 2
+    return max(1, min(OLLAMA_NUM_THREAD_CAP, visible // 2))
+
+
 def bounded_ollama_transport(
     method: str,
     url: str,
@@ -95,14 +104,20 @@ def bounded_ollama_transport(
     *,
     delegate: Transport = _urllib_transport,
 ) -> dict[str, object]:
-    """Clamp local inference CPU threads without changing the Ollama service globally."""
+    """Clamp local inference resources without changing the Ollama service globally.
+
+    Reconstruction already sets ``num_ctx=4096`` and keeps that explicit value.
+    The classifier did not previously set a context size, so it could inherit an
+    unnecessarily large GUI/server default. Only missing ``num_ctx`` is filled.
+    """
 
     outgoing = payload
     if method.upper() == "POST" and url.rstrip("/").endswith("/api/chat") and payload is not None:
         outgoing = dict(payload)
         options_raw = outgoing.get("options")
         options = dict(options_raw) if isinstance(options_raw, dict) else {}
-        options["num_thread"] = OLLAMA_NUM_THREAD
+        options["num_thread"] = ollama_thread_budget()
+        options.setdefault("num_ctx", OLLAMA_DEFAULT_NUM_CTX)
         outgoing["options"] = options
     return delegate(method, url, outgoing, timeout)
 
