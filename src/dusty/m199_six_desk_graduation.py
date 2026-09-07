@@ -1,110 +1,155 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from hashlib import sha256
-from typing import Iterable
+"""M199 deterministic Six-Desk Graduation Protocol.
 
-from dusty.multi_desk_certification import (
-    MultiDeskCertification,
-    MultiDeskCertificationStatus,
+M198 certifies independence inside one Demo generation. M199 adds the
+constitutional rule that six independently certified desk evidence units must
+pass across one or more generations without recycling account, certification,
+runtime, desk, or Champion identity.
+"""
+
+from dataclasses import dataclass
+from enum import StrEnum
+from hashlib import sha256
+import json
+
+from .multi_desk_certification import (
+    CertifiedDeskEvidence,
+    MultiDeskGenerationStatus,
+    certify_multi_desk_generation,
 )
 
 
-class SixDeskGraduationStatus(str, Enum):
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
+
+
+def _digest(value: object) -> str:
+    return sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+class SixDeskGraduationStatus(StrEnum):
     PENDING = "pending"
     REJECTED = "rejected"
     GRADUATED = "graduated"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SixDeskGraduation:
     status: SixDeskGraduationStatus
-    generation_fingerprint: str
-    required_passes: int
-    certified_desks: int
+    required_desk_count: int
+    certified_desk_count: int
+    generation_fingerprints: tuple[str, ...]
+    champion_fingerprint: str | None
+    desk_fingerprints: tuple[str, ...]
     blockers: tuple[str, ...]
-    graduation_fingerprint: str
-    broker_write_authority: bool = False
-    live_write_authority: bool = False
-    promotion_authority: bool = False
-    risk_override_authority: bool = False
-    guardian_override_authority: bool = False
+
+    broker_write_authority = False
+    live_write_authority = False
+    promotion_authority = False
+    risk_override_authority = False
+    guardian_override_authority = False
+
+    @property
+    def fingerprint(self) -> str:
+        return _digest((
+            "dusty-m199-six-desk-graduation-v1",
+            self.status.value,
+            self.required_desk_count,
+            self.certified_desk_count,
+            self.generation_fingerprints,
+            self.champion_fingerprint,
+            self.desk_fingerprints,
+            self.blockers,
+        ))
 
 
 def certify_six_desk_graduation(
-    generations: Iterable[MultiDeskCertification],
+    desks: tuple[CertifiedDeskEvidence, ...],
     *,
-    required_passes: int = 6,
+    required_desk_count: int = 6,
 ) -> SixDeskGraduation:
-    """Certify six independent M198-passing desk evidence units.
+    """Apply the six-desk graduation rule to raw M198-compatible evidence.
 
-    M199 owns only the six-desk graduation rule. M198 remains responsible for
-    independence inside each generation. This function never grants trading,
-    live-write, promotion, risk-override, or Guardian-override authority.
+    Sequential and concurrent execution are equivalent. Independence is defined
+    by evidence identity, not wall-clock overlap. Any failed generation rejects
+    graduation; incomplete evidence remains pending. This function grants no
+    operational authority.
     """
-    if required_passes <= 0:
-        raise ValueError("required_passes must be positive")
+    if required_desk_count != 6:
+        raise ValueError("M199 constitutional required_desk_count must equal 6")
 
-    rows = tuple(generations)
+    rows = tuple(desks)
+    if not rows:
+        return SixDeskGraduation(
+            SixDeskGraduationStatus.PENDING,
+            required_desk_count,
+            0,
+            (),
+            None,
+            (),
+            ("no_desk_evidence", "insufficient_independent_desks"),
+        )
+
     blockers: list[str] = []
 
-    if not rows:
-        blockers.append("no_generation_evidence")
+    # Global independence across sequential or concurrent generations.
+    for values, blocker in (
+        ((row.desk_id for row in rows), "duplicate_desk_identity"),
+        ((row.single_desk_fingerprint for row in rows), "reused_single_desk_certification"),
+        ((row.account_fingerprint for row in rows), "reused_account_identity"),
+        ((row.runtime_attestation_fingerprint for row in rows), "reused_runtime_attestation"),
+        ((row.fingerprint for row in rows), "reused_desk_evidence"),
+    ):
+        material = tuple(values)
+        if len(set(material)) != len(material):
+            blockers.append(blocker)
 
-    passed = tuple(
-        row for row in rows if row.status is MultiDeskCertificationStatus.CERTIFIED
-    )
-
-    if any(row.status is MultiDeskCertificationStatus.REJECTED for row in rows):
-        blockers.append("rejected_generation_present")
-
-    if any(row.status is MultiDeskCertificationStatus.PENDING for row in rows):
-        blockers.append("pending_generation_present")
-
-    fingerprints = tuple(row.certification_fingerprint for row in passed)
-    if len(set(fingerprints)) != len(fingerprints):
-        blockers.append("reused_generation_evidence")
-
-    champion_ids = {
-        row.champion_fingerprint
-        for row in passed
-    }
-    if len(champion_ids) > 1:
+    champions = {row.champion_fingerprint for row in rows}
+    champion = next(iter(champions)) if len(champions) == 1 else None
+    if len(champions) != 1:
         blockers.append("champion_drift_across_graduation")
 
-    if len(passed) < required_passes:
-        blockers.append("insufficient_independent_passes")
+    generations: list[object] = []
+    for generation_id in sorted({row.generation_id for row in rows}):
+        cohort = tuple(row for row in rows if row.generation_id == generation_id)
+        generations.append(certify_multi_desk_generation(generation_id, cohort))
 
-    status = (
-        SixDeskGraduationStatus.GRADUATED
-        if not blockers and len(passed) >= required_passes
-        else (
+    if any(row.status is MultiDeskGenerationStatus.REJECTED for row in generations):
+        blockers.append("rejected_generation_present")
+    elif any(row.status is not MultiDeskGenerationStatus.CERTIFIED for row in generations):
+        blockers.append("pending_generation_present")
+
+    certified_desk_count = sum(
+        row.desk_count for row in generations if row.status is MultiDeskGenerationStatus.CERTIFIED
+    )
+    if certified_desk_count < required_desk_count:
+        blockers.append("insufficient_independent_desks")
+
+    blockers = list(dict.fromkeys(blockers))
+    if blockers:
+        status = (
             SixDeskGraduationStatus.REJECTED
-            if "rejected_generation_present" in blockers
+            if any(name in blockers for name in (
+                "duplicate_desk_identity",
+                "reused_single_desk_certification",
+                "reused_account_identity",
+                "reused_runtime_attestation",
+                "reused_desk_evidence",
+                "champion_drift_across_graduation",
+                "rejected_generation_present",
+            ))
             else SixDeskGraduationStatus.PENDING
         )
-    )
-
-    material = "|".join(
-        [
-            status.value,
-            str(required_passes),
-            str(len(passed)),
-            *sorted(fingerprints),
-            *sorted(blockers),
-        ]
-    )
-    graduation_fingerprint = sha256(material.encode("utf-8")).hexdigest()
-    generation_fingerprint = (
-        next(iter(champion_ids)) if len(champion_ids) == 1 else ""
-    )
+    else:
+        status = SixDeskGraduationStatus.GRADUATED
 
     return SixDeskGraduation(
-        status=status,
-        generation_fingerprint=generation_fingerprint,
-        required_passes=required_passes,
-        certified_desks=len(passed),
-        blockers=tuple(blockers),
-        graduation_fingerprint=graduation_fingerprint,
+        status,
+        required_desk_count,
+        certified_desk_count,
+        tuple(sorted(row.fingerprint for row in generations)),
+        champion,
+        tuple(sorted(row.fingerprint for row in rows)),
+        tuple(blockers),
     )
