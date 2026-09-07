@@ -32,6 +32,7 @@ from .ollama_strategy_classifier import OllamaStrategyClassifier
 from .ollama_strategy_reconstruction import OllamaStrategyReconstructor
 from .source_intake import StrategyProposal, deduplicate_proposals
 from .strategy_discovery import StrategyDiscoveryConfig
+from .strategy_estate import StrategyEstateUpdate
 from .strategy_estate_builder import EstatePopulationResult, StrategyEstateBuilder
 from .vibe_research_service import VibeResearchContractor
 
@@ -187,6 +188,7 @@ class SymbolDiversifyingEstateBuilder:
 
         rows = []
         latest_update = None
+        added_total = 0
         used: set[str] = set()
         week_key = int(now.strftime("%G%V"))
 
@@ -213,5 +215,14 @@ class SymbolDiversifyingEstateBuilder:
             rows.extend(result.rows)
             if result.estate_update is not None:
                 latest_update = result.estate_update
+                added_total += result.estate_update.added
 
-        return EstatePopulationResult(tuple(rows), latest_update)
+        update = None
+        if latest_update is not None:
+            update = StrategyEstateUpdate(
+                latest_update.path,
+                latest_update.sha256,
+                added_total,
+                latest_update.total,
+            )
+        return EstatePopulationResult(tuple(rows), update)
