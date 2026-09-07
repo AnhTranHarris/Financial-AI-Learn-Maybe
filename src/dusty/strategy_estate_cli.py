@@ -107,7 +107,14 @@ def _print_estate(path: Path) -> int:
     return 0
 
 
-def _missing_seed_proposals(path: Path, *, limit: int):
+def _missing_seed_proposals(path: Path):
+    """Return all missing governed seeds and count existing ones.
+
+    Keep this helper's original two-value contract stable for tests and callers.
+    The CLI's per-invocation resource budget is applied by ``main`` after this
+    immutable inventory calculation rather than changing discovery semantics.
+    """
+
     existing = load_strategy_estate(path)
     existing_proposal_fingerprints = {row.proposal_fingerprint for row in existing}
     all_seeds = starter_strategy_proposals()
@@ -115,7 +122,7 @@ def _missing_seed_proposals(path: Path, *, limit: int):
         proposal for proposal in all_seeds
         if proposal.fingerprint not in existing_proposal_fingerprints
     )
-    return missing_all[:limit], len(all_seeds) - len(missing_all), max(0, len(missing_all) - limit)
+    return missing_all, len(all_seeds) - len(missing_all)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,7 +137,9 @@ def main(argv: list[str] | None = None) -> int:
     if type(args.max_seeds) is not int or not 1 <= args.max_seeds <= 6:
         parser.error("--max-seeds must be an integer from 1 through 6")
 
-    proposals, skipped_existing, deferred_by_budget = _missing_seed_proposals(estate, limit=args.max_seeds)
+    missing_all, skipped_existing = _missing_seed_proposals(estate)
+    proposals = missing_all[: args.max_seeds]
+    deferred_by_budget = max(0, len(missing_all) - len(proposals))
     if skipped_existing:
         print(f"Existing governed seed proposals skipped: {skipped_existing}")
     if deferred_by_budget:
