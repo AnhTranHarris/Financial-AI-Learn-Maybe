@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 from urllib.parse import urlparse
 
+from .bounded_strategy_discovery import bounded_ollama_transport
 from .ollama_quant_reviewer import _urllib_transport
 from .ollama_strategy_classifier import OllamaStrategyClassifier
 from .ollama_strategy_reconstruction import OllamaStrategyReconstructor
@@ -25,6 +26,7 @@ from .strategy_taxonomy import quant_title_for_reconstruction
 DEFAULT_MODEL = "qwen3:1.7b"
 DEFAULT_SYMBOLS = ("EURUSD", "XAUUSD", "NASUSD")
 DEFAULT_TIMEFRAMES = ("M15", "M30", "H1")
+DEFAULT_MAX_SEEDS = 2
 # These names are exact runtime aliases emitted by compute_standard_features.
 DEFAULT_FEATURES = (
     "return_1",
@@ -91,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL, help="exact local Ollama model tag")
     parser.add_argument("--ollama", default="http://127.0.0.1:11434", help="localhost Ollama base URL")
     parser.add_argument("--estate", type=Path, default=default_strategy_estate_path(), help="persistent reconstruction estate path")
+    parser.add_argument("--max-seeds", type=int, default=DEFAULT_MAX_SEEDS, help="maximum missing governed seeds to reconstruct in one invocation (1..6)")
     parser.add_argument("--list", action="store_true", help="list the current estate without invoking Ollama")
     return parser
 
@@ -104,15 +107,15 @@ def _print_estate(path: Path) -> int:
     return 0
 
 
-def _missing_seed_proposals(path: Path):
+def _missing_seed_proposals(path: Path, *, limit: int):
     existing = load_strategy_estate(path)
     existing_proposal_fingerprints = {row.proposal_fingerprint for row in existing}
     all_seeds = starter_strategy_proposals()
-    missing = tuple(
+    missing_all = tuple(
         proposal for proposal in all_seeds
         if proposal.fingerprint not in existing_proposal_fingerprints
     )
-    return missing, len(all_seeds) - len(missing)
+    return missing_all[:limit], len(all_seeds) - len(missing_all), max(0, len(missing_all) - limit)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,10 +127,14 @@ def main(argv: list[str] | None = None) -> int:
         return _print_estate(estate)
     if not args.seed_core:
         parser.error("select --seed-core or --list")
+    if type(args.max_seeds) is not int or not 1 <= args.max_seeds <= 6:
+        parser.error("--max-seeds must be an integer from 1 through 6")
 
-    proposals, skipped_existing = _missing_seed_proposals(estate)
+    proposals, skipped_existing, deferred_by_budget = _missing_seed_proposals(estate, limit=args.max_seeds)
     if skipped_existing:
         print(f"Existing governed seed proposals skipped: {skipped_existing}")
+    if deferred_by_budget:
+        print(f"Missing governed seeds deferred by per-run budget: {deferred_by_budget}")
     if not proposals:
         print("All governed starter proposals are already represented in the Strategy Estate.")
         return _print_estate(estate)
@@ -140,8 +147,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     builder = StrategyEstateBuilder(
-        reconstructor=OllamaStrategyReconstructor(base_url=endpoint),
-        classifier=OllamaStrategyClassifier(base_url=endpoint),
+        reconstructor=OllamaStrategyReconstructor(base_url=endpoint, transport=bounded_ollama_transport),
+        classifier=OllamaStrategyClassifier(base_url=endpoint, transport=bounded_ollama_transport),
     )
     result = builder.populate(
         proposals,
@@ -156,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Ollama model: {args.model}")
     print(f"Ollama digest: {digest}")
+    print(f"Per-run governed-seed budget: {args.max_seeds}")
     for row in result.rows:
         suffix = row.reconstruction_fingerprint if row.reconstruction_fingerprint else row.reason
         print(f"{row.status.value}: {row.proposal_id}: {suffix}")
