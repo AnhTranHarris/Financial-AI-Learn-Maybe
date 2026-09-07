@@ -56,6 +56,19 @@ class SoakRecoveryStatus(StrEnum):
     UNRESOLVED = "unresolved"
 
 
+class SoakEvidenceMode(StrEnum):
+    """How a disturbance was proven.
+
+    OBSERVED means the real workstation/broker/provider boundary actually
+    experienced the condition. CONTROLLED_EXERCISE means the production policy
+    path was exercised deterministically without pretending the external system
+    itself failed. A campaign must explicitly permit every controlled kind.
+    """
+
+    OBSERVED = "observed"
+    CONTROLLED_EXERCISE = "controlled_exercise"
+
+
 class LongRunningSoakStatus(StrEnum):
     PENDING = "pending"
     REJECTED = "rejected"
@@ -67,6 +80,7 @@ class LongRunningSoakPolicy:
     minimum_duration: timedelta
     required_disturbances: tuple[SoakDisturbanceKind, ...] = tuple(SoakDisturbanceKind)
     minimum_heartbeats: int = 1
+    controlled_exercises_allowed: tuple[SoakDisturbanceKind, ...] = ()
 
     def __post_init__(self) -> None:
         if self.minimum_duration <= timedelta(0):
@@ -75,14 +89,19 @@ class LongRunningSoakPolicy:
             raise ValueError("minimum_heartbeats must be positive")
         if len(set(self.required_disturbances)) != len(self.required_disturbances):
             raise ValueError("required_disturbances must be unique")
+        if len(set(self.controlled_exercises_allowed)) != len(self.controlled_exercises_allowed):
+            raise ValueError("controlled_exercises_allowed must be unique")
+        if not set(self.controlled_exercises_allowed).issubset(set(self.required_disturbances)):
+            raise ValueError("controlled exercises may only satisfy required disturbances")
 
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m200-soak-policy-v1",
+            "dusty-m200-soak-policy-v2",
             self.minimum_duration.total_seconds(),
             tuple(item.value for item in self.required_disturbances),
             self.minimum_heartbeats,
+            tuple(item.value for item in self.controlled_exercises_allowed),
         ))
 
 
@@ -92,6 +111,7 @@ class SoakDisturbanceEvidence:
     occurred_at: datetime
     recovery_status: SoakRecoveryStatus
     evidence_fingerprint: str
+    mode: SoakEvidenceMode = SoakEvidenceMode.OBSERVED
 
     def __post_init__(self) -> None:
         _utc(self.occurred_at, "occurred_at")
@@ -102,11 +122,12 @@ class SoakDisturbanceEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m200-disturbance-v1",
+            "dusty-m200-disturbance-v2",
             self.kind.value,
             _utc(self.occurred_at, "occurred_at").isoformat(),
             self.recovery_status.value,
             self.evidence_fingerprint,
+            self.mode.value,
         ))
 
 
@@ -153,7 +174,7 @@ class LongRunningSoakEvidence:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m200-soak-evidence-v1",
+            "dusty-m200-soak-evidence-v2",
             self.graduation.fingerprint,
             self.source_commit,
             _utc(self.started_at, "started_at").isoformat(),
@@ -189,7 +210,7 @@ class LongRunningSoakCertification:
     @property
     def fingerprint(self) -> str:
         return _digest((
-            "dusty-m200-long-running-soak-certification-v1",
+            "dusty-m200-long-running-soak-certification-v2",
             self.status.value,
             self.policy_fingerprint,
             self.graduation_fingerprint,
@@ -223,6 +244,12 @@ def certify_long_running_soak(
     missing = tuple(item for item in policy.required_disturbances if item not in observed)
     if missing:
         blockers.extend(f"missing_disturbance:{item.value}" for item in missing)
+
+    allowed_controlled = set(policy.controlled_exercises_allowed)
+    for row in evidence.disturbances:
+        if row.mode is SoakEvidenceMode.CONTROLLED_EXERCISE and row.kind not in allowed_controlled:
+            blockers.append(f"unapproved_controlled_exercise:{row.kind.value}")
+            hard_reject = True
 
     if any(row.recovery_status is SoakRecoveryStatus.UNRESOLVED for row in evidence.disturbances):
         blockers.append("unresolved_disturbance")
