@@ -19,8 +19,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable
 
+from .bounded_strategy_discovery import (
+    bounded_estate_builder,
+    bounded_vibe_contractor,
+    workstation_discovery_config,
+)
 from .strategy_catalog import StrategyCatalogEntry
-from .strategy_discovery import StrategyDiscoveryConfig, StrategyDiscoveryService
+from .strategy_discovery import StrategyDiscoveryService
 from .strategy_discovery_ui import run_strategy_discovery_ui
 from .strategy_estate import default_strategy_estate_path
 from .strategy_library_snapshot import (
@@ -79,7 +84,11 @@ def _discovery_service(
     if explicit_library is not None or no_estate:
         return None
     destination = estate_path.resolve() if estate_path is not None else default_strategy_estate_path()
-    return StrategyDiscoveryService(StrategyDiscoveryConfig.default(estate_path=destination))
+    return StrategyDiscoveryService(
+        workstation_discovery_config(estate_path=destination),
+        contractor_factory=bounded_vibe_contractor,
+        builder=bounded_estate_builder(),
+    )
 
 
 
