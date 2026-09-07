@@ -10,9 +10,11 @@ from dusty.bounded_strategy_discovery import (
     DEFAULT_RESEARCH_SYMBOLS,
     DISCOVERY_CATALOG_LIMIT,
     DISCOVERY_MAX_RECONSTRUCTIONS,
-    OLLAMA_NUM_THREAD,
+    OLLAMA_DEFAULT_NUM_CTX,
+    OLLAMA_NUM_THREAD_CAP,
     SymbolDiversifyingEstateBuilder,
     bounded_ollama_transport,
+    ollama_thread_budget,
     workstation_discovery_config,
 )
 from dusty.source_intake import (
@@ -102,7 +104,17 @@ class BoundedStrategyDiscoveryTests(unittest.TestCase):
             config = workstation_discovery_config(estate_path=Path(temp) / "estate.json")
         self.assertEqual(config.allowed_symbols, ("EURUSD.A", "NASUSD", "XAUUSD"))
 
-    def test_ollama_transport_adds_thread_budget_without_mutating_input(self) -> None:
+    def test_thread_budget_uses_half_visible_cpu_with_cap(self) -> None:
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=16):
+            self.assertEqual(ollama_thread_budget(), OLLAMA_NUM_THREAD_CAP)
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=4):
+            self.assertEqual(ollama_thread_budget(), 2)
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=2):
+            self.assertEqual(ollama_thread_budget(), 1)
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=None):
+            self.assertEqual(ollama_thread_budget(), 1)
+
+    def test_ollama_transport_adds_adaptive_budget_without_mutating_input(self) -> None:
         captured = {}
 
         def delegate(method, url, payload, timeout):
@@ -110,17 +122,38 @@ class BoundedStrategyDiscoveryTests(unittest.TestCase):
             return {"done": True}
 
         original = {"options": {"temperature": 0}, "messages": []}
-        result = bounded_ollama_transport(
-            "POST",
-            "http://127.0.0.1:11434/api/chat",
-            original,
-            20.0,
-            delegate=delegate,
-        )
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=8):
+            result = bounded_ollama_transport(
+                "POST",
+                "http://127.0.0.1:11434/api/chat",
+                original,
+                20.0,
+                delegate=delegate,
+            )
         self.assertEqual(result, {"done": True})
         self.assertNotIn("num_thread", original["options"])
-        self.assertEqual(captured["payload"]["options"]["num_thread"], OLLAMA_NUM_THREAD)
-        self.assertEqual(OLLAMA_NUM_THREAD, 4)
+        self.assertNotIn("num_ctx", original["options"])
+        self.assertEqual(captured["payload"]["options"]["num_thread"], 4)
+        self.assertEqual(captured["payload"]["options"]["num_ctx"], OLLAMA_DEFAULT_NUM_CTX)
+
+    def test_ollama_transport_preserves_reconstructor_explicit_context(self) -> None:
+        captured = {}
+
+        def delegate(method, url, payload, timeout):
+            captured["payload"] = payload
+            return {"done": True}
+
+        original = {"options": {"num_ctx": 4096, "num_predict": 384}}
+        with patch("dusty.bounded_strategy_discovery.os.cpu_count", return_value=8):
+            bounded_ollama_transport(
+                "POST",
+                "http://localhost:11434/api/chat",
+                original,
+                20.0,
+                delegate=delegate,
+            )
+        self.assertEqual(captured["payload"]["options"]["num_ctx"], 4096)
+        self.assertEqual(captured["payload"]["options"]["num_predict"], 384)
 
     def test_generic_proposals_get_distinct_one_symbol_research_lanes(self) -> None:
         delegate = FakeDelegate()
