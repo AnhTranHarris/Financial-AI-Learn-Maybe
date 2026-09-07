@@ -21,6 +21,7 @@ from typing import Iterable
 
 from .strategy_catalog import StrategyCatalogEntry
 from .strategy_discovery import StrategyDiscoveryConfig, StrategyDiscoveryService
+from .strategy_discovery_campaign_service import BatchedStrategyDiscoveryService
 from .strategy_discovery_ui import run_strategy_discovery_ui
 from .strategy_estate import default_strategy_estate_path
 from .strategy_library_snapshot import (
@@ -79,7 +80,7 @@ def _discovery_service(
     if explicit_library is not None or no_estate:
         return None
     destination = estate_path.resolve() if estate_path is not None else default_strategy_estate_path()
-    return StrategyDiscoveryService(StrategyDiscoveryConfig.default(estate_path=destination))
+    return BatchedStrategyDiscoveryService(StrategyDiscoveryConfig.default(estate_path=destination))
 
 
 
