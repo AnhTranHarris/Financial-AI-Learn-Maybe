@@ -7,6 +7,7 @@ import unittest
 from dusty.ollama_strategy_reconstruction import (
     NUM_CTX,
     NUM_PREDICT,
+    TRUNCATION_RETRY_NUM_PREDICT,
     OllamaReconstructionRequest,
     OllamaStrategyReconstructor,
     ReconstructionAvailability,
@@ -121,7 +122,9 @@ class M1965OllamaReconstructionTests(unittest.TestCase):
         transport = FakeTransport(valid_response())
         result = OllamaStrategyReconstructor(transport=transport).reconstruct(request(), created_at=NOW)
         self.assertTrue(result.available, result.error)
-        post = next(call for call in transport.calls if call[0] == "POST")
+        posts = [call for call in transport.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        post = posts[0]
         payload = post[2]
         self.assertEqual(post[3], 240.0)
         self.assertIsNotNone(payload)
@@ -130,8 +133,64 @@ class M1965OllamaReconstructionTests(unittest.TestCase):
         self.assertEqual(payload["options"]["num_predict"], NUM_PREDICT)
         self.assertEqual(NUM_CTX, 4096)
         self.assertEqual(NUM_PREDICT, 384)
+        self.assertEqual(TRUNCATION_RETRY_NUM_PREDICT, 640)
         self.assertFalse(payload["think"])
         self.assertFalse(payload["stream"])
+
+    def test_truncation_retries_once_with_larger_bounded_budget(self) -> None:
+        class TruncateThenSucceed(FakeTransport):
+            def __init__(self) -> None:
+                super().__init__(valid_response())
+                self.post_count = 0
+
+            def __call__(self, method, url, payload, timeout):
+                if method == "GET":
+                    return super().__call__(method, url, payload, timeout)
+                self.calls.append((method, url, payload, timeout))
+                self.post_count += 1
+                if self.post_count == 1:
+                    return {"message": {"content": "{}"}, "done_reason": "length"}
+                return {"message": {"content": json.dumps(valid_response(), separators=(",", ":"))}, "done_reason": "stop"}
+
+        transport = TruncateThenSucceed()
+        result = OllamaStrategyReconstructor(transport=transport).reconstruct(request(), created_at=NOW)
+        self.assertTrue(result.available, result.error)
+        posts = [call for call in transport.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual([call[2]["options"]["num_predict"] for call in posts], [384, 640])
+        for call in posts:
+            payload = call[2]
+            assert payload is not None
+            self.assertEqual(payload["options"]["num_ctx"], 4096)
+            self.assertFalse(payload["think"])
+            self.assertEqual(payload["format"], posts[0][2]["format"])
+            self.assertEqual(payload["messages"], posts[0][2]["messages"])
+
+    def test_second_truncation_fails_closed_after_exactly_one_retry(self) -> None:
+        class AlwaysTruncated(FakeTransport):
+            def __call__(self, method, url, payload, timeout):
+                if method == "GET":
+                    return super().__call__(method, url, payload, timeout)
+                self.calls.append((method, url, payload, timeout))
+                return {"message": {"content": "{}"}, "done_reason": "length"}
+
+        transport = AlwaysTruncated(valid_response())
+        result = OllamaStrategyReconstructor(transport=transport).reconstruct(request(), created_at=NOW)
+        self.assertFalse(result.available)
+        self.assertIsNone(result.reconstruction)
+        self.assertIn("truncated", result.error)
+        posts = [call for call in transport.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual([call[2]["options"]["num_predict"] for call in posts], [384, 640])
+
+    def test_invalid_nontruncated_response_does_not_retry(self) -> None:
+        response = valid_response()
+        response["live_write_authority"] = True
+        transport = FakeTransport(response)
+        result = OllamaStrategyReconstructor(transport=transport).reconstruct(request(), created_at=NOW)
+        self.assertFalse(result.available)
+        self.assertIn("schema mismatch", result.error)
+        self.assertEqual(sum(call[0] == "POST" for call in transport.calls), 1)
 
     def test_prompt_excludes_marketing_performance_claims(self) -> None:
         transport = FakeTransport(valid_response())
@@ -185,18 +244,6 @@ class M1965OllamaReconstructionTests(unittest.TestCase):
             result = OllamaStrategyReconstructor(transport=FakeTransport(response)).reconstruct(request(), created_at=NOW)
             self.assertFalse(result.available, field)
             self.assertIn("unapproved", result.error, field)
-
-    def test_truncation_returns_unavailable_without_partial_candidate(self) -> None:
-        class Truncated(FakeTransport):
-            def __call__(self, method, url, payload, timeout):
-                if method == "GET":
-                    return super().__call__(method, url, payload, timeout)
-                return {"message": {"content": "{}"}, "done_reason": "length"}
-
-        result = OllamaStrategyReconstructor(transport=Truncated(valid_response())).reconstruct(request(), created_at=NOW)
-        self.assertFalse(result.available)
-        self.assertIsNone(result.reconstruction)
-        self.assertIn("truncated", result.error)
 
     def test_endpoint_is_localhost_only(self) -> None:
         with self.assertRaisesRegex(ValueError, "localhost"):
