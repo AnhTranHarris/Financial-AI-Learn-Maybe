@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 import json
-from pathlib import PurePath
+import re
 from urllib.parse import urlsplit
 
 
@@ -183,7 +183,10 @@ def _local_endpoint(url: str) -> bool:
 
 
 def _root_allowed(raw: str, allowed: tuple[str, ...]) -> bool:
-    parts = tuple(part.lower() for part in PurePath(raw).parts if part not in {"/", "\\"})
+    # Evidence may describe Windows paths while certification runs on Linux CI.
+    # Split both separator styles explicitly instead of letting the host OS
+    # reinterpret the evidence path.
+    parts = tuple(part.lower() for part in re.split(r"[\\/]+", raw) if part)
     allowed_lower = {item.lower() for item in allowed}
     return any(part in allowed_lower for part in parts)
 
