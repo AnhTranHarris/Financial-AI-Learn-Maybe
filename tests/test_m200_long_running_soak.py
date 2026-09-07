@@ -21,22 +21,26 @@ def _sha(ch: str) -> str:
 
 
 def _desk(index: int, generation: str) -> CertifiedDeskEvidence:
-    chars = "bcdefghijklmnopqrstuvwxyz0123456789"
+    chars = "bcdef0123456789"
+    cert = chars[index % len(chars)]
+    account = chars[(index + 1) % len(chars)]
+    terminal = chars[(index + 2) % len(chars)]
+    runtime = chars[(index + 3) % len(chars)]
     return CertifiedDeskEvidence(
         desk_id=f"desk-{index}",
         generation_id=generation,
         single_desk_status=SingleDeskDemoStatus.CERTIFIED,
-        single_desk_fingerprint=_sha(chars[index]),
+        single_desk_fingerprint=_sha(cert),
         champion_fingerprint=_sha("a"),
-        account_fingerprint=_sha(chars[index + 6]),
-        terminal_fingerprint=_sha("f"),
-        broker_profile_fingerprint=_sha("e"),
-        runtime_attestation_fingerprint=_sha(chars[index + 12]),
+        account_fingerprint=_sha(account),
+        terminal_fingerprint=_sha(terminal),
+        broker_profile_fingerprint=_sha("9"),
+        runtime_attestation_fingerprint=_sha(runtime),
     )
 
 
 def _graduation():
-    desks = tuple(_desk(i, "generation-a") for i in range(6))
+    desks = tuple(_desk(i * 4, "generation-a") for i in range(6))
     cert = certify_multi_desk_generation("generation-a", desks)
     return certify_six_desk_graduation(
         _sha("a"),
