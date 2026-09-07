@@ -33,7 +33,10 @@ jobs:
       - name: M201 security boundary gate
         run: python -m unittest discover -s tests -p "test_m201*.py" -v
 
-      # M202-M204 are added as their official surfaces exist. Treating zero
+      - name: M202 production observability gate
+        run: python -m unittest discover -s tests -p "test_m202*.py" -v
+
+      # M203-M204 are added as their official surfaces exist. Treating zero
       # future tests as a passing certification would be misleading.
 
       - name: M195 deterministic authority boundary
