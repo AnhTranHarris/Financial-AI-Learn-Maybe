@@ -10,6 +10,7 @@ from dusty.estate_a1_execution import (
     analysis_replay_from_runtime_trades,
     bind_estate_candidate,
     execute_estate_candidate,
+    execute_estate_candidate_closed_window,
     runtime_bars_from_research_frames,
 )
 from dusty.research import Clause, RuleOp
@@ -101,6 +102,20 @@ class M19613EstateA1ExecutionTests(unittest.TestCase):
         self.assertEqual(trades[0].entry_price, 1.10)
         self.assertEqual(trades[0].exit_price, 1.11)
         self.assertEqual(trades[0].exit_reason, "max_hold")
+
+    def test_closed_window_vetoes_final_tail_entries(self):
+        row = reconstruction()
+        binding = bind_estate_candidate(row, symbol="EURUSD")
+        frames = (
+            frame(T0, 1.10),
+            frame(T0 + timedelta(minutes=15), 1.11),
+            frame(T0 + timedelta(minutes=30), 1.12),
+        )
+        trades = execute_estate_candidate_closed_window(row, binding, frames)
+        self.assertEqual(len(trades), 1)
+        self.assertLessEqual(trades[-1].exit_at, frames[-1].snapshot.at)
+        with self.assertRaises(ValueError):
+            execute_estate_candidate_closed_window(row, binding, (frame(T0, 1.10),))
 
     def test_runtime_frames_require_primary_ohlc_and_strict_chronology(self):
         row = reconstruction()
