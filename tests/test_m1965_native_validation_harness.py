@@ -37,6 +37,21 @@ class M1965NativeValidationHarnessTests(unittest.TestCase):
         self.assertIn("if ($lines.count -eq 0)", self.lower)
         self.assertIn("return ''", self.script)
 
+    def test_repository_default_is_resolved_after_parameter_binding(self) -> None:
+        self.assertIn("[string]$Repository,", self.script)
+        self.assertNotIn("[string]$Repository = (Split-Path -Parent $PSScriptRoot)", self.script)
+        self.assertIn("if ([string]::IsNullOrWhiteSpace($Repository))", self.script)
+        self.assertIn("$PSScriptRoot", self.script)
+        self.assertIn("$PSCommandPath", self.script)
+
+    def test_clean_tree_checks_do_not_depend_on_scalar_count(self) -> None:
+        self.assertIn("$dirtyText = Get-NativeText", self.script)
+        self.assertIn("$finalDirtyText = Get-NativeText", self.script)
+        self.assertIn("[string]::IsNullOrWhiteSpace($dirtyText)", self.script)
+        self.assertIn("[string]::IsNullOrWhiteSpace($finalDirtyText)", self.script)
+        self.assertNotIn("$dirty.Count", self.script)
+        self.assertNotIn("$finalDirty.Count", self.script)
+
     def test_harness_requires_exact_sha_clean_tree_and_full_seed_coverage(self) -> None:
         self.assertIn("[ValidatePattern('^[0-9a-f]{40}$')]", self.script)
         self.assertIn("Working tree is not clean", self.script)
