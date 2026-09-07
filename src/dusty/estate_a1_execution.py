@@ -127,17 +127,51 @@ def runtime_bars_from_research_frames(
     return tuple(result)
 
 
+def _compiled_for_binding(reconstruction: StrategyReconstruction, binding: EstateA1Binding):
+    if reconstruction.fingerprint != binding.reconstruction_fingerprint:
+        raise ValueError("Estate A1 reconstruction identity drift")
+    if reconstruction.candidate_spec.strategy_hash != binding.strategy_hash:
+        raise ValueError("Estate A1 strategy identity drift")
+    return compile_strategy(reconstruction.candidate_spec)
+
+
 def execute_estate_candidate(
     reconstruction: StrategyReconstruction,
     binding: EstateA1Binding,
     frames: Iterable[AnalysisFrame],
 ) -> tuple[RuntimeTrade, ...]:
-    if reconstruction.fingerprint != binding.reconstruction_fingerprint:
-        raise ValueError("Estate A1 reconstruction identity drift")
-    if reconstruction.candidate_spec.strategy_hash != binding.strategy_hash:
-        raise ValueError("Estate A1 strategy identity drift")
-    compiled = compile_strategy(reconstruction.candidate_spec)
+    """Low-level deterministic execution over exactly the supplied observations."""
+    compiled = _compiled_for_binding(reconstruction, binding)
     return generate_runtime_trades(compiled, runtime_bars_from_research_frames(binding, frames))
+
+
+def execute_estate_candidate_closed_window(
+    reconstruction: StrategyReconstruction,
+    binding: EstateA1Binding,
+    frames: Iterable[AnalysisFrame],
+) -> tuple[RuntimeTrade, ...]:
+    """Execute an A1 window while guaranteeing no position can remain unresolved.
+
+    New entries are vetoed for the final ``max_hold_steps`` real observations.
+    Because the current V2 runtime guarantees a max-hold exit, any position
+    entered before that tail must be closed by the final supplied observation.
+    No synthetic prices or post-window observations are introduced.
+    """
+    compiled = _compiled_for_binding(reconstruction, binding)
+    bars = runtime_bars_from_research_frames(binding, frames)
+    tail = compiled.spec.exit_plan.max_hold_steps
+    if tail < 1 or len(bars) <= tail:
+        raise ValueError("Estate A1 closed window requires observations beyond max_hold_steps")
+    entry_cutoff = len(bars) - tail
+    allowed_entry_times = frozenset(row.at for row in bars[:entry_cutoff])
+
+    def authorize(bar: RuntimeBar, _compiled) -> bool:
+        return bar.at in allowed_entry_times
+
+    trades = generate_runtime_trades(compiled, bars, entry_authorizer=authorize)
+    if any(row.exit_at > bars[-1].at for row in trades):
+        raise AssertionError("Estate A1 runtime trade escaped closed observation window")
+    return trades
 
 
 def analysis_replay_from_runtime_trades(
