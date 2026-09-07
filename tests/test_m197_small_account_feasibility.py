@@ -6,11 +6,15 @@ from dusty.experience import TradeSide
 from dusty.markets import InstrumentEconomics
 from dusty.risk import RiskConstitution
 from dusty.small_account_feasibility import (
+    CapitalBacktestEvidence,
+    CapitalCompressionStatus,
     CapitalState,
     FeasibilityDecision,
     SmallAccountFeasibilityRequest,
     assess_capital_ladder,
     assess_small_account_feasibility,
+    capital_compression_equities,
+    run_capital_compression_campaign,
 )
 
 
@@ -123,9 +127,73 @@ class M197SmallAccountFeasibilityTests(unittest.TestCase):
             strategy_stop_price=1.09900,
             economics=economics(),
         )
-        rows = assess_capital_ladder(request, (100.0, 500.0, 1000.0))
-        self.assertEqual(tuple(row.equity for row in rows), (100.0, 500.0, 1000.0))
+        rows = assess_capital_ladder(request, (1000.0, 750.0, 562.5))
+        self.assertEqual(tuple(row.equity for row in rows), (1000.0, 750.0, 562.5))
         self.assertEqual(len({row.minimum_compliant_capital for row in rows}), 1)
+
+    def test_default_compression_starts_at_100k_and_reduces_exactly_25_percent(self):
+        equities = capital_compression_equities()
+        self.assertEqual(equities[0], 100000.0)
+        self.assertAlmostEqual(equities[1], 75000.0)
+        self.assertTrue(all(abs(right - left * 0.75) <= 1e-9 for left, right in zip(equities, equities[1:])))
+        self.assertGreaterEqual(equities[-2], 100.0)
+        self.assertLess(equities[-1], 100.0)
+
+    def test_compression_stops_at_first_failed_rerun_and_records_bound(self):
+        calls = []
+
+        def evaluate(equity: float) -> CapitalBacktestEvidence:
+            calls.append(equity)
+            passed = equity >= 1000.0
+            return CapitalBacktestEvidence(equity, passed, f"evidence-{len(calls)}")
+
+        result = run_capital_compression_campaign(evaluate)
+        self.assertIs(result.status, CapitalCompressionStatus.MINIMUM_BOUND_FOUND)
+        self.assertTrue(result.lowest_passing_equity >= 1000.0)
+        self.assertLess(result.first_failing_equity, 1000.0)
+        self.assertEqual(tuple(row.equity for row in result.evidence), tuple(calls))
+        self.assertFalse(result.broker_write_authority)
+        self.assertFalse(result.live_write_authority)
+        self.assertFalse(result.promotion_authority)
+        self.assertFalse(result.risk_override_authority)
+        self.assertFalse(result.guardian_override_authority)
+
+    def test_compression_can_prove_success_below_100(self):
+        sequence = []
+
+        def evaluate(equity: float) -> CapitalBacktestEvidence:
+            sequence.append(equity)
+            return CapitalBacktestEvidence(equity, True, f"below-{len(sequence)}")
+
+        result = run_capital_compression_campaign(evaluate)
+        self.assertIs(result.status, CapitalCompressionStatus.BELOW_TARGET_PROVEN)
+        self.assertLess(result.lowest_passing_equity, 100.0)
+        self.assertIsNone(result.first_failing_equity)
+
+    def test_reference_backtest_must_pass_before_compression_can_continue(self):
+        result = run_capital_compression_campaign(
+            lambda equity: CapitalBacktestEvidence(equity, False, "reference-failed")
+        )
+        self.assertIs(result.status, CapitalCompressionStatus.REFERENCE_FAILED)
+        self.assertEqual(len(result.evidence), 1)
+        self.assertIsNone(result.lowest_passing_equity)
+        self.assertEqual(result.first_failing_equity, 100000.0)
+
+    def test_compression_rejects_wrong_equity_or_reused_evidence_identity(self):
+        with self.assertRaises(ValueError):
+            run_capital_compression_campaign(
+                lambda equity: CapitalBacktestEvidence(equity - 1.0, True, "wrong-equity")
+            )
+
+        calls = 0
+
+        def duplicate(equity: float) -> CapitalBacktestEvidence:
+            nonlocal calls
+            calls += 1
+            return CapitalBacktestEvidence(equity, True, "same-evidence")
+
+        with self.assertRaises(ValueError):
+            run_capital_compression_campaign(duplicate)
 
     def test_result_has_no_operational_authority(self):
         result = assess_small_account_feasibility(SmallAccountFeasibilityRequest(
