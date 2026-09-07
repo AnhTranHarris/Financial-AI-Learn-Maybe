@@ -3,7 +3,7 @@ param(
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string]$ExpectedHead,
 
-    [string]$Repository = (Split-Path -Parent $PSScriptRoot),
+    [string]$Repository,
 
     [ValidateNotNullOrEmpty()]
     [string]$Model = 'qwen3:1.7b'
@@ -46,6 +46,18 @@ function Get-NativeText {
     return (($lines | ForEach-Object { [string]$_ }) -join "`n").Trim()
 }
 
+if ([string]::IsNullOrWhiteSpace($Repository)) {
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $Repository = Split-Path -Parent $PSScriptRoot
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        $Repository = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+    }
+    else {
+        throw 'Repository was not supplied and script location could not be determined.'
+    }
+}
+
 $repo = (Resolve-Path -LiteralPath $Repository).Path
 $python = Join-Path $repo '.venv\Scripts\python.exe'
 $estate = Join-Path $env:LOCALAPPDATA 'DustyDragon\strategy-estate\reconstructions.json'
@@ -63,12 +75,11 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 
 $head = Get-NativeText 'git' @('rev-parse', 'HEAD')
 $branch = Get-NativeText 'git' @('branch', '--show-current')
-$dirty = @(Get-NativeText 'git' @('status', '--porcelain=v1', '--untracked-files=all')) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$dirtyText = Get-NativeText 'git' @('status', '--porcelain=v1', '--untracked-files=all')
 
 Write-Host "Branch: $branch"
 Write-Host "HEAD:   $head"
-Write-Host "Tree:   $(if ($dirty.Count -eq 0) { 'CLEAN' } else { 'DIRTY' })"
+Write-Host "Tree:   $(if ([string]::IsNullOrWhiteSpace($dirtyText)) { 'CLEAN' } else { 'DIRTY' })"
 
 if ($head -ne $ExpectedHead) {
     throw "Expected exact HEAD $ExpectedHead but found $head"
@@ -76,7 +87,7 @@ if ($head -ne $ExpectedHead) {
 if ([string]::IsNullOrWhiteSpace($branch)) {
     throw 'Detached HEAD is not accepted for native validation.'
 }
-if ($dirty.Count -ne 0) {
+if (-not [string]::IsNullOrWhiteSpace($dirtyText)) {
     throw 'Working tree is not clean. No validation workload was started.'
 }
 
@@ -135,8 +146,7 @@ if ($coverageCode -notin @(0, 4)) {
 
 $finalHead = Get-NativeText 'git' @('rev-parse', 'HEAD')
 $finalBranch = Get-NativeText 'git' @('branch', '--show-current')
-$finalDirty = @(Get-NativeText 'git' @('status', '--porcelain=v1', '--untracked-files=all')) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$finalDirtyText = Get-NativeText 'git' @('status', '--porcelain=v1', '--untracked-files=all')
 
 if ($finalHead -ne $ExpectedHead) {
     throw 'Repository HEAD changed during validation.'
@@ -144,7 +154,7 @@ if ($finalHead -ne $ExpectedHead) {
 if ($finalBranch -ne $branch) {
     throw 'Repository branch changed during validation.'
 }
-if ($finalDirty.Count -ne 0) {
+if (-not [string]::IsNullOrWhiteSpace($finalDirtyText)) {
     throw 'Repository became dirty during validation.'
 }
 
