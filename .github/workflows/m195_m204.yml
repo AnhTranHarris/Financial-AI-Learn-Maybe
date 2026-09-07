@@ -36,8 +36,11 @@ jobs:
       - name: M202 production observability gate
         run: python -m unittest discover -s tests -p "test_m202*.py" -v
 
-      # M203-M204 are added as their official surfaces exist. Treating zero
-      # future tests as a passing certification would be misleading.
+      - name: M203 release rollback gate
+        run: python -m unittest discover -s tests -p "test_m203*.py" -v
+
+      # M204 is added as its official surface exists. Treating zero future
+      # tests as a passing certification would be misleading.
 
       - name: M195 deterministic authority boundary
         run: >-
