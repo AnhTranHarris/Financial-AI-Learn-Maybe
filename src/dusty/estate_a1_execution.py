@@ -155,7 +155,7 @@ def analysis_replay_from_runtime_trades(
             row.exit_at,
             row.entry_price,
             row.exit_price,
-            row.exit_stop_price if row.exit_stop_price is not None else row.stop_price,
+            1.0,
             row.exit_reason,
         )
         for row in rows
