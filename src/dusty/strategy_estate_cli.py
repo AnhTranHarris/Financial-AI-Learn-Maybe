@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ollama", default="http://127.0.0.1:11434", help="localhost Ollama base URL")
     parser.add_argument("--estate", type=Path, default=default_strategy_estate_path(), help="persistent reconstruction estate path")
     parser.add_argument("--list", action="store_true", help="list the current estate without invoking Ollama")
+    parser.add_argument(
+        "--require-all-seeds",
+        action="store_true",
+        help="return exit code 4 unless all governed starter proposals are represented",
+    )
     return parser
 
 
@@ -115,13 +120,26 @@ def _missing_seed_proposals(path: Path):
     return missing, len(all_seeds) - len(missing)
 
 
+def _seed_coverage_exit(path: Path) -> int:
+    missing, represented = _missing_seed_proposals(path)
+    total = represented + len(missing)
+    print(f"Governed seed coverage: {represented}/{total}")
+    if missing:
+        print("Missing governed seeds:")
+        for proposal in missing:
+            print(f"- {proposal.proposal_id}")
+        return 4
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     estate = args.estate.expanduser().resolve()
 
     if args.list:
-        return _print_estate(estate)
+        _print_estate(estate)
+        return _seed_coverage_exit(estate) if args.require_all_seeds else 0
     if not args.seed_core:
         parser.error("select --seed-core or --list")
 
@@ -130,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Existing governed seed proposals skipped: {skipped_existing}")
     if not proposals:
         print("All governed starter proposals are already represented in the Strategy Estate.")
-        return _print_estate(estate)
+        _print_estate(estate)
+        return _seed_coverage_exit(estate) if args.require_all_seeds else 0
 
     try:
         endpoint = _local_ollama_url(args.ollama)
@@ -169,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         print("No reconstruction was added; existing estate was not modified.")
 
     _print_estate(estate)
+    if args.require_all_seeds:
+        return _seed_coverage_exit(estate)
     return 0 if result.added_count > 0 or bool(load_strategy_estate(estate)) else 3
 
 
