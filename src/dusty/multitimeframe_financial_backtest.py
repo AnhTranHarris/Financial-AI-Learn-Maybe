@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .analysis_runtime import AnalysisReplay
-from .backtest import BacktestResultV2, PriceMark, SimulatedTrade, simulate_portfolio
+from .backtest import (
+    BacktestResultV2,
+    PriceMark,
+    SimulatedTrade,
+    simulate_portfolio,
+    trade_gross_pnl,
+    trade_net_pnl,
+)
 from .markets import InstrumentEconomics
 
 
@@ -24,6 +31,33 @@ class ResearchFriction:
             raise ValueError("research friction must be finite and nonnegative")
         if not self.basis.strip():
             raise ValueError("research friction requires an explicit basis")
+
+
+@dataclass(frozen=True, slots=True)
+class FinancialReplaySummary:
+    gross_pnl: float
+    net_pnl: float
+    total_costs: float
+    ending_equity: float
+    max_drawdown_fraction: float
+    max_margin_used: float
+    trade_count: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.gross_pnl,
+            self.net_pnl,
+            self.total_costs,
+            self.ending_equity,
+            self.max_drawdown_fraction,
+            self.max_margin_used,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("financial replay summary must be finite")
+        if self.total_costs < -1e-12 or self.max_drawdown_fraction < 0 or self.max_margin_used < 0:
+            raise ValueError("financial replay summary cannot expose negative cost/drawdown/margin")
+        if self.trade_count < 0:
+            raise ValueError("financial replay summary trade count cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +88,28 @@ class MinimumLotFinancialReplay:
     @property
     def guardian_override_authority(self) -> bool:
         return False
+
+
+def summarize_minimum_lot_financial_replay(
+    replay: MinimumLotFinancialReplay,
+    economics: InstrumentEconomics,
+) -> FinancialReplaySummary:
+    """Return tested derived ledger metrics without assuming BacktestResultV2 fields that do not exist."""
+    gross = sum(trade_gross_pnl(trade, economics) for trade in replay.simulated_trades)
+    net_from_trades = sum(trade_net_pnl(trade, economics) for trade in replay.simulated_trades)
+    costs = gross - net_from_trades
+    if abs(net_from_trades - replay.backtest.net_pnl) > 1e-8:
+        raise ValueError("financial replay trade PnL does not reconcile to ledger net PnL")
+    max_margin = max((point.margin_used for point in replay.backtest.ledger), default=0.0)
+    return FinancialReplaySummary(
+        gross_pnl=gross,
+        net_pnl=replay.backtest.net_pnl,
+        total_costs=costs,
+        ending_equity=replay.backtest.ending_equity,
+        max_drawdown_fraction=replay.backtest.max_drawdown_fraction,
+        max_margin_used=max_margin,
+        trade_count=replay.backtest.trade_count,
+    )
 
 
 def run_minimum_lot_financial_replay(
