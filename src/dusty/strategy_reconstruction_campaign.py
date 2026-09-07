@@ -16,6 +16,7 @@ without bypassing the existing M5+ decision-timeframe constitution.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
 import json
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .source_intake import EvidenceClass, StrategyProposal, deduplicate_proposals
-from .strategy_estate import load_strategy_estate
+from .strategy_estate import StrategyEstateUpdate, load_strategy_estate
 from .strategy_estate_builder import EstatePopulationResult, EstatePopulationRow, StrategyEstateBuilder
 
 
@@ -145,12 +146,17 @@ class CampaignExecutionResult:
     batches_completed: int
     model_calls_scheduled: int
     added_to_estate: int
+    estate_updates: tuple[StrategyEstateUpdate, ...] = ()
 
     broker_write_authority = False
     live_write_authority = False
     promotion_authority = False
     risk_override_authority = False
     guardian_override_authority = False
+
+    @property
+    def final_estate_update(self) -> StrategyEstateUpdate | None:
+        return self.estate_updates[-1] if self.estate_updates else None
 
 
 def _digest(value: object) -> str:
@@ -256,10 +262,12 @@ def execute_reconstruction_campaign(
     allowed_features: tuple[str, ...],
     allowed_sessions: tuple[str, ...],
     estate_path: str | Path,
+    created_at: datetime | None = None,
 ) -> CampaignExecutionResult:
     """Drain six-item windows sequentially and persist after every candidate."""
 
     rows: list[EstatePopulationRow] = []
+    updates: list[StrategyEstateUpdate] = []
     added = 0
     scheduled = 0
     completed = 0
@@ -276,8 +284,11 @@ def execute_reconstruction_campaign(
                 allowed_features=allowed_features,
                 allowed_sessions=allowed_sessions,
                 estate_path=estate_path,
+                created_at=created_at,
             )
             rows.extend(result.rows)
             added += result.added_count
+            if result.estate_update is not None:
+                updates.append(result.estate_update)
         completed += 1
-    return CampaignExecutionResult(campaign, tuple(rows), completed, scheduled, added)
+    return CampaignExecutionResult(campaign, tuple(rows), completed, scheduled, added, tuple(updates))
