@@ -25,10 +25,12 @@ jobs:
       - name: Compile production certification surfaces
         run: python -m compileall -q src/dusty tests tools
 
-      - name: M195-M199 gates
-        run: python -m unittest discover -s tests -p "test_m19[5-9]*.py" -v
+      - name: M195-M200 gates
+        run: >-
+          python -m unittest discover -s tests -p "test_m19[5-9]*.py" -v
+          && python -m unittest discover -s tests -p "test_m200*.py" -v
 
-      # M200-M204 are added to this workflow when the official M200 surface exists.
+      # M201-M204 are added to this workflow as their official surfaces exist.
       # Treating zero future tests as a passing certification would be misleading.
 
       - name: M195 deterministic authority boundary
