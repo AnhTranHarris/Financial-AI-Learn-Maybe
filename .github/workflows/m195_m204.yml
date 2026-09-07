@@ -30,8 +30,11 @@ jobs:
           python -m unittest discover -s tests -p "test_m19[5-9]*.py" -v
           && python -m unittest discover -s tests -p "test_m200*.py" -v
 
-      # M201-M204 are added to this workflow as their official surfaces exist.
-      # Treating zero future tests as a passing certification would be misleading.
+      - name: M201 security boundary gate
+        run: python -m unittest discover -s tests -p "test_m201*.py" -v
+
+      # M202-M204 are added as their official surfaces exist. Treating zero
+      # future tests as a passing certification would be misleading.
 
       - name: M195 deterministic authority boundary
         run: >-
