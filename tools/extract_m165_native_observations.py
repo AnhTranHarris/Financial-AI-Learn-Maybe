@@ -144,7 +144,24 @@ def main() -> int:
         "broker_profile_fingerprint": broker,
         "symbol": snapshot.symbol,
         "observations": [
-            {"fingerprint": row.fingerprint, "side": row.side.value, "observed_at": row.observed_at.isoformat(), "point_size": row.point_size, "bid": row.bid, "ask": row.ask, "requested_price": row.requested_price, "fill_price": row.fill_price, "volume_lots": row.volume_lots, "commission": row.commission, "fee": row.fee, "swap": row.swap, "spread_points": row.spread_points, "adverse_slippage_points": row.adverse_slippage_points, "commission_fee_per_lot": row.commission_fee_per_lot}
+            {
+                "fingerprint": row.fingerprint,
+                "evidence_fingerprint": row.evidence_fingerprint,
+                "side": row.side.value,
+                "observed_at": row.observed_at.isoformat(),
+                "point_size": row.point_size,
+                "bid": row.bid,
+                "ask": row.ask,
+                "requested_price": row.requested_price,
+                "fill_price": row.fill_price,
+                "volume_lots": row.volume_lots,
+                "commission": row.commission,
+                "fee": row.fee,
+                "swap": row.swap,
+                "spread_points": row.spread_points,
+                "adverse_slippage_points": row.adverse_slippage_points,
+                "commission_fee_per_lot": row.commission_fee_per_lot,
+            }
             for row in (entry_obs, exit_obs)
         ],
         "calibration": calibration.payload,
