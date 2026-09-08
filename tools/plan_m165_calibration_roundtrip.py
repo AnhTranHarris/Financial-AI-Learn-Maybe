@@ -10,7 +10,11 @@ import subprocess
 
 from dusty.demo_session import DemoSession, MT5IdentityProbe, SessionIdentity
 from dusty.experience import TradeSide
-from dusty.m165_calibration_roundtrip import CalibrationPlanningPolicy, build_native_envelope
+from dusty.m165_calibration_roundtrip import (
+    CalibrationPlanningPolicy,
+    build_native_envelope,
+    tighten_calibration_loss_budget,
+)
 from dusty.m185_production_qualification import ProductionQualificationManifest, ProductionQualificationPlan
 from dusty.m194_native_demo_preflight import (
     NativeDemoPreflightStatus,
@@ -18,7 +22,6 @@ from dusty.m194_native_demo_preflight import (
     capture_native_demo_snapshot,
 )
 from dusty.order_intent import MT5PreflightAdapter, OrderIntent
-from dusty.risk import RiskConstitution
 from dusty.strategy_v3 import OrderStyle
 
 
@@ -226,7 +229,7 @@ def main() -> int:
             continue
         for filling in filling_modes:
             now = datetime.now(timezone.utc)
-            intent = OrderIntent(
+            discovery_intent = OrderIntent(
                 strategy_hash=manifest.strategy_hash,
                 session_fingerprint=session.identity.fingerprint,
                 symbol=symbol,
@@ -246,17 +249,54 @@ def main() -> int:
                 filling_mode=filling,
                 order_style=OrderStyle.MARKET,
             )
-            preflight = preflight_adapter.check(intent, at=now)
-            if preflight.passed:
-                actual_fraction = preflight.loss_at_stop / equity if equity > 0 else math.inf
+            discovery_preflight = preflight_adapter.check(discovery_intent, at=now)
+            if discovery_preflight.passed:
+                actual_fraction = discovery_preflight.loss_at_stop / equity if equity > 0 else math.inf
                 if actual_fraction <= float(policy.normal_risk_fraction) + 1e-12:
-                    selected = (intent, preflight, distance, actual_fraction)
-                    break
+                    try:
+                        executable_loss = tighten_calibration_loss_budget(
+                            observed_loss=discovery_preflight.loss_at_stop,
+                            discovery_ceiling=envelope.loss_ceiling_cash,
+                        )
+                    except ValueError:
+                        executable_loss = 0.0
+                    if executable_loss > 0:
+                        executable_intent = OrderIntent(
+                            strategy_hash=manifest.strategy_hash,
+                            session_fingerprint=session.identity.fingerprint,
+                            symbol=symbol,
+                            side=TradeSide.LONG,
+                            volume=envelope.minimum_volume,
+                            reference_price=reference_price,
+                            stop_price=stop_price,
+                            target_price=None,
+                            approved_risk_fraction=actual_fraction,
+                            allowed_loss=executable_loss,
+                            pm_approved=True,
+                            growth_multiplier=1.0,
+                            risk_approved=True,
+                            guardian_approved=True,
+                            created_at=now,
+                            expires_at=now + timedelta(minutes=2),
+                            filling_mode=filling,
+                            order_style=OrderStyle.MARKET,
+                        )
+                        executable_preflight = preflight_adapter.check(executable_intent, at=datetime.now(timezone.utc))
+                        if executable_preflight.passed and executable_preflight.loss_at_stop <= executable_loss + 1e-9:
+                            selected = (executable_intent, executable_preflight, distance, actual_fraction)
+                            break
+                        rejected.append({
+                            "distance": distance,
+                            "filling_mode": filling,
+                            "reasons": ["executable_rebind_preflight_failed", *executable_preflight.reasons],
+                            "loss_at_stop": executable_preflight.loss_at_stop,
+                        })
+                        continue
             rejected.append({
                 "distance": distance,
                 "filling_mode": filling,
-                "reasons": list(preflight.reasons),
-                "loss_at_stop": preflight.loss_at_stop,
+                "reasons": list(discovery_preflight.reasons) or ["measured_loss_not_executable"],
+                "loss_at_stop": discovery_preflight.loss_at_stop,
             })
         if selected is not None:
             break
@@ -308,9 +348,12 @@ def main() -> int:
             "filling_mode": intent.filling_mode,
             "loss_at_stop": preflight.loss_at_stop,
             "actual_risk_fraction": actual_fraction,
-            "loss_ceiling_cash": envelope.loss_ceiling_cash,
+            "approved_risk_fraction": intent.approved_risk_fraction,
+            "discovery_loss_ceiling_cash": envelope.loss_ceiling_cash,
+            "execution_allowed_loss_cash": intent.allowed_loss,
             "required_margin": preflight.required_margin,
             "checked_price": preflight.checked_price,
+            "created_at": intent.created_at.isoformat(),
             "expires_at": intent.expires_at.isoformat(),
         },
         "rejected_probe_count_before_selection": len(rejected),
