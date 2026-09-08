@@ -42,7 +42,7 @@ jobs:
         if: runner.os != 'Windows'
         run: >-
           python -c "from pathlib import Path;
-          names=['m165_native_history_discovery.py','m165_calibration_roundtrip.py','m165_calibration_execution.py','m185_production_qualification.py','m187_calibration_bridge.py','execution_reconciliation.py','demo_execution_cost_learning.py','restart_recovery.py','provider_degradation.py','strategy_drift.py','champion_suspension.py','single_desk_demo_certification.py','m194_native_demo_preflight.py','m194_native_demo_journal.py','m194_native_demo_runtime.py'];
+          names=['m165_native_history_discovery.py','m165_calibration_roundtrip.py','m165_calibration_execution.py','m165_runtime_execution.py','m185_production_qualification.py','m187_calibration_bridge.py','execution_reconciliation.py','demo_execution_cost_learning.py','restart_recovery.py','provider_degradation.py','strategy_drift.py','champion_suspension.py','single_desk_demo_certification.py','m194_native_demo_preflight.py','m194_native_demo_journal.py','m194_native_demo_runtime.py'];
           rows=[Path('src/dusty')/name for name in names if (Path('src/dusty')/name).exists()];
           bad=[str(path) for path in rows if 'order_send(' in path.read_text(encoding='utf-8')];
           assert not bad, f'direct broker-send surface outside M187 adapter owner: {bad}'"
