@@ -123,6 +123,15 @@ def planning_policy_fingerprint(policy: CalibrationPlanningPolicy) -> str:
     )
 
 
+def tighten_calibration_loss_budget(*, observed_loss: float, discovery_ceiling: float) -> float:
+    """Bind execution to measured native loss, never the broader discovery ceiling."""
+    observed = _positive(observed_loss, "observed_loss")
+    ceiling = _positive(discovery_ceiling, "discovery_ceiling")
+    if observed > ceiling + 1e-9:
+        raise ValueError("observed calibration loss exceeds discovery ceiling")
+    return observed
+
+
 def build_native_envelope(
     *,
     symbol: str,
