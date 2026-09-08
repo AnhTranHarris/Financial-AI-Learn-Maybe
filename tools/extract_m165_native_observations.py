@@ -10,17 +10,37 @@ from dusty.m165_native_observations import broker_profile_fingerprint, build_obs
 from dusty.m194_native_demo_preflight import capture_native_demo_snapshot
 
 
+def _field(row: object, name: str, default: object = 0) -> object:
+    """Read named fields from MT5 NumPy structured rows, dicts, or test doubles."""
+    if isinstance(row, dict):
+        return row.get(name, default)
+    try:
+        return row[name]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return getattr(row, name, default)
+
+
 def _nearest_tick(rows: object, target_msc: int) -> object:
-    # MetaTrader5.copy_ticks_range returns a NumPy structured array.  NumPy arrays
-    # deliberately reject implicit truth-value testing when they contain more than
-    # one element, so never use ``rows or ()`` at this provider boundary.
+    # MetaTrader5.copy_ticks_range returns a NumPy structured ndarray.  It cannot
+    # be truth-tested when multi-row, and its named fields are not guaranteed to
+    # be accessible as attributes.  Keep only complete, non-crossed quote rows.
     if rows is None:
         values: list[object] = []
     else:
         values = list(rows)
-    if not values:
-        raise RuntimeError("no historical ticks available around execution")
-    return min(values, key=lambda row: abs(int(getattr(row, "time_msc", 0) or 0) - target_msc))
+    quotes = []
+    for row in values:
+        try:
+            bid = float(_field(row, "bid", 0.0) or 0.0)
+            ask = float(_field(row, "ask", 0.0) or 0.0)
+            time_msc = int(_field(row, "time_msc", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if time_msc > 0 and bid > 0 and ask > 0 and ask >= bid:
+            quotes.append(row)
+    if not quotes:
+        raise RuntimeError("no complete historical bid/ask ticks available around execution")
+    return min(quotes, key=lambda row: abs(int(_field(row, "time_msc", 0) or 0) - target_msc))
 
 
 def main() -> int:
@@ -68,8 +88,10 @@ def main() -> int:
         exit_time = utc_from_millis(int(exit_row["time_msc"]))
         ticks = mt5.copy_ticks_range(snapshot.symbol, exit_time - timedelta(seconds=2), exit_time + timedelta(seconds=2), mt5.COPY_TICKS_ALL)
         tick = _nearest_tick(ticks, int(exit_row["time_msc"]))
-        exit_bid = float(getattr(tick, "bid", 0.0) or 0.0)
-        exit_ask = float(getattr(tick, "ask", 0.0) or 0.0)
+        exit_bid = float(_field(tick, "bid", 0.0) or 0.0)
+        exit_ask = float(_field(tick, "ask", 0.0) or 0.0)
+        if exit_bid <= 0 or exit_ask <= 0 or exit_ask < exit_bid:
+            raise RuntimeError("historical exit quote is incomplete or crossed")
     finally:
         mt5.shutdown()
 
