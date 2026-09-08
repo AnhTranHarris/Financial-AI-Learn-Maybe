@@ -302,11 +302,31 @@ class M187M165CalibrationBridgeTests(unittest.TestCase):
                 at=NOW + timedelta(seconds=1),
             )
             self.assertEqual(spy.calls, 1)
-            wrong = replace(intent, action_volume=0.005, current_volume=0.01)
-            wrong_permit = self.permit(session, wrong, action="full_close", sequence=3)
+
+            partial = PositionActionIntent(
+                fp("qualification-strategy"),
+                session.identity.fingerprint,
+                PositionActionKind.PARTIAL_CLOSE,
+                "EURUSD",
+                TradeSide.LONG,
+                9002,
+                0,
+                0.01,
+                0.005,
+                1.0950,
+                0.0,
+                0.0,
+                True,
+                True,
+                True,
+                NOW,
+                NOW + timedelta(minutes=2),
+                0,
+            )
+            wrong_permit = self.permit(session, partial, action="full_close", sequence=3)
             with self.assertRaises(PermissionError):
                 bridge.execute(
-                    preflight=self.close_preflight(wrong),
+                    preflight=self.close_preflight(partial),
                     permit=wrong_permit,
                     current_symbol_spec_fingerprint=fp("symbol-spec"),
                     at=NOW + timedelta(seconds=1),
