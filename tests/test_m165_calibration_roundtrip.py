@@ -6,6 +6,7 @@ from dusty.m165_calibration_roundtrip import (
     CalibrationPlanningPolicy,
     build_native_envelope,
     planning_policy_fingerprint,
+    tighten_calibration_loss_budget,
 )
 from dusty.risk import RiskConstitution
 
@@ -57,6 +58,16 @@ class M165CalibrationRoundTripPlanningTests(unittest.TestCase):
             CalibrationPlanningPolicy(maximum_geometry_probes=0)
         with self.assertRaises(ValueError):
             CalibrationPlanningPolicy(geometry_growth_factor=1.0)
+
+    def test_measured_loss_replaces_broad_discovery_ceiling(self) -> None:
+        self.assertEqual(
+            tighten_calibration_loss_budget(observed_loss=0.01, discovery_ceiling=250.0),
+            0.01,
+        )
+        with self.assertRaises(ValueError):
+            tighten_calibration_loss_budget(observed_loss=250.01, discovery_ceiling=250.0)
+        with self.assertRaises(ValueError):
+            tighten_calibration_loss_budget(observed_loss=0.0, discovery_ceiling=250.0)
 
     def test_invalid_native_volume_geometry_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
