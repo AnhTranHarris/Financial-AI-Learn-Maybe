@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -81,7 +82,7 @@ class M1941NativeDemoJournalTests(unittest.TestCase):
             path = Path(root) / "m194.db"
             journal = SQLiteM194NativeEvidenceJournal(path)
             journal.append(event(M194NativeEventKind.RUN_STARTED))
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 db.execute("UPDATE m194_native_events SET payload_json=?", ('{"index":999}',))
                 db.commit()
             with self.assertRaisesRegex(RuntimeError, "integrity failure"):
