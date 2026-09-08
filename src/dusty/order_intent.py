@@ -133,6 +133,8 @@ class BrokerPreflight:
     checked_price: float
     request: tuple[tuple[str, object], ...]
     reasons: tuple[str, ...]
+    bid: float = 0.0
+    ask: float = 0.0
 
     def request_dict(self) -> dict[str, object]:
         return dict(self.request)
@@ -185,34 +187,36 @@ class MT5PreflightAdapter:
             tick = self._mt5.symbol_info_tick(intent.symbol)
             if tick is None:
                 return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("symbol_tick_unavailable",))
-            market_price = float(tick.ask if intent.side is TradeSide.LONG else tick.bid)
-            if not math.isfinite(market_price) or market_price <= 0:
-                return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("market_price_invalid",))
+            bid = float(getattr(tick, "bid", 0.0))
+            ask = float(getattr(tick, "ask", 0.0))
+            if not all(math.isfinite(value) and value > 0 for value in (bid, ask)) or ask < bid:
+                return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("market_quote_invalid",), bid, ask)
+            market_price = ask if intent.side is TradeSide.LONG else bid
             if intent.order_style is OrderStyle.MARKET:
                 drift = abs(market_price - intent.reference_price) / intent.reference_price
                 if drift > intent.max_price_drift_fraction:
-                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("price_drift_exceeded",))
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("price_drift_exceeded",), bid, ask)
                 order_type = self._mt5.ORDER_TYPE_BUY if intent.side is TradeSide.LONG else self._mt5.ORDER_TYPE_SELL
                 execution_price = market_price
             else:
                 try:
                     order_type = _pending_order_type(self._mt5, intent.order_style, intent.side)
                 except ValueError:
-                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_order_type_unsupported",))
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_order_type_unsupported",), bid, ask)
                 execution_price = intent.reference_price
                 if not _pending_geometry_valid(intent, market_price):
-                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_price_geometry_invalid",))
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("pending_price_geometry_invalid",), bid, ask)
             calculation_type = self._mt5.ORDER_TYPE_BUY if intent.side is TradeSide.LONG else self._mt5.ORDER_TYPE_SELL
             profit = self._mt5.order_calc_profit(calculation_type, intent.symbol, intent.volume, execution_price, intent.stop_price)
             margin = self._mt5.order_calc_margin(calculation_type, intent.symbol, intent.volume, execution_price)
             if profit is None or margin is None:
-                return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("broker_calculation_failed",))
+                return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("broker_calculation_failed",), bid, ask)
             loss = max(0.0, -float(profit))
             required_margin = float(margin)
             if not math.isfinite(loss) or not math.isfinite(required_margin) or required_margin < 0:
-                return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("broker_calculation_invalid",))
+                return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("broker_calculation_invalid",), bid, ask)
             if loss > intent.allowed_loss + 1e-9:
-                return BrokerPreflight(intent, False, loss, required_margin, market_price, (), ("broker_loss_exceeds_budget",))
+                return BrokerPreflight(intent, False, loss, required_margin, market_price, (), ("broker_loss_exceeds_budget",), bid, ask)
             request = {
                 "action": self._mt5.TRADE_ACTION_DEAL if intent.order_style is OrderStyle.MARKET else self._mt5.TRADE_ACTION_PENDING,
                 "symbol": intent.symbol,
@@ -228,7 +232,7 @@ class MT5PreflightAdapter:
             }
             if intent.pending_expiry is not None:
                 if not hasattr(self._mt5, "ORDER_TIME_SPECIFIED"):
-                    return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), ("pending_expiration_unsupported",))
+                    return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), ("pending_expiration_unsupported",), bid, ask)
                 request["type_time"] = self._mt5.ORDER_TIME_SPECIFIED
                 request["expiration"] = int(intent.pending_expiry.timestamp())
             if intent.stop_limit_price is not None:
@@ -237,11 +241,11 @@ class MT5PreflightAdapter:
                 request["tp"] = intent.target_price
             check = self._mt5.order_check(request)
             if check is None:
-                return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), ("order_check_failed",))
+                return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), ("order_check_failed",), bid, ask)
             retcode = int(getattr(check, "retcode", -1))
             if retcode != 0:
-                return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), (f"order_check_retcode:{retcode}",))
-            return BrokerPreflight(intent, True, loss, required_margin, market_price, tuple(sorted(request.items())), ())
+                return BrokerPreflight(intent, False, loss, required_margin, market_price, tuple(sorted(request.items())), (f"order_check_retcode:{retcode}",), bid, ask)
+            return BrokerPreflight(intent, True, loss, required_margin, market_price, tuple(sorted(request.items())), (), bid, ask)
         finally:
             self._mt5.shutdown()
 
