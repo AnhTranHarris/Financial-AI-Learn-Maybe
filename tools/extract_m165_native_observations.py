@@ -11,7 +11,13 @@ from dusty.m194_native_demo_preflight import capture_native_demo_snapshot
 
 
 def _nearest_tick(rows: object, target_msc: int) -> object:
-    values = list(rows or ())
+    # MetaTrader5.copy_ticks_range returns a NumPy structured array.  NumPy arrays
+    # deliberately reject implicit truth-value testing when they contain more than
+    # one element, so never use ``rows or ()`` at this provider boundary.
+    if rows is None:
+        values: list[object] = []
+    else:
+        values = list(rows)
     if not values:
         raise RuntimeError("no historical ticks available around execution")
     return min(values, key=lambda row: abs(int(getattr(row, "time_msc", 0) or 0) - target_msc))
