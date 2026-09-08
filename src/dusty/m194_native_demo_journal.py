@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Durable append-only evidence journal for one real M194 Demo desk run."""
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -80,8 +81,6 @@ class M194NativeEvidenceEvent:
         object.__setattr__(self, "evidence_fingerprints", evidence)
         if not isinstance(self.payload, dict):
             raise ValueError("event payload must be a mapping")
-        # Canonicalization is also a validation step: NaN/Inf and non-serializable
-        # values fail before they can enter the evidence journal.
         _canonical(self.payload)
 
     @property
@@ -104,80 +103,80 @@ class SQLiteM194NativeEvidenceJournal:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS m194_native_events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_fingerprint TEXT NOT NULL UNIQUE,
-                    run_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    source_commit TEXT NOT NULL,
-                    champion_fingerprint TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+        with closing(self._connect()) as db:
+            with db:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS m194_native_events (
+                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_fingerprint TEXT NOT NULL UNIQUE,
+                        run_id TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        occurred_at TEXT NOT NULL,
+                        source_commit TEXT NOT NULL,
+                        champion_fingerprint TEXT NOT NULL,
+                        evidence_json TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            db.commit()
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=30.0)
 
     def append(self, event: M194NativeEvidenceEvent) -> str:
-        with self._connect() as db:
-            if event.kind is not M194NativeEventKind.RUN_STARTED:
-                start = db.execute(
-                    "SELECT source_commit, champion_fingerprint FROM m194_native_events WHERE run_id=? AND kind=? ORDER BY sequence LIMIT 1",
-                    (event.run_id, M194NativeEventKind.RUN_STARTED.value),
-                ).fetchone()
-                if start is None:
-                    raise ValueError("M194 native run must start before subsequent evidence")
-                if start[0] != event.source_commit or start[1] != event.champion_fingerprint:
-                    raise ValueError("M194 native run identity drift")
-            else:
-                prior = db.execute(
-                    "SELECT 1 FROM m194_native_events WHERE run_id=? LIMIT 1",
-                    (event.run_id,),
-                ).fetchone()
-                if prior is not None:
-                    raise ValueError("M194 native run_id already exists")
+        with closing(self._connect()) as db:
+            with db:
+                if event.kind is not M194NativeEventKind.RUN_STARTED:
+                    start = db.execute(
+                        "SELECT source_commit, champion_fingerprint FROM m194_native_events WHERE run_id=? AND kind=? ORDER BY sequence LIMIT 1",
+                        (event.run_id, M194NativeEventKind.RUN_STARTED.value),
+                    ).fetchone()
+                    if start is None:
+                        raise ValueError("M194 native run must start before subsequent evidence")
+                    if start[0] != event.source_commit or start[1] != event.champion_fingerprint:
+                        raise ValueError("M194 native run identity drift")
+                else:
+                    prior = db.execute(
+                        "SELECT 1 FROM m194_native_events WHERE run_id=? LIMIT 1",
+                        (event.run_id,),
+                    ).fetchone()
+                    if prior is not None:
+                        raise ValueError("M194 native run_id already exists")
 
-            if db.execute(
-                "SELECT 1 FROM m194_native_events WHERE run_id=? AND kind=? LIMIT 1",
-                (event.run_id, M194NativeEventKind.RUN_ENDED.value),
-            ).fetchone() is not None:
-                raise ValueError("M194 native run is already closed")
+                if db.execute(
+                    "SELECT 1 FROM m194_native_events WHERE run_id=? AND kind=? LIMIT 1",
+                    (event.run_id, M194NativeEventKind.RUN_ENDED.value),
+                ).fetchone() is not None:
+                    raise ValueError("M194 native run is already closed")
 
-            try:
-                db.execute(
-                    """
-                    INSERT INTO m194_native_events (
-                        event_fingerprint, run_id, kind, occurred_at, source_commit,
-                        champion_fingerprint, evidence_json, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.fingerprint,
-                        event.run_id,
-                        event.kind.value,
-                        event.occurred_at.isoformat(),
-                        event.source_commit,
-                        event.champion_fingerprint,
-                        _canonical(event.evidence_fingerprints),
-                        _canonical(event.payload),
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise ValueError("duplicate M194 native evidence event") from exc
-            db.commit()
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO m194_native_events (
+                            event_fingerprint, run_id, kind, occurred_at, source_commit,
+                            champion_fingerprint, evidence_json, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event.fingerprint,
+                            event.run_id,
+                            event.kind.value,
+                            event.occurred_at.isoformat(),
+                            event.source_commit,
+                            event.champion_fingerprint,
+                            _canonical(event.evidence_fingerprints),
+                            _canonical(event.payload),
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("duplicate M194 native evidence event") from exc
         return event.fingerprint
 
     def events(self, run_id: str) -> tuple[M194NativeEvidenceEvent, ...]:
         run = _text(run_id, "run_id", maximum=128)
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             rows = db.execute(
                 """
                 SELECT event_fingerprint, kind, occurred_at, source_commit,
