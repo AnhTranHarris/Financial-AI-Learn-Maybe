@@ -15,12 +15,16 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+from typing import Any, Callable
 
 from dusty.m165_broker_forensics import capture_broker_forensics
 from dusty.m165_post_send_resolution import PostSendStatus, resolve_post_send_forensics
 
 
 CONFIRMATION = "M165-DEMO-ONE-SHOT"
+RECONCILIATION_ATTEMPTS = 7
+RECONCILIATION_INTERVAL_SECONDS = 0.5
 
 
 def _atomic_write(path: Path, payload: object) -> None:
@@ -49,6 +53,33 @@ def _entry_order_ticket(receipt: dict[str, object]) -> int:
     if not isinstance(execution, dict):
         return 0
     return int(execution.get("order_ticket", 0) or 0)
+
+
+def _reconcile_with_grace(
+    capture_once: Callable[[], Any],
+    *,
+    attempts: int = RECONCILIATION_ATTEMPTS,
+    interval_seconds: float = RECONCILIATION_INTERVAL_SECONDS,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> tuple[Any, Any, int]:
+    """Poll broker history only; never resubmit or mutate broker state."""
+    if isinstance(attempts, bool) or attempts < 1 or attempts > 20:
+        raise ValueError("reconciliation attempts must be between 1 and 20")
+    if interval_seconds < 0 or interval_seconds > 2:
+        raise ValueError("reconciliation interval must be between 0 and 2 seconds")
+
+    last_forensic = None
+    last_resolution = None
+    for attempt in range(1, attempts + 1):
+        forensic = capture_once()
+        resolution = resolve_post_send_forensics(forensic.payload)
+        last_forensic = forensic
+        last_resolution = resolution
+        if resolution.status is PostSendStatus.COMPLETED_PROTECTIVE_CLOSE:
+            return forensic, resolution, attempt
+        if attempt < attempts:
+            sleeper(interval_seconds)
+    return last_forensic, last_resolution, attempts
 
 
 def main() -> int:
@@ -130,26 +161,33 @@ def main() -> int:
         return 3
 
     sent_at = _parse_time(child.get("entry_preflight", {}).get("checked_at", child.get("started_at")))
-    captured_at = datetime.now(timezone.utc)
 
     import MetaTrader5 as mt5
 
-    if not mt5.initialize(path=str(Path(args.terminal_path).resolve())):
+    terminal_path = str(Path(args.terminal_path).resolve())
+    if not mt5.initialize(path=terminal_path):
         raise RuntimeError(f"MT5 initialize failed for V3 reconciliation: {mt5.last_error()}")
     try:
-        forensic = capture_broker_forensics(
-            mt5,
-            order_ticket=order_ticket,
-            symbol=str(child.get("symbol", "")),
-            sent_at=sent_at,
-            captured_at=captured_at,
-        )
+        def capture_once() -> Any:
+            return capture_broker_forensics(
+                mt5,
+                order_ticket=order_ticket,
+                symbol=str(child.get("symbol", "")),
+                sent_at=sent_at,
+                captured_at=datetime.now(timezone.utc),
+            )
+
+        forensic, resolution, reconciliation_attempts = _reconcile_with_grace(capture_once)
     finally:
         mt5.shutdown()
 
-    resolution = resolve_post_send_forensics(forensic.payload)
+    if forensic is None or resolution is None:
+        raise RuntimeError("V3 reconciliation produced no broker state")
+
     output["forensic_fingerprint"] = forensic.fingerprint
     output["forensic_assessment"] = forensic.payload["assessment"]
+    output["reconciliation_attempts"] = reconciliation_attempts
+    output["reconciliation_grace_seconds"] = (RECONCILIATION_ATTEMPTS - 1) * RECONCILIATION_INTERVAL_SECONDS
     output["post_send_resolution"] = {
         "status": resolution.status.value,
         "position_id": resolution.position_id,
@@ -165,19 +203,19 @@ def main() -> int:
         code = 0
     elif resolution.status is PostSendStatus.POSITION_OPEN:
         output["status"] = "position_open_governed_close_required"
-        output["reason"] = "entry fill is proven and position remains open; no retry is permitted"
+        output["reason"] = "entry fill remains open after bounded read-only reconciliation grace; no retry is permitted"
         code = 4
     elif resolution.status is PostSendStatus.FILLED_POSITION_MISSING:
         output["status"] = "filled_position_state_incomplete_no_retry"
-        output["reason"] = "entry deal is proven but neither open-position nor exit evidence is complete"
+        output["reason"] = "entry deal is proven but neither open-position nor exit evidence is complete after reconciliation grace"
         code = 4
     elif resolution.status is PostSendStatus.ORDER_ONLY:
         output["status"] = "order_only_no_retry"
-        output["reason"] = "broker order evidence exists without independently verified deal evidence"
+        output["reason"] = "broker order evidence exists without independently verified deal evidence after reconciliation grace"
         code = 4
     else:
         output["status"] = "ambiguous_send_no_retry"
-        output["reason"] = "no independently verifiable broker execution evidence"
+        output["reason"] = "no independently verifiable broker execution evidence after reconciliation grace"
         code = 4
 
     output["completed_at"] = datetime.now(timezone.utc).isoformat()
