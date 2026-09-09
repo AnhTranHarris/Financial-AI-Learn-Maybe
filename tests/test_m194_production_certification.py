@@ -7,10 +7,12 @@ from unittest.mock import patch
 import unittest
 
 from dusty.m194_production_certification import (
+    M194ProductionCertificationEnvelope,
     certify_production_single_demo_desk,
     production_recovery_lineage_fingerprint,
     production_runtime_attestation_fingerprint,
 )
+from dusty.single_desk_demo_certification import SingleDeskDemoStatus
 from dusty.strategy_drift import StrategyDriftStatus
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,25 +68,93 @@ class M194ProductionCertificationTests(unittest.TestCase):
             suspension_fingerprint=suspension.fingerprint,
             runtime_attestation_fingerprint=attestation,
         )
-        certification = SimpleNamespace(certification_fingerprint=fp("certification"))
+        certification = SimpleNamespace(
+            certification_fingerprint=fp("certification"),
+            status=SingleDeskDemoStatus.CERTIFIED,
+            pending_reasons=(),
+            rejection_reasons=(),
+        )
         return custody, runtime_admission, learning, recovery, provider, drift, suspension, runtime, certification
 
-    def test_final_wrapper_binds_entire_production_runtime_lineage(self):
-        custody, runtime_admission, learning, recovery, provider, drift, suspension, runtime, certification = self.fixtures()
-        with patch("dusty.m194_production_certification.certify_single_demo_desk", return_value=certification) as core:
+    def call_wrapper(self, *, certification=None):
+        custody, runtime_admission, learning, recovery, provider, drift, suspension, runtime, default = self.fixtures()
+        result = default if certification is None else certification
+        with patch("dusty.m194_production_certification.certify_single_demo_desk", return_value=result) as core:
             envelope, observed = certify_production_single_demo_desk(
                 custody=custody, runtime_admission=runtime_admission,
                 prerequisites=(), runtime=runtime, exercises=(), policy=SimpleNamespace(),
                 current_source_commit="1" * 40, execution_learning=learning,
                 recovery_envelopes=recovery, provider_fleet=provider, drift=drift, suspension=suspension,
             )
-        self.assertIs(observed, certification)
+        return envelope, observed, core
+
+    def test_final_wrapper_binds_entire_production_runtime_lineage(self):
+        envelope, certification, core = self.call_wrapper()
+        custody = self.fixtures()[0]
+        runtime = self.fixtures()[7]
         self.assertEqual(envelope.production_custody_fingerprint, custody.fingerprint)
         self.assertEqual(envelope.runtime_evidence_fingerprint, runtime.fingerprint)
         self.assertEqual(envelope.certification_fingerprint, certification.certification_fingerprint)
+        self.assertEqual(envelope.certification_status, SingleDeskDemoStatus.CERTIFIED)
+        self.assertTrue(envelope.certified)
+        self.assertTrue(envelope.production_activation_eligible)
         self.assertFalse(envelope.broker_write_authority)
         self.assertFalse(envelope.live_write_authority)
         core.assert_called_once()
+
+    def test_pending_core_result_cannot_look_production_eligible(self):
+        certification = SimpleNamespace(
+            certification_fingerprint=fp("pending-certification"),
+            status=SingleDeskDemoStatus.PENDING,
+            pending_reasons=("runtime_duration_insufficient",),
+            rejection_reasons=(),
+        )
+        envelope, observed, _ = self.call_wrapper(certification=certification)
+        self.assertIs(observed, certification)
+        self.assertEqual(envelope.certification_status, SingleDeskDemoStatus.PENDING)
+        self.assertFalse(envelope.certified)
+        self.assertFalse(envelope.production_activation_eligible)
+        self.assertEqual(envelope.pending_reasons, ("runtime_duration_insufficient",))
+        self.assertEqual(envelope.payload["production_activation_eligible"], False)
+
+    def test_rejected_core_result_cannot_look_production_eligible(self):
+        certification = SimpleNamespace(
+            certification_fingerprint=fp("rejected-certification"),
+            status=SingleDeskDemoStatus.REJECTED,
+            pending_reasons=(),
+            rejection_reasons=("unauthorized_broker_write_detected",),
+        )
+        envelope, observed, _ = self.call_wrapper(certification=certification)
+        self.assertIs(observed, certification)
+        self.assertEqual(envelope.certification_status, SingleDeskDemoStatus.REJECTED)
+        self.assertFalse(envelope.certified)
+        self.assertFalse(envelope.production_activation_eligible)
+        self.assertEqual(envelope.rejection_reasons, ("unauthorized_broker_write_detected",))
+
+    def test_envelope_status_reason_invariants_fail_closed(self):
+        kwargs = dict(
+            production_custody_fingerprint=fp("custody"),
+            runtime_admission_fingerprint=fp("admission"),
+            runtime_evidence_fingerprint=fp("runtime"),
+            execution_learning_envelope_fingerprint=fp("learning"),
+            recovery_lineage_fingerprint=fp("recovery"),
+            provider_fleet_fingerprint=fp("provider"),
+            drift_fingerprint=fp("drift"),
+            suspension_fingerprint=fp("suspension"),
+            certification_fingerprint=fp("certification"),
+        )
+        with self.assertRaisesRegex(ValueError, "PENDING.*requires pending"):
+            M194ProductionCertificationEnvelope(
+                **kwargs,
+                certification_status=SingleDeskDemoStatus.PENDING,
+                pending_reasons=(), rejection_reasons=(),
+            )
+        with self.assertRaisesRegex(ValueError, "CERTIFIED.*cannot carry"):
+            M194ProductionCertificationEnvelope(
+                **kwargs,
+                certification_status=SingleDeskDemoStatus.CERTIFIED,
+                pending_reasons=("should-not-exist",), rejection_reasons=(),
+            )
 
     def test_wrong_custody_or_incomplete_recovery_lineage_blocks(self):
         custody, runtime_admission, learning, recovery, provider, drift, suspension, runtime, certification = self.fixtures()
