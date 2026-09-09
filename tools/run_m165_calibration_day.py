@@ -1,21 +1,23 @@
 from __future__ import annotations
 
-"""Run one bounded UTC day of the production M165 broker calibration campaign.
+"""Run one bounded broker-evidence day of the production M165 calibration campaign.
 
-Day 2: requires 10 observations across exactly one prior UTC observation date and
+Day 2: requires 10 observations across exactly one prior broker-evidence date and
 advances to 20/2 with at most five new round trips.
-Day 3: requires 20 observations across exactly two prior UTC observation dates and
+Day 3: requires 20 observations across exactly two prior broker-evidence dates and
 advances to 30/3 with at most five new round trips, at which point M165 must be
 CALIBRATED.
 
-Every child is a fresh V3 one-shot.  If V3 proves an open position after its bounded
-read-only grace, this controller may invoke the existing exact-position recovery
-close once.  Broker history is independently reconciled before custody import.
-This controller owns no raw order_send surface and never retries an entry or close.
+The day boundary is derived from the same MetaTrader symbol tick clock used by the
+native evidence rather than the workstation wall clock. Every child is a fresh V3
+one-shot. If V3 proves an open position after its bounded read-only grace, this
+controller may invoke the existing exact-position recovery close once. Broker
+history is independently reconciled before custody import. This controller owns no
+raw order_send surface and never retries an entry or close.
 """
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -26,7 +28,6 @@ from typing import Any
 
 from dusty.m165_calibration_campaign import (
     calibration_day_policy,
-    utc_date,
     validate_campaign_progress,
     validate_campaign_start,
 )
@@ -36,6 +37,7 @@ from dusty.m165_observation_custody import M165ObservationCustody
 SYMBOL = "EURUSD"
 CHILD_CONFIRMATION = "M165-DEMO-ONE-SHOT"
 RECOVERY_CONFIRMATION = "M165-DEMO-RECOVERY-CLOSE"
+MAX_EVIDENCE_CLOCK_OFFSET_SECONDS = 18 * 60 * 60
 
 
 def _confirmation(day: int) -> str:
@@ -102,6 +104,34 @@ def _require_flat_demo(terminal_path: str, symbol: str) -> None:
         mt5.shutdown()
 
 
+def _broker_evidence_clock(terminal_path: str, symbol: str) -> tuple[date, str, float]:
+    import MetaTrader5 as mt5
+
+    wall = datetime.now(timezone.utc)
+    if not mt5.initialize(path=terminal_path):
+        raise RuntimeError(f"MT5 initialize failed during broker-clock read: {mt5.last_error()}")
+    try:
+        account = mt5.account_info()
+        if account is None:
+            raise RuntimeError("account_info unavailable during broker-clock read")
+        demo_mode = int(getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0))
+        if int(getattr(account, "trade_mode", -1)) != demo_mode:
+            raise PermissionError("broker-clock read requires DEMO account")
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError(f"symbol_info_tick failed: {mt5.last_error()}")
+        time_msc = int(getattr(tick, "time_msc", 0) or 0)
+        if time_msc <= 0:
+            raise RuntimeError("broker tick lacks positive time_msc")
+    finally:
+        mt5.shutdown()
+    instant = datetime.fromtimestamp(time_msc / 1000.0, tz=timezone.utc)
+    offset = (instant - wall).total_seconds()
+    if abs(offset) > MAX_EVIDENCE_CLOCK_OFFSET_SECONDS:
+        raise RuntimeError(f"broker evidence clock offset is implausible: {offset:.3f}s")
+    return instant.date(), instant.isoformat(), offset
+
+
 def _entry_order_ticket(receipt: dict[str, Any]) -> int:
     entry = receipt.get("entry", {})
     execution = entry.get("execution", {}) if isinstance(entry, dict) else {}
@@ -124,7 +154,7 @@ def _harvest(
     database: Path,
     output_dir: Path,
     expected_before: int,
-    campaign_date,
+    campaign_date: date,
     policy,
 ) -> dict[str, object]:
     payload = json.loads(child_receipt.read_text(encoding="utf-8"))
@@ -173,7 +203,7 @@ def _harvest(
         for row in obs_rows
     }
     if observed_dates != {campaign_date}:
-        raise RuntimeError("extracted observations are outside the authorized campaign UTC date")
+        raise RuntimeError("extracted observations are outside the authorized broker-evidence date")
 
     import_exit = _run(
         repo,
@@ -213,7 +243,7 @@ def _harvest(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a bounded M165 production calibration UTC day")
+    parser = argparse.ArgumentParser(description="Run a bounded M165 production calibration broker-evidence day")
     parser.add_argument("--day", required=True, type=int, choices=(2, 3))
     parser.add_argument("--repo", required=True)
     parser.add_argument("--expected-head", required=True)
@@ -260,17 +290,20 @@ def main() -> int:
         if not path.is_file():
             raise FileNotFoundError(path)
 
-    campaign_date = validate_campaign_start(_custody_rows(database), policy=policy)
+    campaign_date, evidence_clock_at_start, clock_offset_seconds = _broker_evidence_clock(terminal_path, SYMBOL)
+    validate_campaign_start(_custody_rows(database), policy=policy, campaign_date=campaign_date)
     _require_flat_demo(terminal_path, SYMBOL)
     output_root.mkdir(parents=True, exist_ok=True)
     custody_root.mkdir(parents=True, exist_ok=True)
 
     start = _custody_summary(database)
     master: dict[str, object] = {
-        "protocol": "dusty-m165-calibration-day-controller-v1",
+        "protocol": "dusty-m165-calibration-day-controller-v2",
         "source_commit": expected,
         "day_number": policy.day_number,
-        "campaign_utc_date": campaign_date.isoformat(),
+        "campaign_broker_evidence_date": campaign_date.isoformat(),
+        "broker_evidence_clock_at_start": evidence_clock_at_start,
+        "broker_evidence_clock_offset_seconds": clock_offset_seconds,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "symbol": SYMBOL,
         "starting_custody": start,
@@ -297,9 +330,12 @@ def main() -> int:
                 raise RuntimeError("repository HEAD drifted during campaign")
             if _git(repo, "status", "--porcelain=v1", "--untracked-files=all"):
                 raise RuntimeError("repository became dirty during campaign")
-            if utc_date() != campaign_date:
+            current_date, current_clock, current_offset = _broker_evidence_clock(terminal_path, SYMBOL)
+            if current_date != campaign_date:
                 master["status"] = "stopped_no_retry"
-                master["reason"] = "UTC date changed before next child; no send performed"
+                master["reason"] = "broker evidence date changed before next child; no send performed"
+                master["broker_evidence_clock_at_stop"] = current_clock
+                master["broker_evidence_clock_offset_seconds_at_stop"] = current_offset
                 _atomic_write(summary_path, master)
                 return 3
 
@@ -347,10 +383,12 @@ def main() -> int:
                 _atomic_write(summary_path, master)
                 return 3
 
-            if utc_date() != campaign_date:
-                child_record["status"] = "utc_date_changed_after_plan_no_send"
+            post_plan_date, post_plan_clock, _ = _broker_evidence_clock(terminal_path, SYMBOL)
+            if post_plan_date != campaign_date:
+                child_record["status"] = "broker_date_changed_after_plan_no_send"
                 master["status"] = "stopped_no_retry"
-                master["reason"] = "UTC date changed after planning; entry not sent"
+                master["reason"] = "broker evidence date changed after planning; entry not sent"
+                master["broker_evidence_clock_at_stop"] = post_plan_clock
                 _atomic_write(summary_path, master)
                 return 3
 
@@ -467,10 +505,15 @@ def main() -> int:
                 f"M165 day {policy.day_number} expected calibration status {expected_status}; found {calibration_status}"
             )
         _require_flat_demo(terminal_path, SYMBOL)
+        ending_date, ending_clock, ending_offset = _broker_evidence_clock(terminal_path, SYMBOL)
+        if ending_date != campaign_date:
+            raise RuntimeError("broker evidence date changed before campaign finalization")
         master.update(
             status=f"day{policy.day_number}_target_complete",
-            reason="bounded UTC calibration day completed and entered durable custody",
+            reason="bounded broker-evidence calibration day completed and entered durable custody",
             completed_at=datetime.now(timezone.utc).isoformat(),
+            broker_evidence_clock_at_end=ending_clock,
+            broker_evidence_clock_offset_seconds_at_end=ending_offset,
             final_custody=final,
         )
         _atomic_write(summary_path, master)
