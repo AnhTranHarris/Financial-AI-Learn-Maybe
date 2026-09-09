@@ -18,6 +18,7 @@ from .single_desk_demo_certification import (
     MilestoneBuildEvidence,
     SingleDeskDemoCertification,
     SingleDeskDemoPolicy,
+    SingleDeskDemoStatus,
     certify_single_demo_desk,
 )
 from .strategy_drift import StrategyDriftAssessment
@@ -71,6 +72,9 @@ class M194ProductionCertificationEnvelope:
     drift_fingerprint: str
     suspension_fingerprint: str
     certification_fingerprint: str
+    certification_status: SingleDeskDemoStatus
+    pending_reasons: tuple[str, ...]
+    rejection_reasons: tuple[str, ...]
 
     broker_write_authority = False
     live_write_authority = False
@@ -79,10 +83,32 @@ class M194ProductionCertificationEnvelope:
     promotion_authority = False
     risk_override_authority = False
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.certification_status, SingleDeskDemoStatus):
+            raise ValueError("M194 production envelope requires SingleDeskDemoStatus")
+        pending = tuple(sorted(set(str(row).strip() for row in self.pending_reasons if str(row).strip())))
+        rejected = tuple(sorted(set(str(row).strip() for row in self.rejection_reasons if str(row).strip())))
+        if self.certification_status is SingleDeskDemoStatus.CERTIFIED and (pending or rejected):
+            raise ValueError("CERTIFIED M194 production envelope cannot carry pending/rejection reasons")
+        if self.certification_status is SingleDeskDemoStatus.PENDING and not pending:
+            raise ValueError("PENDING M194 production envelope requires pending reasons")
+        if self.certification_status is SingleDeskDemoStatus.REJECTED and not rejected:
+            raise ValueError("REJECTED M194 production envelope requires rejection reasons")
+        object.__setattr__(self, "pending_reasons", pending)
+        object.__setattr__(self, "rejection_reasons", rejected)
+
+    @property
+    def certified(self) -> bool:
+        return self.certification_status is SingleDeskDemoStatus.CERTIFIED
+
+    @property
+    def production_activation_eligible(self) -> bool:
+        return self.certified
+
     @property
     def payload(self) -> dict[str, object]:
         return {
-            "protocol": "dusty-m194-production-certification-v1",
+            "protocol": "dusty-m194-production-certification-v2",
             "production_custody_fingerprint": self.production_custody_fingerprint,
             "runtime_admission_fingerprint": self.runtime_admission_fingerprint,
             "runtime_evidence_fingerprint": self.runtime_evidence_fingerprint,
@@ -92,6 +118,10 @@ class M194ProductionCertificationEnvelope:
             "drift_fingerprint": self.drift_fingerprint,
             "suspension_fingerprint": self.suspension_fingerprint,
             "certification_fingerprint": self.certification_fingerprint,
+            "certification_status": self.certification_status.value,
+            "pending_reasons": list(self.pending_reasons),
+            "rejection_reasons": list(self.rejection_reasons),
+            "production_activation_eligible": self.production_activation_eligible,
             "authority": {
                 "broker_write": False,
                 "live_write": False,
@@ -190,5 +220,8 @@ def certify_production_single_demo_desk(
         drift_fingerprint=drift.fingerprint,
         suspension_fingerprint=suspension.fingerprint,
         certification_fingerprint=certification.certification_fingerprint,
+        certification_status=certification.status,
+        pending_reasons=certification.pending_reasons,
+        rejection_reasons=certification.rejection_reasons,
     )
     return envelope, certification
