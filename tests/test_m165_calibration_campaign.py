@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime
 import unittest
 
 from dusty.broker_calibration import BrokerExecutionObservation, TradeSide
@@ -16,10 +16,7 @@ BROKER = "1" * 64
 
 def _row(when: str, side: TradeSide, suffix: str) -> BrokerExecutionObservation:
     stamp = datetime.fromisoformat(when)
-    if side is TradeSide.BUY:
-        requested = fill = 1.10002
-    else:
-        requested = fill = 1.10000
+    requested = fill = 1.10002 if side is TradeSide.BUY else 1.10000
     return BrokerExecutionObservation(
         broker_profile_fingerprint=BROKER,
         symbol="EURUSD",
@@ -58,23 +55,12 @@ class M165CalibrationCampaignTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             calibration_day_policy(4)
 
-    def test_day2_requires_new_utc_date(self) -> None:
+    def test_day2_requires_new_broker_evidence_date(self) -> None:
         rows = _day_rows(9)
         policy = calibration_day_policy(2)
-        with self.assertRaisesRegex(RuntimeError, "new UTC observation date"):
-            validate_campaign_start(
-                rows,
-                policy=policy,
-                now=datetime(2026, 9, 9, 23, 59, tzinfo=timezone.utc),
-            )
-        self.assertEqual(
-            validate_campaign_start(
-                rows,
-                policy=policy,
-                now=datetime(2026, 9, 10, 0, 1, tzinfo=timezone.utc),
-            ).isoformat(),
-            "2026-09-10",
-        )
+        with self.assertRaisesRegex(RuntimeError, "new broker-evidence date"):
+            validate_campaign_start(rows, policy=policy, campaign_date=date(2026, 9, 9))
+        validate_campaign_start(rows, policy=policy, campaign_date=date(2026, 9, 10))
 
     def test_campaign_start_rejects_wrong_count_or_day_count(self) -> None:
         policy = calibration_day_policy(2)
@@ -82,30 +68,30 @@ class M165CalibrationCampaignTests(unittest.TestCase):
             validate_campaign_start(
                 _day_rows(9, 8),
                 policy=policy,
-                now=datetime(2026, 9, 10, 1, tzinfo=timezone.utc),
+                campaign_date=date(2026, 9, 10),
             )
         mixed = _day_rows(8, 5) + _day_rows(9, 5)
         with self.assertRaises(RuntimeError):
             validate_campaign_start(
                 mixed,
                 policy=policy,
-                now=datetime(2026, 9, 10, 1, tzinfo=timezone.utc),
+                campaign_date=date(2026, 9, 10),
             )
 
-    def test_progress_is_locked_to_authorized_utc_date(self) -> None:
+    def test_progress_is_locked_to_authorized_broker_evidence_date(self) -> None:
         policy = calibration_day_policy(2)
         rows = _day_rows(9) + _day_rows(10, 2)
         validate_campaign_progress(
             rows,
             policy=policy,
-            campaign_date=datetime(2026, 9, 10, tzinfo=timezone.utc).date(),
+            campaign_date=date(2026, 9, 10),
             expected_observations=12,
         )
         with self.assertRaises(RuntimeError):
             validate_campaign_progress(
                 _day_rows(9) + _day_rows(11, 2),
                 policy=policy,
-                campaign_date=datetime(2026, 9, 10, tzinfo=timezone.utc).date(),
+                campaign_date=date(2026, 9, 10),
                 expected_observations=12,
             )
 
