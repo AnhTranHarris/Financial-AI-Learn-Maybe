@@ -3,9 +3,11 @@ from __future__ import annotations
 """Production provenance wrapper for final M194 Single-Desk Demo Certification."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 import json
 
+from .artifact_vault import ArtifactKind, ResearchArtifactRecord, ResearchArtifactVault
 from .champion_suspension import ChampionSuspensionAssessment
 from .m185_production_custody import ProductionChampionCustodyEnvelope
 from .m189_production_cost_learning import M189ProductionCostLearningEnvelope
@@ -22,6 +24,9 @@ from .single_desk_demo_certification import (
     certify_single_demo_desk,
 )
 from .strategy_drift import StrategyDriftAssessment
+
+
+PRODUCTION_CERTIFICATION_CONTENT_TYPE = "application/vnd.dusty.m194-production-certification+json;version=2"
 
 
 def _canonical(value: object) -> str:
@@ -135,6 +140,40 @@ class M194ProductionCertificationEnvelope:
     @property
     def fingerprint(self) -> str:
         return _digest(self.payload)
+
+
+def certification_source_fingerprints(envelope: M194ProductionCertificationEnvelope) -> tuple[str, ...]:
+    return tuple(sorted({
+        envelope.production_custody_fingerprint,
+        envelope.runtime_admission_fingerprint,
+        envelope.runtime_evidence_fingerprint,
+        envelope.execution_learning_envelope_fingerprint,
+        envelope.recovery_lineage_fingerprint,
+        envelope.provider_fleet_fingerprint,
+        envelope.drift_fingerprint,
+        envelope.suspension_fingerprint,
+        envelope.certification_fingerprint,
+    }))
+
+
+def persist_production_certification(
+    vault: ResearchArtifactVault,
+    envelope: M194ProductionCertificationEnvelope,
+    *,
+    producer_fingerprint: str,
+    now: datetime,
+) -> ResearchArtifactRecord:
+    """Persist the exact M194 production result as immutable M164 evidence."""
+
+    return vault.store_bytes(
+        _canonical(envelope.payload).encode("utf-8"),
+        kind=ArtifactKind.EVALUATION,
+        content_type=PRODUCTION_CERTIFICATION_CONTENT_TYPE,
+        producer_fingerprint=producer_fingerprint,
+        subject_fingerprint=envelope.certification_fingerprint,
+        source_fingerprints=certification_source_fingerprints(envelope),
+        now=now,
+    )
 
 
 def certify_production_single_demo_desk(
