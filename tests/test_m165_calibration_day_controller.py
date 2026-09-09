@@ -21,11 +21,18 @@ class M165CalibrationDayControllerTests(unittest.TestCase):
         self.assertIn('M165-DEMO-DAY{day}-BATCH-5', text)
         self.assertIn("policy.maximum_roundtrips", text)
 
-    def test_controller_requires_flat_demo_and_utc_date_lock(self) -> None:
+    def test_controller_requires_flat_demo_and_broker_evidence_date_lock(self) -> None:
         text = TOOL.read_text(encoding="utf-8")
         self.assertIn("_require_flat_demo", text)
-        self.assertIn("utc_date() != campaign_date", text)
-        self.assertIn("extracted observations are outside the authorized campaign UTC date", text)
+        self.assertIn("_broker_evidence_clock", text)
+        self.assertIn("symbol_info_tick", text)
+        self.assertIn("broker evidence date changed", text)
+        self.assertIn("extracted observations are outside the authorized broker-evidence date", text)
+
+    def test_controller_bounds_broker_clock_offset(self) -> None:
+        text = TOOL.read_text(encoding="utf-8")
+        self.assertIn("MAX_EVIDENCE_CLOCK_OFFSET_SECONDS", text)
+        self.assertIn("broker evidence clock offset is implausible", text)
 
     def test_controller_routes_open_position_to_governed_recovery_only(self) -> None:
         text = TOOL.read_text(encoding="utf-8")
