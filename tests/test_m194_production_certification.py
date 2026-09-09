@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 
+from dusty.artifact_vault import ArtifactKind
 from dusty.m194_production_certification import (
     M194ProductionCertificationEnvelope,
+    PRODUCTION_CERTIFICATION_CONTENT_TYPE,
+    certification_source_fingerprints,
     certify_production_single_demo_desk,
+    persist_production_certification,
     production_recovery_lineage_fingerprint,
     production_runtime_attestation_fingerprint,
 )
@@ -17,6 +22,7 @@ from dusty.strategy_drift import StrategyDriftStatus
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "src" / "dusty" / "m194_production_certification.py"
+UTC = timezone.utc
 
 
 def fp(value: str) -> str:
@@ -155,6 +161,28 @@ class M194ProductionCertificationTests(unittest.TestCase):
                 certification_status=SingleDeskDemoStatus.CERTIFIED,
                 pending_reasons=("should-not-exist",), rejection_reasons=(),
             )
+
+    def test_production_envelope_persists_through_m164_vault_contract(self):
+        envelope, _, _ = self.call_wrapper()
+        record = SimpleNamespace(record_fingerprint=fp("artifact-record"))
+        vault = Mock()
+        vault.store_bytes.return_value = record
+        now = datetime(2026, 9, 9, 3, 10, tzinfo=UTC)
+        observed = persist_production_certification(
+            vault,
+            envelope,
+            producer_fingerprint=fp("producer"),
+            now=now,
+        )
+        self.assertIs(observed, record)
+        kwargs = vault.store_bytes.call_args.kwargs
+        self.assertEqual(kwargs["kind"], ArtifactKind.EVALUATION)
+        self.assertEqual(kwargs["content_type"], PRODUCTION_CERTIFICATION_CONTENT_TYPE)
+        self.assertEqual(kwargs["subject_fingerprint"], envelope.certification_fingerprint)
+        self.assertEqual(kwargs["producer_fingerprint"], fp("producer"))
+        self.assertEqual(kwargs["source_fingerprints"], certification_source_fingerprints(envelope))
+        self.assertEqual(kwargs["now"], now)
+        self.assertIn(b'"protocol":"dusty-m194-production-certification-v2"', vault.store_bytes.call_args.args[0])
 
     def test_wrong_custody_or_incomplete_recovery_lineage_blocks(self):
         custody, runtime_admission, learning, recovery, provider, drift, suspension, runtime, certification = self.fixtures()
