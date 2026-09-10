@@ -10,6 +10,10 @@ from dusty.m165_native_observations import broker_profile_fingerprint, build_obs
 from dusty.m194_native_demo_preflight import capture_native_demo_snapshot
 
 
+HISTORICAL_TICK_WINDOWS_SECONDS = (2, 5, 15, 30)
+MAX_HISTORICAL_TICK_DISTANCE_MS = 30_000
+
+
 def _field(row: object, name: str, default: object = 0) -> object:
     """Read named fields from MT5 NumPy structured rows, dicts, or test doubles."""
     if isinstance(row, dict):
@@ -21,9 +25,9 @@ def _field(row: object, name: str, default: object = 0) -> object:
 
 
 def _nearest_tick(rows: object, target_msc: int) -> object:
-    # MetaTrader5.copy_ticks_range returns a NumPy structured ndarray.  It cannot
+    # MetaTrader5.copy_ticks_range returns a NumPy structured ndarray. It cannot
     # be truth-tested when multi-row, and its named fields are not guaranteed to
-    # be accessible as attributes.  Keep only complete, non-crossed quote rows.
+    # be accessible as attributes. Keep only complete, non-crossed quote rows.
     if rows is None:
         values: list[object] = []
     else:
@@ -41,6 +45,38 @@ def _nearest_tick(rows: object, target_msc: int) -> object:
     if not quotes:
         raise RuntimeError("no complete historical bid/ask ticks available around execution")
     return min(quotes, key=lambda row: abs(int(_field(row, "time_msc", 0) or 0) - target_msc))
+
+
+def _historical_quote(mt5: object, *, symbol: str, target_msc: int) -> tuple[object, int, int]:
+    """Find a bounded historical quote without fabricating execution evidence.
+
+    Start with the original tight +/-2 second window. If the terminal has no
+    complete quote there, widen deterministically to +/-5, +/-15, then +/-30
+    seconds. The selected quote must itself remain within 30 seconds of the deal.
+    """
+    target_time = utc_from_millis(int(target_msc))
+    last_error: tuple[object, ...] | object = ()
+    for window_seconds in HISTORICAL_TICK_WINDOWS_SECONDS:
+        rows = mt5.copy_ticks_range(
+            symbol,
+            target_time - timedelta(seconds=window_seconds),
+            target_time + timedelta(seconds=window_seconds),
+            mt5.COPY_TICKS_ALL,
+        )
+        try:
+            tick = _nearest_tick(rows, int(target_msc))
+        except RuntimeError:
+            last_error = mt5.last_error()
+            continue
+        quote_msc = int(_field(tick, "time_msc", 0) or 0)
+        distance_ms = abs(quote_msc - int(target_msc))
+        if distance_ms <= MAX_HISTORICAL_TICK_DISTANCE_MS:
+            return tick, window_seconds, distance_ms
+        last_error = ("nearest_quote_too_far", distance_ms)
+    raise RuntimeError(
+        "no complete historical bid/ask tick within bounded 30-second execution window; "
+        f"last_error={last_error}"
+    )
 
 
 def main() -> int:
@@ -85,11 +121,14 @@ def main() -> int:
         if point <= 0:
             raise RuntimeError("invalid symbol point size")
 
-        exit_time = utc_from_millis(int(exit_row["time_msc"]))
-        ticks = mt5.copy_ticks_range(snapshot.symbol, exit_time - timedelta(seconds=2), exit_time + timedelta(seconds=2), mt5.COPY_TICKS_ALL)
-        tick = _nearest_tick(ticks, int(exit_row["time_msc"]))
+        tick, quote_window_seconds, quote_distance_ms = _historical_quote(
+            mt5,
+            symbol=snapshot.symbol,
+            target_msc=int(exit_row["time_msc"]),
+        )
         exit_bid = float(_field(tick, "bid", 0.0) or 0.0)
         exit_ask = float(_field(tick, "ask", 0.0) or 0.0)
+        exit_quote_time_msc = int(_field(tick, "time_msc", 0) or 0)
         if exit_bid <= 0 or exit_ask <= 0 or exit_ask < exit_bid:
             raise RuntimeError("historical exit quote is incomplete or crossed")
     finally:
@@ -130,7 +169,18 @@ def main() -> int:
         ask=exit_ask,
         requested_price=exit_requested,
         deal=exit_row,
-        evidence={"forensic_fingerprint": forensic["forensic_fingerprint"], "deal": exit_row, "exit_order": exit_order},
+        evidence={
+            "forensic_fingerprint": forensic["forensic_fingerprint"],
+            "deal": exit_row,
+            "exit_order": exit_order,
+            "historical_quote": {
+                "time_msc": exit_quote_time_msc,
+                "distance_ms": quote_distance_ms,
+                "window_seconds": quote_window_seconds,
+                "bid": exit_bid,
+                "ask": exit_ask,
+            },
+        },
     )
 
     calibration = calibrate_broker_economics(
@@ -143,6 +193,13 @@ def main() -> int:
         "protocol": "dusty-m165-native-observation-extraction-v1",
         "broker_profile_fingerprint": broker,
         "symbol": snapshot.symbol,
+        "historical_exit_quote": {
+            "time_msc": exit_quote_time_msc,
+            "distance_ms": quote_distance_ms,
+            "window_seconds": quote_window_seconds,
+            "bid": exit_bid,
+            "ask": exit_ask,
+        },
         "observations": [
             {
                 "fingerprint": row.fingerprint,
