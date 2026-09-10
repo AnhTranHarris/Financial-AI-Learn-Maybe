@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 from tools.execute_m165_calibration_roundtrip_v2_floating_stop import (
@@ -39,6 +41,18 @@ class M165FloatingStopWrapperTests(unittest.TestCase):
             tick_size=0.00001,
         )
         self.assertAlmostEqual(stop, 1.19995)
+
+    def test_direct_script_execution_resolves_tools_package(self) -> None:
+        wrapper = Path("tools/execute_m165_calibration_roundtrip_v2_floating_stop.py")
+        proc = subprocess.run(
+            [sys.executable, str(wrapper), "--help"],
+            cwd=Path.cwd(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+        self.assertIn("usage:", proc.stdout.lower())
 
     def test_wrapper_has_no_raw_send_or_retry_authority(self) -> None:
         path = Path("tools/execute_m165_calibration_roundtrip_v2_floating_stop.py")
