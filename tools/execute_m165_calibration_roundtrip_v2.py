@@ -145,6 +145,24 @@ def _aligned_price_down(price: float, tick_size: float) -> float:
     return ticks * float(tick_size)
 
 
+def _safe_long_stop(*, ask: float, bid: float, planned_distance: float, tick_size: float) -> float:
+    """Rebase a long protective stop and keep it at least one native tick below bid."""
+    values = (float(ask), float(bid), float(planned_distance), float(tick_size))
+    if any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError("fresh long-stop geometry requires finite positive values")
+    ask_value, bid_value, distance, tick = values
+    if ask_value < bid_value:
+        raise ValueError("fresh long-stop geometry received crossed quote")
+    if distance + tick * 1e-9 < tick:
+        raise ValueError("planned stop distance cannot be below native tick size")
+    distance_stop = _aligned_price_down(ask_value - distance, tick)
+    market_floor_stop = _aligned_price_down(bid_value - tick, tick)
+    stop = min(distance_stop, market_floor_stop)
+    if stop <= 0 or stop >= bid_value:
+        raise ValueError("fresh long stop cannot remain strictly below bid")
+    return stop
+
+
 def _write_blocked(output_path: Path, output: dict[str, object], *, status: str, reason: str) -> int:
     output["status"] = status
     output["reason"] = reason
@@ -228,12 +246,19 @@ def main() -> int:
         equity = float(getattr(account, "equity", 0.0) or 0.0)
         tick_size = float(getattr(spec, "trade_tick_size", 0.0) or getattr(spec, "point", 0.0) or 0.0)
         current_reference = float(getattr(tick, "ask", 0.0) or 0.0)
-        if not all(math.isfinite(v) and v > 0 for v in (equity, tick_size, current_reference)):
+        current_bid = float(getattr(tick, "bid", 0.0) or 0.0)
+        if not all(math.isfinite(v) and v > 0 for v in (equity, tick_size, current_reference, current_bid)) or current_reference < current_bid:
             return _write_blocked(output_path, output, status="runtime_quote_invalid", reason="fresh equity/tick geometry invalid")
         planned_distance = binding.reference_price - binding.stop_price
-        fresh_stop = _aligned_price_down(current_reference - planned_distance, tick_size)
-        if fresh_stop <= 0 or fresh_stop >= current_reference:
-            return _write_blocked(output_path, output, status="runtime_stop_invalid", reason="fresh stop cannot preserve planned native distance")
+        try:
+            fresh_stop = _safe_long_stop(
+                ask=current_reference,
+                bid=current_bid,
+                planned_distance=planned_distance,
+                tick_size=tick_size,
+            )
+        except ValueError as exc:
+            return _write_blocked(output_path, output, status="runtime_stop_invalid", reason=str(exc))
         worst_reference = current_reference + QUOTE_TOLERANCE_TICKS * tick_size
         profit = mt5.order_calc_profit(
             mt5.ORDER_TYPE_BUY,
@@ -297,6 +322,7 @@ def main() -> int:
         "tick_size": runtime.tick_size,
         "planned_stop_distance": runtime.stop_distance,
         "fresh_reference_price": runtime.current_reference_price,
+        "fresh_bid": current_bid,
         "fresh_stop_price": fresh_stop,
         "worst_case_reference_price": runtime.worst_case_reference_price,
         "maximum_execution_loss_cash": runtime.maximum_execution_loss_cash,
