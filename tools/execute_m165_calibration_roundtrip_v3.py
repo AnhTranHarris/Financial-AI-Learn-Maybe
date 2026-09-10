@@ -5,7 +5,8 @@ from __future__ import annotations
 V3 never owns broker send authority. It invokes the existing V2 operator, preserves
 its child receipt, and if V2 stops on an accepted result without an immediate deal
 ticket, V3 performs read-only exact-ticket reconciliation before classifying the
-run. Ambiguity never grants retry authority.
+run. Explicit broker rejection is terminal and is never mislabeled as ambiguous
+acceptance. Ambiguity never grants retry authority.
 """
 
 import argparse
@@ -45,14 +46,16 @@ def _parse_time(value: object) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _entry_order_ticket(receipt: dict[str, object]) -> int:
+def _entry_execution(receipt: dict[str, object]) -> dict[str, object]:
     entry = receipt.get("entry", {})
     if not isinstance(entry, dict):
-        return 0
+        return {}
     execution = entry.get("execution", {})
-    if not isinstance(execution, dict):
-        return 0
-    return int(execution.get("order_ticket", 0) or 0)
+    return execution if isinstance(execution, dict) else {}
+
+
+def _entry_order_ticket(receipt: dict[str, object]) -> int:
+    return int(_entry_execution(receipt).get("order_ticket", 0) or 0)
 
 
 def _reconcile_with_grace(
@@ -151,10 +154,18 @@ def main() -> int:
         print(json.dumps(output, indent=2, sort_keys=True))
         return 3
 
+    execution = _entry_execution(child)
     order_ticket = _entry_order_ticket(child)
     if order_ticket <= 0:
-        output["status"] = "accepted_without_order_ticket_no_retry"
-        output["reason"] = "V2 accepted state carried no positive broker order ticket"
+        state = str(execution.get("state", "")).strip().lower()
+        retcode = int(execution.get("retcode", 0) or 0)
+        comment = str(execution.get("comment", ""))[:256]
+        if state == "rejected":
+            output["status"] = "entry_rejected_no_retry"
+            output["reason"] = f"broker rejected entry before creating an order; retcode={retcode}; comment={comment}"
+        else:
+            output["status"] = "accepted_without_order_ticket_no_retry"
+            output["reason"] = "V2 non-rejected state carried no positive broker order ticket"
         output["completed_at"] = datetime.now(timezone.utc).isoformat()
         _atomic_write(final_path, output)
         print(json.dumps(output, indent=2, sort_keys=True))
