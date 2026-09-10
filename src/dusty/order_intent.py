@@ -140,6 +140,20 @@ class BrokerPreflight:
         return dict(self.request)
 
 
+def _market_stop_geometry_valid(side: TradeSide, stop_price: float, bid: float, ask: float) -> bool:
+    """Require protective stops to remain strictly beyond the executable market side."""
+    stop = float(stop_price)
+    bid_value = float(bid)
+    ask_value = float(ask)
+    if not all(math.isfinite(value) and value > 0 for value in (stop, bid_value, ask_value)):
+        return False
+    if ask_value < bid_value:
+        return False
+    if side is TradeSide.LONG:
+        return stop < bid_value
+    return stop > ask_value
+
+
 class MT5PreflightAdapter:
     """Broker preflight only. Identity is checked on the same initialized connection used for calculations."""
 
@@ -193,6 +207,8 @@ class MT5PreflightAdapter:
                 return BrokerPreflight(intent, False, 0.0, 0.0, 0.0, (), ("market_quote_invalid",), bid, ask)
             market_price = ask if intent.side is TradeSide.LONG else bid
             if intent.order_style is OrderStyle.MARKET:
+                if not _market_stop_geometry_valid(intent.side, intent.stop_price, bid, ask):
+                    return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("market_stop_geometry_invalid",), bid, ask)
                 drift = abs(market_price - intent.reference_price) / intent.reference_price
                 if drift > intent.max_price_drift_fraction:
                     return BrokerPreflight(intent, False, 0.0, 0.0, market_price, (), ("price_drift_exceeded",), bid, ask)
