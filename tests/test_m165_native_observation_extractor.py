@@ -3,7 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from tools.extract_m165_native_observations import _field, _nearest_tick
+from tools.extract_m165_native_observations import (
+    HISTORICAL_TICK_WINDOWS_SECONDS,
+    MAX_HISTORICAL_TICK_DISTANCE_MS,
+    _field,
+    _historical_quote,
+    _nearest_tick,
+)
 
 
 class _AmbiguousTruthRows:
@@ -25,6 +31,29 @@ class _StructuredRow:
 
     def __getitem__(self, key: str) -> object:
         return self._fields[key]
+
+
+class _FakeMT5:
+    COPY_TICKS_ALL = 0
+
+    def __init__(self, target_msc: int, available_after_call: int, distance_ms: int = 2500) -> None:
+        self.target_msc = target_msc
+        self.available_after_call = available_after_call
+        self.distance_ms = distance_ms
+        self.calls = 0
+
+    def copy_ticks_range(self, symbol, start, end, flags):
+        self.calls += 1
+        if self.calls < self.available_after_call:
+            return []
+        return [_StructuredRow(
+            time_msc=self.target_msc + self.distance_ms,
+            bid=1.16350,
+            ask=1.16352,
+        )]
+
+    def last_error(self):
+        return (1, "Success")
 
 
 class M165NativeObservationExtractorTests(unittest.TestCase):
@@ -62,6 +91,22 @@ class M165NativeObservationExtractorTests(unittest.TestCase):
             _nearest_tick([], 1000)
         with self.assertRaises(RuntimeError):
             _nearest_tick([_StructuredRow(time_msc=1000, bid=0.0, ask=0.0)], 1000)
+
+    def test_historical_quote_widens_deterministically(self) -> None:
+        target = 1_789_018_535_706
+        mt5 = _FakeMT5(target, available_after_call=3, distance_ms=2500)
+        tick, window_seconds, distance_ms = _historical_quote(mt5, symbol="EURUSD", target_msc=target)
+        self.assertEqual(HISTORICAL_TICK_WINDOWS_SECONDS, (2, 5, 15, 30))
+        self.assertEqual(window_seconds, 15)
+        self.assertEqual(distance_ms, 2500)
+        self.assertEqual(_field(tick, "time_msc"), target + 2500)
+
+    def test_historical_quote_never_accepts_unbounded_distance(self) -> None:
+        target = 1_789_018_535_706
+        mt5 = _FakeMT5(target, available_after_call=1, distance_ms=MAX_HISTORICAL_TICK_DISTANCE_MS + 1)
+        with self.assertRaises(RuntimeError):
+            _historical_quote(mt5, symbol="EURUSD", target_msc=target)
+        self.assertEqual(mt5.calls, len(HISTORICAL_TICK_WINDOWS_SECONDS))
 
 
 if __name__ == "__main__":
