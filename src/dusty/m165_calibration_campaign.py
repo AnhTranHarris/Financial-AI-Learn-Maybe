@@ -3,11 +3,12 @@ from __future__ import annotations
 """Pure policy for the multi-day M165 native broker calibration campaign.
 
 The campaign is intentionally fixed: ten observations per broker-evidence date,
-with Day 2 starting from 10/1 and Day 3 starting from 20/2.  A campaign day may
-only start on an evidence date not already represented in custody.  The caller is
-responsible for deriving that date from the same MetaTrader tick/deal clock used by
-native evidence.  This module has no MetaTrader5 dependency and grants no broker,
-retry, promotion, or live authority.
+with Day 2 targeting 20/2 and Day 3 targeting 30/3. A fresh campaign day starts
+from 10/1 or 20/2 respectively, while a safely interrupted campaign may resume
+from an even intermediate observation count already recorded on that same broker
+evidence date. The caller is responsible for deriving the date from the same
+MetaTrader tick/deal clock used by native evidence. This module has no MetaTrader5
+dependency and grants no broker, retry, promotion, or live authority.
 """
 
 from dataclasses import dataclass
@@ -68,23 +69,40 @@ def validate_campaign_start(
     campaign_date: date,
 ) -> None:
     observations = tuple(rows)
-    if len(observations) != policy.starting_observations:
+    count = len(observations)
+    if count < policy.starting_observations or count >= policy.target_observations:
         raise RuntimeError(
-            f"M165 day {policy.day_number} requires exactly "
-            f"{policy.starting_observations} starting observations; found {len(observations)}"
+            f"M165 day {policy.day_number} requires custody in the range "
+            f"{policy.starting_observations}..{policy.target_observations - 1}; found {count}"
         )
+    if (count - policy.starting_observations) % 2 != 0:
+        raise RuntimeError("M165 campaign resume count must advance in complete two-observation round trips")
+
     dates = observation_dates(observations)
-    if len(dates) != policy.starting_distinct_days:
-        raise RuntimeError(
-            f"M165 day {policy.day_number} requires exactly "
-            f"{policy.starting_distinct_days} existing broker-evidence dates; found {len(dates)}"
-        )
     if {row.side for row in observations} != {TradeSide.BUY, TradeSide.SELL}:
         raise RuntimeError("M165 campaign requires BUY and SELL evidence before advancing days")
-    if dates and campaign_date <= max(dates):
+
+    if count == policy.starting_observations:
+        if len(dates) != policy.starting_distinct_days:
+            raise RuntimeError(
+                f"M165 day {policy.day_number} requires exactly "
+                f"{policy.starting_distinct_days} existing broker-evidence dates; found {len(dates)}"
+            )
+        if dates and campaign_date <= max(dates):
+            raise RuntimeError(
+                f"M165 day {policy.day_number} cannot start until a new broker-evidence date; "
+                f"latest custody date is {max(dates).isoformat()}, current broker-evidence date is {campaign_date.isoformat()}"
+            )
+        return
+
+    if len(dates) != policy.target_distinct_days:
         raise RuntimeError(
-            f"M165 day {policy.day_number} cannot start until a new broker-evidence date; "
-            f"latest custody date is {max(dates).isoformat()}, current broker-evidence date is {campaign_date.isoformat()}"
+            f"M165 day {policy.day_number} resume requires exactly "
+            f"{policy.target_distinct_days} broker-evidence dates; found {len(dates)}"
+        )
+    if not dates or max(dates) != campaign_date:
+        raise RuntimeError(
+            f"M165 day {policy.day_number} resume must remain on the existing campaign broker-evidence date"
         )
 
 
