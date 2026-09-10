@@ -78,6 +78,26 @@ class M165CalibrationCampaignTests(unittest.TestCase):
                 campaign_date=date(2026, 9, 10),
             )
 
+    def test_campaign_resume_accepts_complete_partial_roundtrips_on_same_date(self) -> None:
+        policy = calibration_day_policy(2)
+        rows = _day_rows(9) + _day_rows(10, 4)
+        validate_campaign_start(rows, policy=policy, campaign_date=date(2026, 9, 10))
+
+    def test_campaign_resume_rejects_odd_count_or_different_date(self) -> None:
+        policy = calibration_day_policy(2)
+        with self.assertRaisesRegex(RuntimeError, "complete two-observation"):
+            validate_campaign_start(
+                _day_rows(9) + _day_rows(10, 3),
+                policy=policy,
+                campaign_date=date(2026, 9, 10),
+            )
+        with self.assertRaisesRegex(RuntimeError, "existing campaign broker-evidence date"):
+            validate_campaign_start(
+                _day_rows(9) + _day_rows(10, 4),
+                policy=policy,
+                campaign_date=date(2026, 9, 11),
+            )
+
     def test_progress_is_locked_to_authorized_broker_evidence_date(self) -> None:
         policy = calibration_day_policy(2)
         rows = _day_rows(9) + _day_rows(10, 2)
