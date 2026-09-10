@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from tools.execute_m165_calibration_roundtrip_v3 import (
+    _entry_execution,
     _entry_order_ticket,
     _parse_time,
     _reconcile_with_grace,
@@ -17,6 +18,23 @@ class M165CalibrationRoundTripV3Tests(unittest.TestCase):
         self.assertEqual(_entry_order_ticket(receipt), 36923813)
         self.assertEqual(_entry_order_ticket({}), 0)
         self.assertEqual(_entry_order_ticket({"entry": {"execution": {"order_ticket": 0}}}), 0)
+
+    def test_entry_execution_preserves_explicit_rejection_evidence(self) -> None:
+        receipt = {
+            "entry": {
+                "execution": {
+                    "state": "rejected",
+                    "retcode": 10016,
+                    "order_ticket": 0,
+                    "deal_ticket": 0,
+                    "comment": "Invalid stops",
+                }
+            }
+        }
+        execution = _entry_execution(receipt)
+        self.assertEqual(execution["state"], "rejected")
+        self.assertEqual(execution["retcode"], 10016)
+        self.assertEqual(_entry_order_ticket(receipt), 0)
 
     def test_receipt_time_requires_timezone(self) -> None:
         parsed = _parse_time("2026-09-08T22:40:18.139652+00:00")
@@ -100,6 +118,7 @@ class M165CalibrationRoundTripV3Tests(unittest.TestCase):
         self.assertIn("capture_broker_forensics", text)
         self.assertIn("retry\": False", text)
         self.assertIn("RECONCILIATION_ATTEMPTS", text)
+        self.assertIn("entry_rejected_no_retry", text)
 
 
 if __name__ == "__main__":
