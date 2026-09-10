@@ -2,11 +2,12 @@ from __future__ import annotations
 
 """Supervise the certified V2 one-shot Demo operator with broker-history reconciliation.
 
-V3 never owns broker send authority. It invokes the existing V2 operator, preserves
-its child receipt, and if V2 stops on an accepted result without an immediate deal
-ticket, V3 performs read-only exact-ticket reconciliation before classifying the
-run. Explicit broker rejection is terminal and is never mislabeled as ambiguous
-acceptance. Ambiguity never grants retry authority.
+V3 never owns broker send authority. It invokes the spread-aware wrapper around
+execute_m165_calibration_roundtrip_v2.py, preserves its child receipt, and if V2
+stops on an accepted result without an immediate deal ticket, V3 performs read-only
+exact-ticket reconciliation before classifying the run. Explicit broker rejection
+is terminal and is never mislabeled as ambiguous acceptance. Ambiguity never grants
+retry authority.
 """
 
 import argparse
@@ -102,7 +103,7 @@ def main() -> int:
     repo = Path(args.repo).resolve()
     final_path = Path(args.output).resolve()
     child_path = final_path.with_name(final_path.stem + ".v2-child.json")
-    v2 = repo / "tools" / "execute_m165_calibration_roundtrip_v2.py"
+    v2 = repo / "tools" / "execute_m165_calibration_roundtrip_v2_floating_stop.py"
     if not v2.is_file():
         raise FileNotFoundError(v2)
 
