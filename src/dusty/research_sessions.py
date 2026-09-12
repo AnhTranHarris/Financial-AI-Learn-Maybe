@@ -14,9 +14,9 @@ import json
 
 
 SUPPORTED_RESEARCH_SESSIONS = ("ASIA", "LONDON", "NEW_YORK")
-SESSION_EVIDENCE_PROTOCOL = "dusty-pit-research-sessions-v1"
+_SESSION_EVIDENCE_PROTOCOL_BASE = "dusty-pit-research-sessions-v1"
 SESSION_EVIDENCE_DEFINITION = {
-    "protocol": SESSION_EVIDENCE_PROTOCOL,
+    "protocol": _SESSION_EVIDENCE_PROTOCOL_BASE,
     "sessions": {
         "ASIA": {
             "civil_zone": "Asia/Tokyo",
@@ -43,6 +43,7 @@ SESSION_EVIDENCE_DEFINITION = {
 SESSION_EVIDENCE_FINGERPRINT = sha256(
     json.dumps(SESSION_EVIDENCE_DEFINITION, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+SESSION_EVIDENCE_PROTOCOL = f"{_SESSION_EVIDENCE_PROTOCOL_BASE}:{SESSION_EVIDENCE_FINGERPRINT}"
 
 
 def _aware_utc(value: datetime) -> datetime:
