@@ -42,7 +42,17 @@ class M165CalibrationDayEligibilityTests(unittest.TestCase):
         self.assertIn("account_expert_trading_disabled", text)
         self.assertIn("symbol_position_open", text)
         self.assertIn("symbol_order_open", text)
-        self.assertIn('"blockers": native_blockers', text)
+        self.assertIn('"permission_blockers": native_blockers', text)
+
+    def test_probe_blocks_obvious_fx_weekend_session_before_send(self) -> None:
+        text = TOOL.read_text(encoding="utf-8")
+        self.assertIn("_fx_session_blockers", text)
+        self.assertIn("fx_weekend_session_closed", text)
+        self.assertIn('"session_blockers": session_blockers', text)
+        self.assertIn('weekday == 4 and hour >= 22', text)
+        self.assertIn('weekday == 5', text)
+        self.assertIn('weekday == 6 and hour < 22', text)
+        self.assertNotIn("order_send(", text)
 
 
 if __name__ == "__main__":
