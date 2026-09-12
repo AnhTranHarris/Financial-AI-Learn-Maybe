@@ -51,12 +51,19 @@ def _event_related(value: str) -> bool:
     return any(token in rendered for token in _EVENT_TOKENS)
 
 
-def _event_source_rules(reconstruction: StrategyReconstruction) -> tuple[ReconstructionRule, ...]:
+def _event_rules(reconstruction: StrategyReconstruction) -> tuple[ReconstructionRule, ...]:
     return tuple(
         rule
         for rule in reconstruction.rules
+        if _event_related(rule.name) or _event_related(rule.value)
+    )
+
+
+def _event_source_rules(reconstruction: StrategyReconstruction) -> tuple[ReconstructionRule, ...]:
+    return tuple(
+        rule
+        for rule in _event_rules(reconstruction)
         if rule.basis is ReconstructionRuleBasis.SOURCE_DECLARED
-        and (_event_related(rule.name) or _event_related(rule.value))
     )
 
 
@@ -126,9 +133,10 @@ def derive_event_hypothesis_variant(
 
     The decision is intentionally stricter than simply checking ``actor=ollama``.
     The exact inspector result must match the parent identities, label the event
-    exclusion as a research hypothesis, and prove there are no source-declared or
-    unresolved event rules.  The reconstruction itself is independently scanned so
-    a tampered inspector artifact cannot relax the gate.
+    exclusion as a research hypothesis, and prove there are no source-declared,
+    unresolved, or hidden reconstruction event rules.  The reconstruction itself
+    is independently scanned so a stale/tampered inspector artifact cannot relax
+    the gate.
     """
 
     if requirement.get("protocol") != REQUIREMENT_PROTOCOL:
@@ -154,21 +162,22 @@ def derive_event_hypothesis_variant(
 
     reported_source_rules = requirement.get("source_declared_event_rules")
     reported_unresolved = requirement.get("unresolved_event_rules")
+    reported_all = requirement.get("event_related_rules")
     if not isinstance(reported_source_rules, list) or reported_source_rules:
         raise PermissionError("source-declared event rules prevent automatic remediation")
     if not isinstance(reported_unresolved, list) or reported_unresolved:
         raise PermissionError("unresolved event rules prevent automatic remediation")
+    if not isinstance(reported_all, list) or reported_all:
+        raise PermissionError("event-related reconstruction rules require manual semantic review")
+
     if _event_source_rules(reconstruction):
         raise PermissionError("parent reconstruction contains source-declared event rules")
     if _event_unresolved_rules(reconstruction):
         raise PermissionError("parent reconstruction contains unresolved event rules")
-
-    reported_all = requirement.get("event_related_rules")
-    if not isinstance(reported_all, list) or reported_all:
-        # This narrow automatic path is reserved for the exact frozen case where
-        # no source or reconstruction rule depends on event filtering.  Any event-
-        # related rule deserves separate semantic review rather than token matching.
-        raise PermissionError("event-related reconstruction rules require manual semantic review")
+    if _event_rules(reconstruction):
+        # Independent parent scan prevents an incomplete inspector artifact from
+        # hiding model-authored event semantics and enabling a destructive rewrite.
+        raise PermissionError("parent reconstruction contains event-related rules")
 
     parent_spec = reconstruction.candidate_spec
     variant_id = f"{parent_spec.strategy_id}-eventless-{parent_recon[:12]}"
