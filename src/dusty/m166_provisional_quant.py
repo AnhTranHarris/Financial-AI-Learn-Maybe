@@ -23,6 +23,7 @@ from .parameter_stability import ParameterPointResult, assess_parameter_neighbor
 from .purged_validation import TemporalSample, build_purged_temporal_split
 from .regime_torture import RegimeDefinition, RegimeSliceResult, assess_regime_torture
 from .research import Clause
+from .research_sessions import SESSION_EVIDENCE_PROTOCOL, matching_research_session
 from .runtime import RuntimeBar, RuntimeTrade, compile_strategy, generate_runtime_trades
 from .strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from .tail_risk import analyze_tail_risk
@@ -79,6 +80,7 @@ class ProvisionalQuantPolicy:
             "minimum_total_trades": self.minimum_total_trades,
             "maximum_drawdown": self.maximum_drawdown,
             "neighbor_fraction": self.neighbor_fraction,
+            "session_evidence_protocol": SESSION_EVIDENCE_PROTOCOL,
             "production_semantics": False,
         }
 
@@ -150,6 +152,18 @@ def build_runtime_bars(bars: Iterable[MT5Bar]) -> tuple[RuntimeBar, ...]:
     return tuple(runtime)
 
 
+def _bind_session_evidence(
+    rows: tuple[RuntimeBar, ...],
+    session_filters: tuple[str, ...],
+) -> tuple[RuntimeBar, ...]:
+    if not session_filters:
+        return rows
+    return tuple(
+        replace(row, session=matching_research_session(row.at, session_filters))
+        for row in rows
+    )
+
+
 def evaluate_window(
     spec: StrategySpecV2,
     runtime_bars: Iterable[RuntimeBar],
@@ -157,12 +171,11 @@ def evaluate_window(
     start: datetime,
     end: datetime,
 ) -> WindowEvaluation:
-    if spec.session_filters:
-        raise ValueError("provisional runner requires explicit session evidence for session-filtered strategy")
     if spec.event_exclusion_minutes:
         raise ValueError("provisional runner requires explicit event evidence for event-filtered strategy")
     compiled = compile_strategy(spec)
     rows = tuple(row for row in runtime_bars if start <= row.at < end)
+    rows = _bind_session_evidence(rows, spec.session_filters)
     if not rows:
         return WindowEvaluation(0.0, 0.0, ())
     reserve = max(1, spec.exit_plan.max_hold_steps)
