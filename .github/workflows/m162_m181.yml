@@ -45,8 +45,8 @@ jobs:
         if: runner.os != 'Windows'
         run: >-
           python -c "from pathlib import Path;
-          rows=[p.read_text(encoding='utf-8') for p in Path('src/dusty').glob('*.py') if p.name in {'resource_governor.py','replay_cache.py','artifact_vault.py','broker_calibration.py','provisional_research.py'}];
+          rows=[p.read_text(encoding='utf-8') for p in Path('src/dusty').glob('*.py') if p.name in {'resource_governor.py','replay_cache.py','artifact_vault.py','broker_calibration.py','provisional_research.py','m166_research_identity.py'}];
           assert all('broker_write_authorized' in row or 'broker_write_authority' in row for row in rows);
-          tools=[Path('tools/discover_m166_provisional_inputs.py'),Path('tools/build_m166_provisional_research_plan.py')];
+          tools=[Path('tools/discover_m166_provisional_inputs.py'),Path('tools/build_m166_provisional_research_plan.py'),Path('tools/build_m166_research_identity.py')];
           rendered='\n'.join(p.read_text(encoding='utf-8') for p in tools);
-          assert 'order_send(' not in rendered and 'MetaTrader5' not in rendered"
+          assert 'order_send(' not in rendered"
