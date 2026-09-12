@@ -29,13 +29,13 @@ class EventRequirementInspectorTests(unittest.TestCase):
             event_exclusion_minutes=30,
         )
 
-    def reconstruction(self, spec: StrategySpecV2):
+    def reconstruction(self, spec: StrategySpecV2, *, actor: str = "ollama"):
         return SimpleNamespace(
             fingerprint=SHA,
             candidate_spec=spec,
             symbols=("EURUSD",),
             timeframe="M15",
-            actor=SimpleNamespace(value="deterministic_translator"),
+            actor=SimpleNamespace(value=actor),
             rules=(SimpleNamespace(name="event_filter", value="avoid macro releases", basis=SimpleNamespace(value="source_declared")),),
             unresolved_source_rules=("calendar impact tier unspecified",),
         )
@@ -71,14 +71,21 @@ class EventRequirementInspectorTests(unittest.TestCase):
                 self.assertEqual(inspector.main(), 0)
             return json.loads(output_path.read_text(encoding="utf-8"))
 
-    def test_uses_reconstruction_symbol_and_timeframe(self):
+    def test_uses_reconstruction_identity_and_exposes_ollama_hypothesis(self):
         spec = self.spec()
         result = self.run_main(self.identity(spec), self.reconstruction(spec))
         self.assertEqual(result["symbol"], "EURUSD")
         self.assertEqual(result["timeframe"], "M15")
         self.assertEqual(result["event_exclusion_minutes"], 30)
-        self.assertEqual(result["reconstruction_rules"][0]["basis"], "source_declared")
+        self.assertEqual(result["event_exclusion_basis"], "research_hypothesis")
+        self.assertEqual(result["source_declared_event_rules"][0]["basis"], "source_declared")
+        self.assertIn("calendar impact tier unspecified", result["unresolved_event_rules"])
         self.assertFalse(result["authority"]["broker_write"])
+
+    def test_non_ollama_nonzero_exclusion_provenance_fails_to_unresolved_label(self):
+        spec = self.spec()
+        result = self.run_main(self.identity(spec), self.reconstruction(spec, actor="deterministic_translator"))
+        self.assertEqual(result["event_exclusion_basis"], "unresolved_provenance")
 
     def test_symbol_identity_drift_fails_closed(self):
         spec = self.spec()
