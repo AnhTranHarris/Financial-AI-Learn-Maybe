@@ -31,7 +31,6 @@ class ProvisionalM166M174ResearchTests(unittest.TestCase):
 
     def test_plan_allows_parallel_research_without_production_authority(self) -> None:
         plan = self.plan()
-        self.assertEqual(tuple(PROVISIONAL_RUNNABLE), tuple(f"m{i}_{name}" for i, name in ())) if False else None
         self.assertIn("m166_walk_forward", PROVISIONAL_RUNNABLE)
         self.assertIn("m173_strategy_dependency", PROVISIONAL_RUNNABLE)
         self.assertNotIn("m174_robustness", PROVISIONAL_RUNNABLE)
