@@ -88,6 +88,10 @@ class ProvisionalM166M174ResearchTests(unittest.TestCase):
         ):
             self.assertNotIn("m165_calibration", DEPENDENCIES[stage])
 
+    def test_m174_directly_binds_purged_validation(self) -> None:
+        self.assertIn("m167_purged_validation", DEPENDENCIES["m174_robustness"])
+        self.assertEqual(descendants_of(("m167_purged_validation",)), ("m167_purged_validation", "m174_robustness"))
+
 
 if __name__ == "__main__":
     unittest.main()
