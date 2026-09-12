@@ -24,6 +24,27 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _native_blockers(*, terminal, account, demo_mode: int, positions, orders) -> list[str]:
+    blockers: list[str] = []
+    if not bool(getattr(terminal, "connected", False)):
+        blockers.append("terminal_not_connected")
+    if not bool(getattr(terminal, "trade_allowed", False)):
+        blockers.append("terminal_trade_permission_disabled")
+    if bool(getattr(terminal, "tradeapi_disabled", True)):
+        blockers.append("terminal_trade_api_disabled")
+    if int(getattr(account, "trade_mode", -1)) != demo_mode:
+        blockers.append("account_not_demo")
+    if not bool(getattr(account, "trade_allowed", False)):
+        blockers.append("account_trade_permission_disabled")
+    if not bool(getattr(account, "trade_expert", False)):
+        blockers.append("account_expert_trading_disabled")
+    if len(positions) != 0:
+        blockers.append("symbol_position_open")
+    if len(orders) != 0:
+        blockers.append("symbol_order_open")
+    return blockers
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only M165 calibration day eligibility probe")
     parser.add_argument("--day", required=True, type=int, choices=(2, 3))
@@ -77,16 +98,14 @@ def main() -> int:
             raise RuntimeError(f"broker evidence clock offset is implausible: {clock_offset:.3f}s")
 
         demo_mode = int(getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0))
-        native_ready = (
-            bool(getattr(terminal, "connected", False))
-            and bool(getattr(terminal, "trade_allowed", False))
-            and not bool(getattr(terminal, "tradeapi_disabled", True))
-            and int(getattr(account, "trade_mode", -1)) == demo_mode
-            and bool(getattr(account, "trade_allowed", False))
-            and bool(getattr(account, "trade_expert", False))
-            and len(positions) == 0
-            and len(orders) == 0
+        native_blockers = _native_blockers(
+            terminal=terminal,
+            account=account,
+            demo_mode=demo_mode,
+            positions=positions,
+            orders=orders,
         )
+        native_ready = not native_blockers
     finally:
         mt5.shutdown()
 
@@ -95,7 +114,7 @@ def main() -> int:
     try:
         validate_campaign_start(rows, policy=policy, campaign_date=broker_instant.date())
         if not native_ready:
-            reason = "native_demo_not_ready_or_symbol_not_flat"
+            reason = ",".join(native_blockers)
         else:
             eligible = True
     except Exception as exc:  # report the fail-closed eligibility reason without mutating state
@@ -127,6 +146,7 @@ def main() -> int:
             "account_trade_expert": bool(getattr(account, "trade_expert", False)),
             "positions": len(positions),
             "orders": len(orders),
+            "blockers": native_blockers,
         },
         "authority": {
             "broker_write": False,
