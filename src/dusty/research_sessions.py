@@ -2,17 +2,47 @@ from __future__ import annotations
 
 """Deterministic point-in-time research-session classification.
 
-These labels are research context, not broker trading-session authority.  They
+These labels are research context, not broker trading-session authority. They
 are derived only from a timezone-aware UTC observation timestamp and fixed civil
-session definitions.  Broker open/closed authority remains owned by
+session definitions. Broker open/closed authority remains owned by
 ``market_clock`` and native MT5 schedule evidence.
 """
 
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
+import json
 
 
 SUPPORTED_RESEARCH_SESSIONS = ("ASIA", "LONDON", "NEW_YORK")
 SESSION_EVIDENCE_PROTOCOL = "dusty-pit-research-sessions-v1"
+SESSION_EVIDENCE_DEFINITION = {
+    "protocol": SESSION_EVIDENCE_PROTOCOL,
+    "sessions": {
+        "ASIA": {
+            "civil_zone": "Asia/Tokyo",
+            "local_start": "09:00",
+            "local_end": "18:00",
+            "dst_rule": "none",
+        },
+        "LONDON": {
+            "civil_zone": "Europe/London",
+            "local_start": "08:00",
+            "local_end": "17:00",
+            "dst_rule": "post-1996:last_sunday_march_0100utc:last_sunday_october_0100utc",
+        },
+        "NEW_YORK": {
+            "civil_zone": "America/New_York",
+            "local_start": "08:00",
+            "local_end": "17:00",
+            "dst_rule": "post-2007:second_sunday_march_0200local:first_sunday_november_0200local",
+        },
+    },
+    "overlap_semantics": "retain_all_active_sessions",
+    "broker_authority": False,
+}
+SESSION_EVIDENCE_FINGERPRINT = sha256(
+    json.dumps(SESSION_EVIDENCE_DEFINITION, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -39,12 +69,7 @@ def _last_weekday(year: int, month: int, weekday: int) -> date:
 
 
 def _london_dst(at: datetime) -> bool:
-    """Post-1996 UK DST rule, evaluated in UTC.
-
-    UK summer time begins at 01:00 UTC on the last Sunday in March and ends at
-    01:00 UTC on the last Sunday in October.  Dusty's current frozen research
-    history is modern, so this explicit rule avoids platform tzdata drift.
-    """
+    """Post-1996 UK DST rule, evaluated in UTC."""
 
     at = _aware_utc(at)
     year = at.year
@@ -71,13 +96,9 @@ def _new_york_dst(at: datetime) -> bool:
 def active_research_sessions(at: datetime) -> tuple[str, ...]:
     """Return all active canonical research sessions at ``at``.
 
-    Civil definitions are deliberately simple and explicit:
-      * ASIA:      09:00-18:00 Tokyo (UTC+9, no DST)
-      * LONDON:    08:00-17:00 London civil time
-      * NEW_YORK:  08:00-17:00 New York civil time
-
-    Overlap is retained; a timestamp may therefore belong to both LONDON and
-    NEW_YORK.  This function does not assert that a broker is open.
+    Civil definitions are explicit and content-addressed above. Overlap is
+    retained; a timestamp may therefore belong to both LONDON and NEW_YORK.
+    This function never asserts that a broker is open.
     """
 
     at = _aware_utc(at)
@@ -104,10 +125,10 @@ def active_research_sessions(at: datetime) -> tuple[str, ...]:
 def matching_research_session(at: datetime, requested: tuple[str, ...]) -> str:
     """Return one requested active session for the legacy RuntimeBar channel.
 
-    ``RuntimeBar.session`` is singular, while session windows can overlap.  The
-    evaluator calls this function *with the frozen strategy's allowed set*, so
-    any active requested session is sufficient.  Selection follows the
-    strategy's canonical sorted order and therefore stays deterministic.
+    ``RuntimeBar.session`` is singular, while session windows can overlap. The
+    evaluator calls this function with the frozen strategy's allowed set, so any
+    active requested session is sufficient. Selection follows canonical sorted
+    order and therefore stays deterministic.
     """
 
     normalized = tuple(sorted({item.strip().upper() for item in requested if item.strip()}))
