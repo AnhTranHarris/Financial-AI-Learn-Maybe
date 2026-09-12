@@ -10,7 +10,7 @@ from pathlib import Path
 from dusty.m166_research_identity import parameter_fingerprint
 from dusty.strategy_estate import load_strategy_estate
 
-PROTOCOL = "dusty-m166-event-requirement-inspector-v1"
+PROTOCOL = "dusty-m166-event-requirement-inspector-v2"
 
 
 def main() -> int:
@@ -30,10 +30,20 @@ def main() -> int:
     matches = [row for row in rows if row.fingerprint == recon_fp and row.candidate_spec.strategy_hash == strategy_fp]
     if len(matches) != 1:
         raise RuntimeError("Strategy Estate does not contain exactly one frozen reconstruction")
-    spec = matches[0].candidate_spec
+    reconstruction = matches[0]
+    spec = reconstruction.candidate_spec
     if parameter_fingerprint(spec) != identity.get("parameter_fingerprint"):
         raise RuntimeError("frozen strategy parameter identity drift")
 
+    event_rules = [
+        {"name": row.name, "value": row.value, "basis": row.basis.value}
+        for row in reconstruction.rules
+        if "event" in row.name.casefold() or "news" in row.name.casefold() or "macro" in row.name.casefold()
+    ]
+    unresolved_event_rules = [
+        value for value in reconstruction.unresolved_source_rules
+        if any(token in value.casefold() for token in ("event", "news", "macro", "calendar"))
+    ]
     payload = {
         "protocol": PROTOCOL,
         "strategy_fingerprint": strategy_fp,
@@ -46,6 +56,12 @@ def main() -> int:
         "dataset_first_bar_utc": identity.get("dataset_metadata", {}).get("first_bar_utc"),
         "dataset_last_bar_utc": identity.get("dataset_metadata", {}).get("last_bar_utc"),
         "event_evidence_required": bool(spec.event_exclusion_minutes),
+        "reconstruction_actor": reconstruction.actor.value,
+        "source_id": reconstruction.source_id,
+        "source_url": reconstruction.source_url,
+        "source_content_sha256": reconstruction.source_content_sha256,
+        "event_related_reconstruction_rules": event_rules,
+        "unresolved_event_source_rules": unresolved_event_rules,
         "authority": {
             "broker_write": False,
             "live_write": False,
