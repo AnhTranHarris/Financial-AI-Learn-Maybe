@@ -63,10 +63,7 @@ def _load_lane(plan_path: Path, lane_id: str) -> dict[str, object]:
 def _floor_completed_m15(now: datetime) -> datetime:
     when = now.astimezone(UTC)
     minute = (when.minute // 15) * 15
-    boundary = when.replace(minute=minute, second=0, microsecond=0)
-    # The bar opening at the current boundary may still be forming.  End the
-    # request at that boundary so the frozen dataset contains only prior bars.
-    return boundary
+    return when.replace(minute=minute, second=0, microsecond=0)
 
 
 def main() -> int:
@@ -114,6 +111,8 @@ def main() -> int:
     reconstruction_fp = str(manifest.get("reconstruction_fingerprint", "")).strip().lower()
     if not symbol or not timeframe or len(strategy_hash) != 64:
         raise ValueError("qualification lane identity is incomplete")
+    if timeframe != "M15":
+        raise ValueError("this builder currently supports the certified M15 qualification lane only")
 
     reconstructions = load_strategy_estate(estate_path)
     matches = [
@@ -129,6 +128,7 @@ def main() -> int:
 
     end = _floor_completed_m15(datetime.now(UTC))
     start = end - timedelta(days=lookback_days)
+    request_end = end - timedelta(seconds=1)
     worker = ReadOnlyMT5Worker()
     if worker.broker_write_authorized:
         raise RuntimeError("read-only MT5 worker unexpectedly gained broker-write authority")
@@ -137,7 +137,7 @@ def main() -> int:
         symbol=symbol,
         timeframe=timeframe,
         start=start,
-        end=end,
+        end=request_end,
         chunk_days=7,
     )))
     if len(bars) < minimum_bars:
