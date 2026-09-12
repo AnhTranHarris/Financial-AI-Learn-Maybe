@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Point-in-time scheduled-event evidence for frozen quant research.
 
-This module owns no acquisition, broker, execution, or promotion authority.  It
+This module owns no acquisition, broker, execution, or promotion authority. It
 only validates already-collected schedule evidence and deterministically marks
 runtime bars whose decision timestamp falls inside a strategy exclusion window.
 """
@@ -16,7 +16,7 @@ from typing import Iterable
 from .runtime import RuntimeBar
 
 UTC = timezone.utc
-EVENT_EVIDENCE_PROTOCOL = "dusty-pit-research-event-evidence-v1"
+EVENT_EVIDENCE_PROTOCOL = "dusty-pit-research-event-evidence-v2"
 
 
 def _aware_utc(value: datetime, label: str) -> datetime:
@@ -39,7 +39,9 @@ class ResearchScheduledEvent:
     source_fingerprint: str
 
     def __post_init__(self) -> None:
-        if not self.event_id.strip() or not self.source_id.strip():
+        event_id = self.event_id.strip()
+        source_id = self.source_id.strip()
+        if not event_id or not source_id:
             raise ValueError("research event requires event and source identity")
         scheduled = _aware_utc(self.scheduled_at, "scheduled_at")
         known = _aware_utc(self.known_at, "known_at")
@@ -50,6 +52,8 @@ class ResearchScheduledEvent:
         fp = self.source_fingerprint.strip().lower()
         if len(fp) != 64 or any(ch not in "0123456789abcdef" for ch in fp):
             raise ValueError("event source fingerprint must be SHA-256")
+        object.__setattr__(self, "event_id", event_id)
+        object.__setattr__(self, "source_id", source_id)
         object.__setattr__(self, "scheduled_at", scheduled)
         object.__setattr__(self, "known_at", known)
         object.__setattr__(self, "currencies", tuple(sorted({str(item).strip().upper() for item in self.currencies})))
@@ -58,11 +62,11 @@ class ResearchScheduledEvent:
     @property
     def payload(self) -> dict[str, object]:
         return {
-            "event_id": self.event_id.strip(),
+            "event_id": self.event_id,
             "scheduled_at": self.scheduled_at.isoformat(),
             "known_at": self.known_at.isoformat(),
             "currencies": list(self.currencies),
-            "source_id": self.source_id.strip(),
+            "source_id": self.source_id,
             "source_fingerprint": self.source_fingerprint,
         }
 
@@ -98,7 +102,14 @@ class ResearchEventEvidence:
             "coverage_start": self.coverage_start.isoformat(),
             "coverage_end": self.coverage_end.isoformat(),
             "events": [row.payload for row in self.events],
-            "authority": {"broker_write": False, "live_write": False, "promotion": False, "retry": False},
+            "authority": {
+                "broker_write": False,
+                "live_write": False,
+                "custody_write": False,
+                "promotion": False,
+                "retry": False,
+                "risk_override": False,
+            },
         }
 
     @property
@@ -118,6 +129,7 @@ def bind_event_exclusions(
     evidence: ResearchEventEvidence,
     *,
     exclusion_minutes: int,
+    expected_symbol: str | None = None,
 ) -> tuple[RuntimeBar, ...]:
     runtime = tuple(rows)
     minutes = int(exclusion_minutes)
@@ -125,13 +137,21 @@ def bind_event_exclusions(
         raise ValueError("event exclusion cannot be negative")
     if not runtime or minutes == 0:
         return runtime
+    if tuple(sorted(runtime, key=lambda row: row.at)) != runtime:
+        raise ValueError("runtime bars must be chronological before event binding")
+    if expected_symbol is not None and evidence.symbol != expected_symbol.strip().upper():
+        raise ValueError("event evidence symbol does not match frozen strategy symbol")
+
     first = _aware_utc(runtime[0].at, "runtime start")
     last = _aware_utc(runtime[-1].at, "runtime end")
-    if evidence.coverage_start > first or evidence.coverage_end <= last:
-        raise ValueError("event evidence does not cover the frozen runtime range")
+    radius = timedelta(minutes=minutes)
+    # Symmetric exclusion requires evidence beyond both dataset edges; otherwise
+    # an event just outside the frozen range could still block an edge decision.
+    if evidence.coverage_start > first - radius or evidence.coverage_end <= last + radius:
+        raise ValueError("event evidence does not fully cover the exclusion-adjusted frozen runtime range")
+
     relevant = set(symbol_currencies(evidence.symbol))
     events = tuple(row for row in evidence.events if relevant.intersection(row.currencies))
-    radius = timedelta(minutes=minutes)
     return tuple(
         replace(
             bar,
