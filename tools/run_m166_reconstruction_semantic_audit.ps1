@@ -41,14 +41,22 @@ $headers = @{
     "User-Agent" = "DustyDragon-M166-Semantic-QC"
 }
 $checksUri = "https://api.github.com/repos/AnhTranHarris/Financial-AI-Learn-Maybe/commits/$ExpectedHead/check-runs?per_page=100"
-$checks = Invoke-RestMethod -Uri $checksUri -Headers $headers -Method Get
-if ($checks.total_count -ne 20) { throw "Expected exactly 20 exact-head GitHub checks." }
-$unfinished = @($checks.check_runs | Where-Object { $_.status -ne "completed" })
-$bad = @($checks.check_runs | Where-Object { $_.status -eq "completed" -and $_.conclusion -ne "success" })
-if ($unfinished.Count -gt 0) { throw "Exact-head CI is still running/queued. STOP." }
-if ($bad.Count -gt 0) {
-    $bad | Select-Object name,status,conclusion | Format-Table -AutoSize
-    throw "Exact-head CI failed. STOP."
+$checks = $null
+for ($poll = 1; $poll -le 30; $poll++) {
+    $checks = Invoke-RestMethod -Uri $checksUri -Headers $headers -Method Get
+    $unfinished = @($checks.check_runs | Where-Object { $_.status -ne "completed" })
+    $bad = @($checks.check_runs | Where-Object { $_.status -eq "completed" -and $_.conclusion -ne "success" })
+    $success = @($checks.check_runs | Where-Object { $_.status -eq "completed" -and $_.conclusion -eq "success" })
+    Write-Host "CI poll ${poll}: $($success.Count)/20 success; $($unfinished.Count) unfinished"
+    if ($bad.Count -gt 0) {
+        $bad | Select-Object name,status,conclusion | Format-Table -AutoSize
+        throw "Exact-head CI failed. STOP."
+    }
+    if ($checks.total_count -eq 20 -and $unfinished.Count -eq 0 -and $success.Count -eq 20) {
+        break
+    }
+    if ($poll -eq 30) { throw "Exact-head CI did not reach 20/20 success within bounded polling window." }
+    Start-Sleep -Seconds 10
 }
 Write-Host "GitHub CI: 20/20 SUCCESS" -ForegroundColor Green
 
