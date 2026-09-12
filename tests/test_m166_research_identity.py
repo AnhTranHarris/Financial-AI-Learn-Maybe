@@ -21,7 +21,7 @@ UTC = timezone.utc
 def spec(value: float = 30.0) -> StrategySpecV2:
     return StrategySpecV2(
         strategy_id="m166-test",
-        direction=TradeSide.BUY,
+        direction=TradeSide.LONG,
         entry_groups=(RuleGroup((Clause("rsi", RuleOp.GT, value),)),),
         exit_plan=ExitPlan("atr:2", "rr:2", max_hold_steps=8),
         decision_timeframe_minutes=15,
