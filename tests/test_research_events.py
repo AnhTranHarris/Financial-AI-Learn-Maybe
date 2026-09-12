@@ -36,6 +36,7 @@ class ResearchEventEvidenceTests(unittest.TestCase):
         evidence = self.evidence((self.event(datetime(2026, 6, 1, 12, 30, tzinfo=UTC)),))
         self.assertEqual(evidence.payload["protocol"], EVENT_EVIDENCE_PROTOCOL)
         self.assertFalse(evidence.payload["authority"]["broker_write"])
+        self.assertFalse(evidence.payload["authority"]["custody_write"])
         self.assertEqual(evidence.fingerprint, self.evidence(evidence.events).fingerprint)
 
     def test_unknown_at_event_time_fails_closed(self):
@@ -50,15 +51,44 @@ class ResearchEventEvidenceTests(unittest.TestCase):
             self.evidence((row, row))
         narrow = ResearchEventEvidence("EURUSD", at - timedelta(hours=1), at + timedelta(hours=1), (row,))
         rows = (bar(at - timedelta(hours=2)), bar(at))
-        with self.assertRaisesRegex(ValueError, "does not cover"):
+        with self.assertRaisesRegex(ValueError, "does not fully cover"):
             bind_event_exclusions(rows, narrow, exclusion_minutes=30)
+
+    def test_exclusion_adjusted_edge_coverage_is_required(self):
+        first = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+        last = first + timedelta(minutes=15)
+        rows = (bar(first), bar(last))
+        evidence = ResearchEventEvidence(
+            "EURUSD",
+            first,
+            last + timedelta(minutes=31),
+            (),
+        )
+        with self.assertRaisesRegex(ValueError, "exclusion-adjusted"):
+            bind_event_exclusions(rows, evidence, exclusion_minutes=30)
 
     def test_relevant_currency_is_blocked_symmetrically(self):
         event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
         evidence = self.evidence((self.event(event_at),))
         rows = tuple(bar(event_at + timedelta(minutes=offset)) for offset in (-31, -30, 0, 30, 31))
-        bound = bind_event_exclusions(rows, evidence, exclusion_minutes=30)
+        bound = bind_event_exclusions(rows, evidence, exclusion_minutes=30, expected_symbol="EURUSD")
         self.assertEqual([row.event_blocked for row in bound], [False, True, True, True, False])
+
+    def test_expected_symbol_mismatch_fails_closed(self):
+        event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
+        with self.assertRaisesRegex(ValueError, "symbol"):
+            bind_event_exclusions(
+                (bar(event_at),),
+                self.evidence((self.event(event_at),)),
+                exclusion_minutes=30,
+                expected_symbol="GBPUSD",
+            )
+
+    def test_non_chronological_runtime_fails_closed(self):
+        event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
+        rows = (bar(event_at), bar(event_at - timedelta(minutes=15)))
+        with self.assertRaisesRegex(ValueError, "chronological"):
+            bind_event_exclusions(rows, self.evidence(), exclusion_minutes=30)
 
     def test_irrelevant_currency_does_not_block(self):
         event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
