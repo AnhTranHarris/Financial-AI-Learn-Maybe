@@ -13,6 +13,13 @@ from dusty.strategy_estate import load_strategy_estate
 PROTOCOL = "dusty-m166-event-requirement-inspector-v2"
 
 
+def _required_text(value: object, label: str) -> str:
+    rendered = str(value or "").strip()
+    if not rendered:
+        raise RuntimeError(f"missing {label}")
+    return rendered
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--identity", required=True)
@@ -24,44 +31,60 @@ def main() -> int:
     estate_path = Path(args.strategy_estate).resolve()
     output = Path(args.output).resolve()
     identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    if not isinstance(identity, dict):
+        raise RuntimeError("M166 identity must be a JSON object")
+
     rows = load_strategy_estate(estate_path)
-    recon_fp = str(identity.get("reconstruction_fingerprint", ""))
-    strategy_fp = str(identity.get("strategy_fingerprint", ""))
+    recon_fp = _required_text(identity.get("reconstruction_fingerprint"), "reconstruction fingerprint")
+    strategy_fp = _required_text(identity.get("strategy_fingerprint"), "strategy fingerprint")
     matches = [row for row in rows if row.fingerprint == recon_fp and row.candidate_spec.strategy_hash == strategy_fp]
     if len(matches) != 1:
         raise RuntimeError("Strategy Estate does not contain exactly one frozen reconstruction")
+
     reconstruction = matches[0]
     spec = reconstruction.candidate_spec
     if parameter_fingerprint(spec) != identity.get("parameter_fingerprint"):
         raise RuntimeError("frozen strategy parameter identity drift")
+    if len(reconstruction.symbols) != 1:
+        raise RuntimeError("frozen M166 reconstruction must identify exactly one symbol")
 
-    event_rules = [
-        {"name": row.name, "value": row.value, "basis": row.basis.value}
-        for row in reconstruction.rules
-        if "event" in row.name.casefold() or "news" in row.name.casefold() or "macro" in row.name.casefold()
-    ]
-    unresolved_event_rules = [
-        value for value in reconstruction.unresolved_source_rules
-        if any(token in value.casefold() for token in ("event", "news", "macro", "calendar"))
-    ]
+    metadata = identity.get("dataset_metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("M166 identity dataset_metadata is missing")
+    symbol = _required_text(metadata.get("symbol"), "dataset symbol").upper()
+    timeframe = _required_text(metadata.get("timeframe"), "dataset timeframe").upper()
+    first_bar = _required_text(metadata.get("first_bar_utc"), "dataset first_bar_utc")
+    last_bar = _required_text(metadata.get("last_bar_utc"), "dataset last_bar_utc")
+
+    reconstruction_symbol = reconstruction.symbols[0].strip().upper()
+    reconstruction_timeframe = reconstruction.timeframe.strip().upper()
+    if reconstruction_symbol != symbol:
+        raise RuntimeError("frozen reconstruction symbol differs from M166 dataset identity")
+    if reconstruction_timeframe != timeframe:
+        raise RuntimeError("frozen reconstruction timeframe differs from M166 dataset identity")
+
     payload = {
         "protocol": PROTOCOL,
         "strategy_fingerprint": strategy_fp,
         "reconstruction_fingerprint": recon_fp,
-        "symbol": spec.symbol,
-        "timeframe": spec.timeframe,
+        "symbol": symbol,
+        "timeframe": timeframe,
         "event_exclusion_minutes": int(spec.event_exclusion_minutes),
         "session_filters": list(spec.session_filters),
         "intended_horizon_minutes": int(spec.intended_horizon_minutes),
-        "dataset_first_bar_utc": identity.get("dataset_metadata", {}).get("first_bar_utc"),
-        "dataset_last_bar_utc": identity.get("dataset_metadata", {}).get("last_bar_utc"),
+        "dataset_first_bar_utc": first_bar,
+        "dataset_last_bar_utc": last_bar,
         "event_evidence_required": bool(spec.event_exclusion_minutes),
         "reconstruction_actor": reconstruction.actor.value,
-        "source_id": reconstruction.source_id,
-        "source_url": reconstruction.source_url,
-        "source_content_sha256": reconstruction.source_content_sha256,
-        "event_related_reconstruction_rules": event_rules,
-        "unresolved_event_source_rules": unresolved_event_rules,
+        "reconstruction_rules": [
+            {"name": rule.name, "value": rule.value, "basis": rule.basis.value}
+            for rule in reconstruction.rules
+            if "event" in rule.name.casefold() or "news" in rule.name.casefold() or "calendar" in rule.name.casefold()
+        ],
+        "unresolved_event_rules": [
+            value for value in reconstruction.unresolved_source_rules
+            if any(token in value.casefold() for token in ("event", "news", "calendar"))
+        ],
         "authority": {
             "broker_write": False,
             "live_write": False,
