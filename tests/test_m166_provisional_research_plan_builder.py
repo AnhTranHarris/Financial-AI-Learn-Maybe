@@ -14,6 +14,7 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
     def fixtures(self):
         lane = "eurusd:m15:test"
         strategy = fp("strategy")
+        head = "1" * 40
         qualification = {
             "manifests": [
                 {
@@ -24,6 +25,7 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
             ]
         }
         discovery = {
+            "source_commit": head,
             "status": "unique_candidate",
             "lane_id": lane,
             "qualification_strategy_hash": strategy,
@@ -42,12 +44,12 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
             "distinct_days": 2,
             "calibration": {"status": "insufficient"},
         }
-        return lane, strategy, qualification, discovery, custody
+        return head, lane, strategy, qualification, discovery, custody
 
     def test_builds_provisional_checkpoint_without_production_authority(self) -> None:
-        lane, strategy, qualification, discovery, custody = self.fixtures()
+        head, lane, strategy, qualification, discovery, custody = self.fixtures()
         payload = build_payload(
-            expected_head="1" * 40,
+            expected_head=head,
             lane_id=lane,
             qualification=qualification,
             discovery=discovery,
@@ -55,6 +57,7 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
             calibration_fingerprint=fp("calibration-20-2"),
         )
         self.assertEqual(payload["status"], "provisional_research_ready")
+        self.assertEqual(payload["source_commit"], head)
         self.assertEqual(payload["qualification_strategy_hash"], strategy)
         self.assertEqual(payload["current_m165_status"], "insufficient")
         self.assertFalse(payload["production_semantics"]["m166_production_admission_granted"])
@@ -68,13 +71,13 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
         self.assertFalse(payload["authority"]["promotion"])
 
     def test_rejects_ambiguous_or_strategy_drifted_discovery(self) -> None:
-        lane, _, qualification, discovery, custody = self.fixtures()
+        head, lane, _, qualification, discovery, custody = self.fixtures()
         ambiguous = dict(discovery)
         ambiguous["status"] = "ambiguous_candidates"
         ambiguous["identity_set_count"] = 2
         with self.assertRaises(PermissionError):
             build_payload(
-                expected_head="1" * 40,
+                expected_head=head,
                 lane_id=lane,
                 qualification=qualification,
                 discovery=ambiguous,
@@ -86,7 +89,7 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
         drifted["qualification_strategy_hash"] = fp("other")
         with self.assertRaises(ValueError):
             build_payload(
-                expected_head="1" * 40,
+                expected_head=head,
                 lane_id=lane,
                 qualification=qualification,
                 discovery=drifted,
@@ -94,13 +97,27 @@ class M166ProvisionalResearchPlanBuilderTests(unittest.TestCase):
                 calibration_fingerprint=fp("calibration"),
             )
 
+    def test_rejects_discovery_from_different_git_head(self) -> None:
+        head, lane, _, qualification, discovery, custody = self.fixtures()
+        stale = dict(discovery)
+        stale["source_commit"] = "2" * 40
+        with self.assertRaisesRegex(ValueError, "source commit"):
+            build_payload(
+                expected_head=head,
+                lane_id=lane,
+                qualification=qualification,
+                discovery=stale,
+                custody_summary=custody,
+                calibration_fingerprint=fp("calibration"),
+            )
+
     def test_requires_real_nonempty_m165_breadth(self) -> None:
-        lane, _, qualification, discovery, custody = self.fixtures()
+        head, lane, _, qualification, discovery, custody = self.fixtures()
         empty = dict(custody)
         empty["observation_count"] = 0
         with self.assertRaises(PermissionError):
             build_payload(
-                expected_head="1" * 40,
+                expected_head=head,
                 lane_id=lane,
                 qualification=qualification,
                 discovery=discovery,
