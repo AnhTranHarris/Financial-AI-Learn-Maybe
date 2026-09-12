@@ -42,8 +42,8 @@ STAGES: tuple[str, ...] = (
     "m174_robustness",
 )
 
-# Direct dependency graph.  M170 is the only research stage with direct M165
-# calibration dependence.  M174 depends on the complete admitted artifact set.
+# Direct dependency graph. M170 is the only research stage with direct M165
+# calibration dependence. M174 consumes the complete admitted artifact set.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "m166_walk_forward": ("strategy", "dataset", "parameters"),
     "m167_purged_validation": ("m166_walk_forward", "dataset"),
@@ -56,6 +56,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "m174_robustness": (
         "m165_calibration",
         "m166_walk_forward",
+        "m167_purged_validation",
         "m168_parameter_stability",
         "m169_regime_torture",
         "m170_cost_torture",
@@ -66,7 +67,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 }
 
 # Production M166 admission and M174 certification remain blocked until genuine
-# M165 calibration.  Research computations may be performed ahead of that gate.
+# M165 calibration. Research computations may be performed ahead of that gate.
 PROVISIONAL_RUNNABLE: tuple[str, ...] = STAGES[:-1]
 PRODUCTION_BLOCKED_UNTIL_M165: tuple[str, ...] = ("m166_production_admission", "m174_robustness")
 
