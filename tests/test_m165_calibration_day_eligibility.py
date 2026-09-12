@@ -33,6 +33,17 @@ class M165CalibrationDayEligibilityTests(unittest.TestCase):
         self.assertIn("positions_get", text)
         self.assertIn("orders_get", text)
 
+    def test_probe_reports_precise_native_permission_blockers(self) -> None:
+        text = TOOL.read_text(encoding="utf-8")
+        self.assertIn("_native_blockers", text)
+        self.assertIn("terminal_trade_permission_disabled", text)
+        self.assertIn("terminal_trade_api_disabled", text)
+        self.assertIn("account_trade_permission_disabled", text)
+        self.assertIn("account_expert_trading_disabled", text)
+        self.assertIn("symbol_position_open", text)
+        self.assertIn("symbol_order_open", text)
+        self.assertIn('"blockers": native_blockers', text)
+
 
 if __name__ == "__main__":
     unittest.main()
