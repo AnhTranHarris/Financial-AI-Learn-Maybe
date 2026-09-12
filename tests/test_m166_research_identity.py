@@ -5,7 +5,7 @@ import unittest
 
 from dusty.experience import TradeSide
 from dusty.mt5worker import MT5Bar
-from dusty.research import Clause, Operator
+from dusty.research import Clause, RuleOp
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from dusty.m166_research_identity import (
     M166ResearchIdentity,
@@ -22,7 +22,7 @@ def spec(value: float = 30.0) -> StrategySpecV2:
     return StrategySpecV2(
         strategy_id="m166-test",
         direction=TradeSide.BUY,
-        entry_groups=(RuleGroup((Clause("rsi", Operator.GREATER_THAN, value),)),),
+        entry_groups=(RuleGroup((Clause("rsi", RuleOp.GT, value),)),),
         exit_plan=ExitPlan("atr:2", "rr:2", max_hold_steps=8),
         decision_timeframe_minutes=15,
         intended_horizon_minutes=60,
