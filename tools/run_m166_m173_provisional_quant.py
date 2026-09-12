@@ -128,6 +128,10 @@ def _payload(value: object) -> object:
     return value
 
 
+def _json_normalize(value: object) -> object:
+    return json.loads(_canonical(value))
+
+
 def _stage(
     *,
     name: str,
@@ -137,13 +141,13 @@ def _stage(
     evidence: object | None = None,
     reason: str = "",
 ) -> dict[str, object]:
-    evidence_payload = None if evidence is None else _payload(evidence)
+    evidence_payload = None if evidence is None else _json_normalize(_payload(evidence))
     payload = {
         "protocol": "dusty-provisional-stage-artifact-v1",
         "stage": name,
         "status": status,
         "subject_fingerprint": subject,
-        "inputs": inputs,
+        "inputs": _json_normalize(inputs),
         "evidence": evidence_payload,
         "reason": reason,
         "authority": {
