@@ -16,7 +16,7 @@ from typing import Iterable
 from .runtime import RuntimeBar
 
 UTC = timezone.utc
-EVENT_EVIDENCE_PROTOCOL = "dusty-pit-research-event-evidence-v2"
+EVENT_EVIDENCE_PROTOCOL = "dusty-pit-research-event-evidence-v3"
 
 
 def _aware_utc(value: datetime, label: str) -> datetime:
@@ -155,7 +155,11 @@ def bind_event_exclusions(
     return tuple(
         replace(
             bar,
-            event_blocked=any(abs(_aware_utc(bar.at, "runtime bar") - event.scheduled_at) <= radius for event in events),
+            event_blocked=any(
+                event.known_at <= _aware_utc(bar.at, "runtime bar")
+                and abs(_aware_utc(bar.at, "runtime bar") - event.scheduled_at) <= radius
+                for event in events
+            ),
         )
         for bar in runtime
     )
