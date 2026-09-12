@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from dusty.broker_calibration import calibrate_broker_economics
 from dusty.m165_observation_custody import M165ObservationCustody
 from dusty.provisional_research import ProvisionalResearchPlan
 
@@ -50,6 +51,7 @@ def build_payload(
     qualification: dict[str, object],
     discovery: dict[str, object],
     custody_summary: dict[str, object],
+    calibration_fingerprint: str,
 ) -> dict[str, object]:
     lane = str(lane_id).strip().lower()
     manifest = _qualification_manifest(qualification, lane)
@@ -72,7 +74,7 @@ def build_payload(
     calibration = custody_summary.get("calibration")
     if not isinstance(calibration, dict):
         raise ValueError("custody summary lacks calibration")
-    calibration_fingerprint = _sha(calibration.get("fingerprint"), "current M165 calibration")
+    calibration_fp = _sha(calibration_fingerprint, "current M165 calibration")
     observation_count = int(custody_summary.get("observation_count", 0) or 0)
     distinct_days = int(custody_summary.get("distinct_days", 0) or 0)
     if observation_count < 1 or distinct_days < 1:
@@ -83,7 +85,7 @@ def build_payload(
         strategy_fingerprint=discovered_strategy,
         dataset_fingerprint=_sha(identity.get("dataset_fingerprint"), "research dataset"),
         parameter_fingerprint=_sha(identity.get("parameter_fingerprint"), "research parameters"),
-        current_calibration_fingerprint=calibration_fingerprint,
+        current_calibration_fingerprint=calibration_fp,
         current_observation_count=observation_count,
         current_distinct_days=distinct_days,
     )
@@ -94,6 +96,7 @@ def build_payload(
         "qualification_manifest_fingerprint": str(manifest.get("manifest_fingerprint", "")),
         "qualification_strategy_hash": strategy,
         "current_m165_status": str(calibration.get("status", "")),
+        "current_m165_calibration_fingerprint": calibration_fp,
         "plan_fingerprint": plan.fingerprint,
         "plan": plan.payload,
         "research_identity_sources": identity.get("sources", []),
@@ -145,7 +148,15 @@ def main() -> int:
     qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
     discovery = json.loads(discovery_path.read_text(encoding="utf-8"))
     with M165ObservationCustody(database) as store:
+        rows = store.load_all()
         custody = store.summary_payload()
+    if not rows:
+        raise PermissionError("provisional research requires genuine M165 custody rows")
+    calibration = calibrate_broker_economics(
+        rows,
+        broker_profile_fingerprint=rows[0].broker_profile_fingerprint,
+        symbol=rows[0].symbol,
+    )
 
     payload = build_payload(
         expected_head=expected,
@@ -153,6 +164,7 @@ def main() -> int:
         qualification=qualification,
         discovery=discovery,
         custody_summary=custody,
+        calibration_fingerprint=calibration.fingerprint,
     )
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
