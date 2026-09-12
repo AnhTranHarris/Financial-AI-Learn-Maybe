@@ -15,6 +15,7 @@ from dusty.m166_provisional_quant import (
 )
 from dusty.mt5worker import MT5Bar
 from dusty.research import Clause, RuleOp
+from dusty.research_sessions import SESSION_EVIDENCE_PROTOCOL
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from dusty.walk_forward_lab import build_walk_forward_plan
 
@@ -50,6 +51,7 @@ class ProvisionalQuantTests(unittest.TestCase):
         second = ProvisionalQuantPolicy()
         self.assertEqual(first.fingerprint, second.fingerprint)
         self.assertFalse(first.payload["production_semantics"])
+        self.assertEqual(first.payload["session_evidence_protocol"], SESSION_EVIDENCE_PROTOCOL)
 
     def test_runtime_conversion_is_point_in_time_and_drops_unproven_last_bar(self) -> None:
         rows = _bars(80)
@@ -71,13 +73,28 @@ class ProvisionalQuantTests(unittest.TestCase):
         self.assertTrue(all(start <= row.entry_at < end for row in first.trades))
         self.assertTrue(all(row.exit_at < end for row in first.trades))
 
-    def test_missing_session_or_event_evidence_fails_closed(self) -> None:
-        runtime = build_runtime_bars(_bars(100))
+    def test_session_evidence_is_derived_but_event_evidence_fails_closed(self) -> None:
+        runtime = build_runtime_bars(_bars(200))
         start, end = runtime[30].at, runtime[-1].at
-        with self.assertRaises(ValueError):
-            evaluate_window(_spec(session=True), runtime, start=start, end=end)
+        first = evaluate_window(_spec(session=True), runtime, start=start, end=end)
+        second = evaluate_window(_spec(session=True), runtime, start=start, end=end)
+        self.assertEqual(first, second)
         with self.assertRaises(ValueError):
             evaluate_window(_spec(event=True), runtime, start=start, end=end)
+
+    def test_unknown_session_filter_fails_closed(self) -> None:
+        runtime = build_runtime_bars(_bars(100))
+        spec = StrategySpecV2(
+            strategy_id="unknown-session-test",
+            direction=TradeSide.LONG,
+            entry_groups=(RuleGroup((Clause("rsi", RuleOp.GT, 0.0),)),),
+            exit_plan=ExitPlan("atr:1", "rr:1", max_hold_steps=2),
+            decision_timeframe_minutes=15,
+            intended_horizon_minutes=30,
+            session_filters=("MARS",),
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported research session filters"):
+            evaluate_window(spec, runtime, start=runtime[20].at, end=runtime[-1].at)
 
     def test_m167_purging_keeps_training_labels_before_test_boundary(self) -> None:
         runtime = build_runtime_bars(_bars(1000))
