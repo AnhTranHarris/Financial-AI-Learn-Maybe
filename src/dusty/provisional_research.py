@@ -138,9 +138,9 @@ class ProvisionalResearchPlan:
 
 
 def descendants_of(changed_inputs: tuple[str, ...]) -> tuple[str, ...]:
-    """Return deterministic transitive stage invalidation for changed identities."""
+    """Return deterministic invalidation for changed identities and their descendants."""
     changed = set(changed_inputs)
-    invalidated: set[str] = set()
+    invalidated: set[str] = {stage for stage in STAGES if stage in changed}
     while True:
         before = len(invalidated)
         for stage in STAGES:
