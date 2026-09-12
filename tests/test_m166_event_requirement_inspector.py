@@ -3,18 +3,16 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from dusty.experience import TradeSide
 from dusty.m166_research_identity import parameter_fingerprint
-from dusty.research import Clause, ComparisonOp
+from dusty.research import Clause, RuleOp
 from dusty.strategy_ir import ExitPlan, RuleGroup, StrategySpecV2
 from tools import inspect_m166_event_requirement as inspector
 
-UTC = timezone.utc
 SHA = "a" * 64
 
 
@@ -23,7 +21,7 @@ class EventRequirementInspectorTests(unittest.TestCase):
         return StrategySpecV2(
             strategy_id="s1",
             direction=TradeSide.LONG,
-            entry_groups=(RuleGroup((Clause("rsi", ComparisonOp.GT, 50.0),)),),
+            entry_groups=(RuleGroup((Clause("rsi", RuleOp.GT, 50.0),)),),
             exit_plan=ExitPlan("pct:0.01", max_hold_steps=4),
             decision_timeframe_minutes=15,
             intended_horizon_minutes=60,
@@ -85,14 +83,18 @@ class EventRequirementInspectorTests(unittest.TestCase):
     def test_symbol_identity_drift_fails_closed(self):
         spec = self.spec()
         identity = self.identity(spec)
-        identity["dataset_metadata"]["symbol"] = "GBPUSD"  # type: ignore[index]
+        metadata = identity["dataset_metadata"]
+        assert isinstance(metadata, dict)
+        metadata["symbol"] = "GBPUSD"
         with self.assertRaisesRegex(RuntimeError, "symbol differs"):
             self.run_main(identity, self.reconstruction(spec))
 
     def test_missing_dataset_coverage_fails_closed(self):
         spec = self.spec()
         identity = self.identity(spec)
-        identity["dataset_metadata"].pop("first_bar_utc")  # type: ignore[union-attr]
+        metadata = identity["dataset_metadata"]
+        assert isinstance(metadata, dict)
+        metadata.pop("first_bar_utc")
         with self.assertRaisesRegex(RuntimeError, "first_bar_utc"):
             self.run_main(identity, self.reconstruction(spec))
 
