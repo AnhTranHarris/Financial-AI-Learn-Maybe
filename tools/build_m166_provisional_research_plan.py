@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Build an immutable provisional M166-M174 research checkpoint.
 
-The checkpoint permits research computation only.  It does not satisfy M166
+The checkpoint permits research computation only. It does not satisfy M166
 production admission and cannot certify M174 or feed M185 until final M165
 calibration is independently admitted.
 """
@@ -34,6 +34,13 @@ def _sha(value: object, label: str) -> str:
     return rendered
 
 
+def _git_sha(value: object, label: str) -> str:
+    rendered = str(value).strip().lower()
+    if len(rendered) != 40 or any(ch not in "0123456789abcdef" for ch in rendered):
+        raise ValueError(f"{label} requires full 40-character Git SHA")
+    return rendered
+
+
 def _qualification_manifest(plan: dict[str, object], lane_id: str) -> dict[str, object]:
     rows = plan.get("manifests")
     if not isinstance(rows, list):
@@ -53,10 +60,14 @@ def build_payload(
     custody_summary: dict[str, object],
     calibration_fingerprint: str,
 ) -> dict[str, object]:
+    expected = _git_sha(expected_head, "expected head")
     lane = str(lane_id).strip().lower()
     manifest = _qualification_manifest(qualification, lane)
     strategy = _sha(manifest.get("strategy_hash"), "qualification strategy")
 
+    discovery_head = _git_sha(discovery.get("source_commit"), "discovery source commit")
+    if discovery_head != expected:
+        raise ValueError("discovery source commit does not match expected head")
     if discovery.get("status") != "unique_candidate" or int(discovery.get("identity_set_count", 0) or 0) != 1:
         raise PermissionError("provisional planning requires exactly one discovered research identity set")
     identity_sets = discovery.get("identity_sets")
@@ -92,7 +103,7 @@ def build_payload(
     return {
         "protocol": PROTOCOL,
         "status": "provisional_research_ready",
-        "source_commit": expected_head,
+        "source_commit": expected,
         "qualification_manifest_fingerprint": str(manifest.get("manifest_fingerprint", "")),
         "qualification_strategy_hash": strategy,
         "current_m165_status": str(calibration.get("status", "")),
@@ -130,9 +141,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
-    expected = str(args.expected_head).strip().lower()
-    if len(expected) != 40 or any(ch not in "0123456789abcdef" for ch in expected):
-        raise ValueError("expected head requires full 40-character Git SHA")
+    expected = _git_sha(args.expected_head, "expected head")
     if _git(repo, "rev-parse", "HEAD").lower() != expected:
         raise RuntimeError("workstation Git HEAD does not match expected head")
     if _git(repo, "status", "--porcelain=v1", "--untracked-files=all"):
