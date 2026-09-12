@@ -13,8 +13,10 @@ from hashlib import sha256
 import json
 
 
-SUPPORTED_RESEARCH_SESSIONS = ("ASIA", "LONDON", "NEW_YORK")
-_SESSION_EVIDENCE_PROTOCOL_BASE = "dusty-pit-research-sessions-v1"
+BASE_RESEARCH_SESSIONS = ("ASIA", "LONDON", "NEW_YORK")
+COMPOSITE_RESEARCH_SESSIONS = ("LONDON_NY_OVERLAP",)
+SUPPORTED_RESEARCH_SESSIONS = BASE_RESEARCH_SESSIONS + COMPOSITE_RESEARCH_SESSIONS
+_SESSION_EVIDENCE_PROTOCOL_BASE = "dusty-pit-research-sessions-v2"
 SESSION_EVIDENCE_DEFINITION = {
     "protocol": _SESSION_EVIDENCE_PROTOCOL_BASE,
     "sessions": {
@@ -37,7 +39,13 @@ SESSION_EVIDENCE_DEFINITION = {
             "dst_rule": "post-2007:second_sunday_march_0200local:first_sunday_november_0200local",
         },
     },
-    "overlap_semantics": "retain_all_active_sessions",
+    "composites": {
+        "LONDON_NY_OVERLAP": {
+            "operator": "all_active",
+            "members": ["LONDON", "NEW_YORK"],
+        }
+    },
+    "overlap_semantics": "retain_all_active_base_sessions_and_derive_named_composites",
     "broker_authority": False,
 }
 SESSION_EVIDENCE_FINGERPRINT = sha256(
@@ -95,10 +103,11 @@ def _new_york_dst(at: datetime) -> bool:
 
 
 def active_research_sessions(at: datetime) -> tuple[str, ...]:
-    """Return all active canonical research sessions at ``at``.
+    """Return all active base research sessions at ``at``.
 
     Civil definitions are explicit and content-addressed above. Overlap is
     retained; a timestamp may therefore belong to both LONDON and NEW_YORK.
+    Composite labels are derived separately by ``active_research_session_labels``.
     This function never asserts that a broker is open.
     """
 
@@ -123,18 +132,30 @@ def active_research_sessions(at: datetime) -> tuple[str, ...]:
     return tuple(result)
 
 
+def active_research_session_labels(at: datetime) -> tuple[str, ...]:
+    """Return base sessions plus deterministic named composite labels."""
+
+    base = active_research_sessions(at)
+    active = set(base)
+    result = list(base)
+    if {"LONDON", "NEW_YORK"}.issubset(active):
+        result.append("LONDON_NY_OVERLAP")
+    return tuple(result)
+
+
 def matching_research_session(at: datetime, requested: tuple[str, ...]) -> str:
     """Return one requested active session for the legacy RuntimeBar channel.
 
-    ``RuntimeBar.session`` is singular, while session windows can overlap. The
+    ``RuntimeBar.session`` is singular, while research windows can overlap. The
     evaluator calls this function with the frozen strategy's allowed set, so any
-    active requested session is sufficient. Selection follows canonical sorted
-    order and therefore stays deterministic.
+    active requested label is sufficient. Named composite labels are derived
+    only from their content-addressed member definitions. Selection follows
+    canonical sorted order and therefore stays deterministic.
     """
 
     normalized = tuple(sorted({item.strip().upper() for item in requested if item.strip()}))
     unknown = tuple(item for item in normalized if item not in SUPPORTED_RESEARCH_SESSIONS)
     if unknown:
         raise ValueError(f"unsupported research session filters: {','.join(unknown)}")
-    active = set(active_research_sessions(at))
+    active = set(active_research_session_labels(at))
     return next((item for item in normalized if item in active), "")
