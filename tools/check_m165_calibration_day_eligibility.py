@@ -24,6 +24,25 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _fx_session_blockers(*, wall: datetime) -> list[str]:
+    """Fail closed during the obvious global FX weekend closure window.
+
+    This is deliberately conservative and broker-agnostic. It does not claim to
+    encode a broker's complete session calendar; it only prevents known-impossible
+    weekend sends. Friday after 22:00 UTC through Sunday before 22:00 UTC is blocked.
+    """
+    instant = wall.astimezone(timezone.utc)
+    weekday = instant.weekday()  # Monday=0 ... Sunday=6
+    hour = instant.hour
+    if weekday == 4 and hour >= 22:
+        return ["fx_weekend_session_closed"]
+    if weekday == 5:
+        return ["fx_weekend_session_closed"]
+    if weekday == 6 and hour < 22:
+        return ["fx_weekend_session_closed"]
+    return []
+
+
 def _native_blockers(*, terminal, account, demo_mode: int, positions, orders) -> list[str]:
     blockers: list[str] = []
     if not bool(getattr(terminal, "connected", False)):
@@ -76,6 +95,7 @@ def main() -> int:
 
     import MetaTrader5 as mt5
 
+    wall = datetime.now(timezone.utc)
     if not mt5.initialize(path=terminal_path):
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
     try:
@@ -92,7 +112,6 @@ def main() -> int:
         if time_msc <= 0:
             raise RuntimeError("broker tick lacks positive time_msc")
         broker_instant = datetime.fromtimestamp(time_msc / 1000.0, tz=timezone.utc)
-        wall = datetime.now(timezone.utc)
         clock_offset = (broker_instant - wall).total_seconds()
         if abs(clock_offset) > MAX_EVIDENCE_CLOCK_OFFSET_SECONDS:
             raise RuntimeError(f"broker evidence clock offset is implausible: {clock_offset:.3f}s")
@@ -105,7 +124,9 @@ def main() -> int:
             positions=positions,
             orders=orders,
         )
-        native_ready = not native_blockers
+        session_blockers = _fx_session_blockers(wall=wall)
+        blockers = native_blockers + session_blockers
+        native_ready = not blockers
     finally:
         mt5.shutdown()
 
@@ -114,7 +135,7 @@ def main() -> int:
     try:
         validate_campaign_start(rows, policy=policy, campaign_date=broker_instant.date())
         if not native_ready:
-            reason = ",".join(native_blockers)
+            reason = ",".join(blockers)
         else:
             eligible = True
     except Exception as exc:  # report the fail-closed eligibility reason without mutating state
@@ -131,6 +152,7 @@ def main() -> int:
         "broker_evidence_clock": broker_instant.isoformat(),
         "broker_evidence_date": broker_instant.date().isoformat(),
         "broker_evidence_clock_offset_seconds": clock_offset,
+        "wall_clock_utc": wall.isoformat(),
         "custody": {
             "observation_count": int(custody.get("observation_count", 0) or 0),
             "distinct_days": int(custody.get("distinct_days", 0) or 0),
@@ -146,7 +168,9 @@ def main() -> int:
             "account_trade_expert": bool(getattr(account, "trade_expert", False)),
             "positions": len(positions),
             "orders": len(orders),
-            "blockers": native_blockers,
+            "blockers": blockers,
+            "permission_blockers": native_blockers,
+            "session_blockers": session_blockers,
         },
         "authority": {
             "broker_write": False,
