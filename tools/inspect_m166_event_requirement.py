@@ -10,7 +10,7 @@ from pathlib import Path
 from dusty.m166_research_identity import parameter_fingerprint
 from dusty.strategy_estate import load_strategy_estate
 
-PROTOCOL = "dusty-m166-event-requirement-inspector-v2"
+PROTOCOL = "dusty-m166-event-requirement-inspector-v3"
 
 
 def _required_text(value: object, label: str) -> str:
@@ -18,6 +18,11 @@ def _required_text(value: object, label: str) -> str:
     if not rendered:
         raise RuntimeError(f"missing {label}")
     return rendered
+
+
+def _event_related(value: str) -> bool:
+    rendered = value.casefold()
+    return any(token in rendered for token in ("event", "news", "calendar", "macro", "release"))
 
 
 def main() -> int:
@@ -63,6 +68,26 @@ def main() -> int:
     if reconstruction_timeframe != timeframe:
         raise RuntimeError("frozen reconstruction timeframe differs from M166 dataset identity")
 
+    actor = reconstruction.actor.value
+    event_rules = [
+        {"name": rule.name, "value": rule.value, "basis": rule.basis.value}
+        for rule in reconstruction.rules
+        if _event_related(rule.name) or _event_related(rule.value)
+    ]
+    source_event_rules = [row for row in event_rules if row["basis"] == "source_declared"]
+    unresolved_event_rules = [value for value in reconstruction.unresolved_source_rules if _event_related(value)]
+
+    # In the current Ollama reconstruction implementation, event_exclusion_minutes
+    # comes directly from the model response and is not copied from declared source
+    # rules. Therefore the numeric exclusion is a research hypothesis even when the
+    # source also contains a general news/event statement.
+    if int(spec.event_exclusion_minutes) == 0:
+        event_exclusion_basis = "disabled"
+    elif actor == "ollama":
+        event_exclusion_basis = "research_hypothesis"
+    else:
+        event_exclusion_basis = "unresolved_provenance"
+
     payload = {
         "protocol": PROTOCOL,
         "strategy_fingerprint": strategy_fp,
@@ -70,21 +95,16 @@ def main() -> int:
         "symbol": symbol,
         "timeframe": timeframe,
         "event_exclusion_minutes": int(spec.event_exclusion_minutes),
+        "event_exclusion_basis": event_exclusion_basis,
         "session_filters": list(spec.session_filters),
         "intended_horizon_minutes": int(spec.intended_horizon_minutes),
         "dataset_first_bar_utc": first_bar,
         "dataset_last_bar_utc": last_bar,
         "event_evidence_required": bool(spec.event_exclusion_minutes),
-        "reconstruction_actor": reconstruction.actor.value,
-        "reconstruction_rules": [
-            {"name": rule.name, "value": rule.value, "basis": rule.basis.value}
-            for rule in reconstruction.rules
-            if "event" in rule.name.casefold() or "news" in rule.name.casefold() or "calendar" in rule.name.casefold()
-        ],
-        "unresolved_event_rules": [
-            value for value in reconstruction.unresolved_source_rules
-            if any(token in value.casefold() for token in ("event", "news", "calendar"))
-        ],
+        "reconstruction_actor": actor,
+        "event_related_rules": event_rules,
+        "source_declared_event_rules": source_event_rules,
+        "unresolved_event_rules": unresolved_event_rules,
         "authority": {
             "broker_write": False,
             "live_write": False,
