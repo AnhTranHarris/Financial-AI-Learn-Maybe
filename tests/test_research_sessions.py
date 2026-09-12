@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 import unittest
 
 from dusty.research_sessions import (
+    SESSION_EVIDENCE_DEFINITION,
+    SESSION_EVIDENCE_FINGERPRINT,
     SESSION_EVIDENCE_PROTOCOL,
     active_research_sessions,
     matching_research_session,
@@ -13,8 +17,12 @@ UTC = timezone.utc
 
 
 class ResearchSessionEvidenceTests(unittest.TestCase):
-    def test_protocol_is_versioned(self) -> None:
-        self.assertEqual(SESSION_EVIDENCE_PROTOCOL, "dusty-pit-research-sessions-v1")
+    def test_protocol_is_versioned_and_content_addressed(self) -> None:
+        expected = sha256(
+            json.dumps(SESSION_EVIDENCE_DEFINITION, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(SESSION_EVIDENCE_FINGERPRINT, expected)
+        self.assertEqual(SESSION_EVIDENCE_PROTOCOL, f"dusty-pit-research-sessions-v1:{expected}")
 
     def test_asia_is_fixed_tokyo_civil_window(self) -> None:
         self.assertIn("ASIA", active_research_sessions(datetime(2026, 1, 15, 0, 0, tzinfo=UTC)))
