@@ -29,10 +29,11 @@ class M166EventlessCampaignHarnessTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell parser gate")
     def test_windows_powershell_51_parser_accepts_script(self) -> None:
+        escaped_script = str(SCRIPT).replace("'", "''")
         command = (
             "$tokens=$null; $errors=$null; "
-            "[System.Management.Automation.Language.Parser]::ParseFile(" 
-            f"'{str(SCRIPT).replace("'", "''")}', [ref]$tokens, [ref]$errors) | Out-Null; "
+            "[System.Management.Automation.Language.Parser]::ParseFile("
+            f"'{escaped_script}', [ref]$tokens, [ref]$errors) | Out-Null; "
             "if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }; exit 0"
         )
         result = subprocess.run(
