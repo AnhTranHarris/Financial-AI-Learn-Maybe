@@ -15,7 +15,6 @@ import tempfile
 from dusty.m166_provisional_quant import (
     ProvisionalQuantPolicy,
     build_runtime_bars,
-    dataclass_payload,
     run_m166,
     run_m167,
     run_m168,
@@ -44,6 +43,20 @@ def _git(repo: Path, *args: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "git command failed")
     return proc.stdout.strip()
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if proc.returncode not in {0, 1}:
+        raise RuntimeError(proc.stderr.strip() or "git ancestry check failed")
+    return proc.returncode == 0
 
 
 def _atomic_json(path: Path, payload: object) -> None:
@@ -174,8 +187,14 @@ def main() -> int:
 
     identity = _read_json(identity_path)
     plan = _read_json(plan_path)
-    if identity.get("source_commit") != expected or plan.get("source_commit") != expected:
-        raise RuntimeError("input artifacts are not bound to expected Git head")
+    identity_source = str(identity.get("source_commit", "")).strip().lower()
+    plan_source = str(plan.get("source_commit", "")).strip().lower()
+    if identity_source != plan_source:
+        raise RuntimeError("identity and provisional plan source commits differ")
+    if len(identity_source) != 40 or any(ch not in "0123456789abcdef" for ch in identity_source):
+        raise RuntimeError("input evidence source commit is invalid")
+    if not _is_ancestor(repo, identity_source, expected):
+        raise RuntimeError("frozen research evidence is not from an ancestor of the runner head")
     if plan.get("status") != "provisional_research_ready":
         raise RuntimeError("provisional plan is not research-ready")
 
@@ -248,7 +267,8 @@ def main() -> int:
     m172 = run_m172(oos_trades)
 
     common = {
-        "source_commit": expected,
+        "runner_source_commit": expected,
+        "evidence_source_commit": identity_source,
         "plan_fingerprint": plan.get("plan_fingerprint"),
         "policy_fingerprint": policy.fingerprint,
         "strategy_fingerprint": strategy_fp,
@@ -331,10 +351,12 @@ def main() -> int:
         else:
             _atomic_json(destination, payload)
 
-    complete = sum(1 for row in artifacts.values() if row["status"] not in {"pending", "insufficient", "missing_forward", "insufficient_forward"})
+    incomplete_statuses = {"pending", "insufficient", "missing_forward", "insufficient_forward"}
+    complete = sum(1 for row in artifacts.values() if row["status"] not in incomplete_statuses)
     manifest_payload = {
         "protocol": PROTOCOL,
-        "source_commit": expected,
+        "runner_source_commit": expected,
+        "evidence_source_commit": identity_source,
         "lane_id": identity.get("lane_id"),
         "plan_fingerprint": plan.get("plan_fingerprint"),
         "policy": policy.payload,
