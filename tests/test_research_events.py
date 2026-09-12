@@ -74,6 +74,17 @@ class ResearchEventEvidenceTests(unittest.TestCase):
         bound = bind_event_exclusions(rows, evidence, exclusion_minutes=30, expected_symbol="EURUSD")
         self.assertEqual([row.event_blocked for row in bound], [False, True, True, True, False])
 
+    def test_pre_event_bar_is_not_blocked_before_schedule_was_known(self):
+        event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
+        evidence = self.evidence((self.event(event_at, known_delta=timedelta(minutes=10)),))
+        rows = (
+            bar(event_at - timedelta(minutes=30)),
+            bar(event_at - timedelta(minutes=10)),
+            bar(event_at),
+        )
+        bound = bind_event_exclusions(rows, evidence, exclusion_minutes=30)
+        self.assertEqual([row.event_blocked for row in bound], [False, True, True])
+
     def test_expected_symbol_mismatch_fails_closed(self):
         event_at = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
         with self.assertRaisesRegex(ValueError, "symbol"):
