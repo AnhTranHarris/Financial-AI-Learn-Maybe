@@ -117,6 +117,14 @@ def _existing_receipt(path: Path) -> tuple[dict[str, object], int] | None:
     return raw, exit_code
 
 
+def _shared_evidence() -> dict[str, object]:
+    return {
+        "threshold_tuning_performed": False,
+        "main_strategy_estate_modified": False,
+        "authority": _authority(),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one normalized EURUSD reconstruction canary")
     parser.add_argument("--dataset", type=Path, required=True)
@@ -184,7 +192,8 @@ def main() -> int:
             "dataset_sha256": sha256(dataset.read_bytes()).hexdigest(),
             "allowed_features": CANARY_FEATURES,
             "population": population_rows,
-            "authority": _authority(),
+            "semantic_assessment": None,
+            **_shared_evidence(),
         }
         return _write_receipt(receipt, payload, exit_code=3)
 
@@ -242,9 +251,7 @@ def main() -> int:
         "training_rows": len(training),
         "semantic_assessment": semantic_payload,
         "population": population_rows,
-        "threshold_tuning_performed": False,
-        "main_strategy_estate_modified": False,
-        "authority": _authority(),
+        **_shared_evidence(),
     }
     return _write_receipt(receipt, payload, exit_code=0 if canary_status == "activatable" else 4)
 
