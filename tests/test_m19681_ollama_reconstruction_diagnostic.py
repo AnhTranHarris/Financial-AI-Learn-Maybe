@@ -54,7 +54,9 @@ class M19681OllamaReconstructionDiagnosticTests(unittest.TestCase):
 
     def test_basic_timeout_stops_before_structured_probe(self) -> None:
         calls: list[str] = []
-        ticks = iter((0.0, 0.1))
+        # Identity consumes two clock reads; the timeout path needs one more
+        # start timestamp before transport raises. No completion tick occurs.
+        ticks = iter((0.0, 0.1, 0.1))
 
         def transport(method: str, url: str, payload: object, timeout: float):
             calls.append(method)
