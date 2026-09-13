@@ -22,8 +22,8 @@ if str(SRC) not in sys.path:
 
 from dusty.m166_provisional_quant import build_runtime_bars
 from dusty.mt5worker import MT5Bar
+from dusty.ollama_semantic_strategy_reconstruction import BoundedRetrySemanticOllamaStrategyReconstructor
 from dusty.ollama_strategy_classifier import OllamaStrategyClassifier
-from dusty.ollama_strategy_reconstruction_retry import BoundedRetryOllamaStrategyReconstructor
 from dusty.reconstruction_runtime_features import MODEL_SAFE_NORMALIZED_FEATURES, augment_runtime_bars
 from dusty.reconstruction_semantics import assess_reconstruction_semantics
 from dusty.research_sessions import matching_research_session
@@ -149,7 +149,7 @@ def main() -> int:
 
     if reconstruction is None:
         builder = StrategyEstateBuilder(
-            reconstructor=BoundedRetryOllamaStrategyReconstructor(base_url=args.ollama),
+            reconstructor=BoundedRetrySemanticOllamaStrategyReconstructor(base_url=args.ollama),
             classifier=OllamaStrategyClassifier(base_url=args.ollama),
         )
         result = builder.populate(
