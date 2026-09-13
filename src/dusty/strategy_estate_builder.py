@@ -17,6 +17,7 @@ from typing import Iterable
 
 from .ollama_strategy_classifier import OllamaStrategyClassifier, attach_quant_identity
 from .ollama_strategy_reconstruction import OllamaReconstructionRequest, OllamaStrategyReconstructor
+from .reconstruction_feature_contract import validate_model_feature_universe, validate_reconstruction_spec
 from .source_intake import EvidenceClass, StrategyProposal, deduplicate_proposals
 from .strategy_estate import StrategyEstateUpdate, register_reconstructions
 from .trading_skills import StrategyReconstruction
@@ -92,10 +93,14 @@ class StrategyEstateBuilder:
 
         universe_symbols = tuple(dict.fromkeys(value.strip().upper() for value in allowed_symbols if value.strip()))
         universe_timeframes = tuple(dict.fromkeys(value.strip().upper() for value in allowed_timeframes if value.strip()))
-        features = tuple(dict.fromkeys(value.strip() for value in allowed_features if value.strip()))
+        features = tuple(dict.fromkeys(value.strip().lower() for value in allowed_features if value.strip()))
         sessions = tuple(dict.fromkeys(value.strip().upper() for value in allowed_sessions if value.strip()))
         if not universe_symbols or not universe_timeframes or not features:
             raise ValueError("strategy estate builder requires symbol, timeframe, and feature universes")
+
+        # A feature can be valid inside M156 yet unsafe as a free scalar predicate
+        # authored by an LLM. Reject ambiguous units before the model is called.
+        validate_model_feature_universe(features)
 
         successful: list[StrategyReconstruction] = []
         outcomes: list[EstatePopulationRow] = []
@@ -141,6 +146,16 @@ class StrategyEstateBuilder:
                     proposal.proposal_id,
                     EstatePopulationStatus.RECONSTRUCTION_UNAVAILABLE,
                     reason=reconstructed.error or "reconstruction_unavailable",
+                ))
+                continue
+
+            try:
+                validate_reconstruction_spec(reconstructed.reconstruction.candidate_spec)
+            except ValueError as exc:
+                outcomes.append(EstatePopulationRow(
+                    proposal.proposal_id,
+                    EstatePopulationStatus.RECONSTRUCTION_UNAVAILABLE,
+                    reason=f"semantic_feature_contract:{exc}",
                 ))
                 continue
 
