@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Build and PIT-preflight one normalized EURUSD reconstruction canary.
 
-The canary writes only to a caller-supplied sidecar Strategy Estate.  It never
+The canary writes only to a caller-supplied sidecar Strategy Estate. It never
 modifies the user's persistent estate and owns no broker, live, promotion,
 retry, custody, Guardian or risk authority.
 """
@@ -33,6 +33,7 @@ from dusty.strategy_estate_cli import installed_model_digest
 from dusty.strategy_seed_proposals import starter_strategy_proposals
 
 UTC = timezone.utc
+CANARY_PROTOCOL = "dusty-m1968-normalized-reconstruction-canary-v1"
 CANARY_PROPOSAL_ID = "dusty:eurusd-momentum-pullback"
 CANARY_FEATURES = ("return_1", "rsi") + MODEL_SAFE_NORMALIZED_FEATURES
 CANARY_TIMEFRAMES = ("M15",)
@@ -100,6 +101,22 @@ def _existing_canary(sidecar: Path, proposal_fingerprint: str):
     return rows[0] if rows else None
 
 
+def _existing_receipt(path: Path) -> tuple[dict[str, object], int] | None:
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or raw.get("protocol") != CANARY_PROTOCOL:
+        raise ValueError("existing canary receipt protocol mismatch")
+    stored = str(raw.get("receipt_fingerprint", ""))
+    check = dict(raw)
+    check.pop("receipt_fingerprint", None)
+    if stored != _fingerprint(check):
+        raise ValueError("existing canary receipt fingerprint mismatch")
+    status = str(raw.get("status", ""))
+    exit_code = 0 if status == "activatable" else (3 if status == "reconstruction_unavailable" else 4)
+    return raw, exit_code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one normalized EURUSD reconstruction canary")
     parser.add_argument("--dataset", type=Path, required=True)
@@ -115,6 +132,11 @@ def main() -> int:
     receipt = args.receipt.resolve()
     if estate == receipt:
         raise ValueError("canary estate and receipt paths must differ")
+    existing = _existing_receipt(receipt)
+    if existing is not None:
+        raw, exit_code = existing
+        print(json.dumps(raw, indent=2, sort_keys=True, allow_nan=False, default=str))
+        return exit_code
     if not dataset.is_file():
         raise ValueError("frozen canary dataset missing")
     if args.training_days < 30 or args.training_days > 3650:
@@ -153,7 +175,7 @@ def main() -> int:
 
     if reconstruction is None:
         payload = {
-            "protocol": "dusty-m1968-normalized-reconstruction-canary-v1",
+            "protocol": CANARY_PROTOCOL,
             "status": "reconstruction_unavailable",
             "proposal_id": proposal.proposal_id,
             "proposal_fingerprint": proposal.fingerprint,
@@ -167,7 +189,7 @@ def main() -> int:
         return _write_receipt(receipt, payload, exit_code=3)
 
     candidate = reconstruction.candidate_spec
-    if tuple(candidate.symbol_universe) and "EURUSD" not in {value.upper() for value in candidate.symbol_universe}:
+    if "EURUSD" not in {value.upper() for value in reconstruction.symbols}:
         raise ValueError("canary reconstruction symbol identity drift")
 
     runtime = augment_runtime_bars(build_runtime_bars(_load_bars(dataset)))
@@ -203,7 +225,7 @@ def main() -> int:
         canary_status = "activatable" if assessment.valid and assessment.entry_match_count > 0 else "rejected"
 
     payload = {
-        "protocol": "dusty-m1968-normalized-reconstruction-canary-v1",
+        "protocol": CANARY_PROTOCOL,
         "status": canary_status,
         "proposal_id": proposal.proposal_id,
         "proposal_fingerprint": proposal.fingerprint,
