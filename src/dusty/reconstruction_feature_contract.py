@@ -17,12 +17,19 @@ import re
 from typing import Iterable
 
 from .feature_registry import FeatureFamily, standard_feature_registry
+from .reconstruction_runtime_features import (
+    ATR_14_FRACTION,
+    CLOSE_EMA_20_DISTANCE_FRAC,
+    CLOSE_SMA_20_DISTANCE_FRAC,
+)
 from .strategy_ir import StrategySpecV2
 
 
 class ReconstructionUnit(StrEnum):
     FRACTION = "fraction"
     OSCILLATOR_0_100 = "oscillator_0_100"
+    SIGNED_PRICE_DISTANCE_FRACTION = "signed_price_distance_fraction"
+    NONNEGATIVE_PRICE_FRACTION = "nonnegative_price_fraction"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,8 @@ def reconstruction_feature(name: str) -> ReconstructionFeature:
     The M156 registry is consulted for canonical period-specific features. Legacy
     runtime alias ``rsi`` remains accepted because it is dimensionless and has the
     same 0-100 semantics. Bare/raw price indicators remain deliberately excluded.
+    Normalized trend/volatility features are deterministic projections from the
+    canonical completed-bar features and are safe across market price scales.
     """
 
     rendered = str(name).strip().lower()
@@ -67,9 +76,6 @@ def reconstruction_feature(name: str) -> ReconstructionFeature:
         definition = registry.get("return_1@v1")
         if definition.family is not FeatureFamily.RETURN or not registry.decision_eligible("return_1@v1"):
             raise RuntimeError("M156 return_1 registry semantics are not decision eligible")
-        # Bound model-authored one-bar return thresholds to +/-2%. This is not a
-        # profitability setting; it is a unit sanity boundary. Empirical semantic
-        # preflight remains authoritative for whether a conjunction actually fires.
         return ReconstructionFeature(
             "return_1",
             ReconstructionUnit.FRACTION,
@@ -89,6 +95,23 @@ def reconstruction_feature(name: str) -> ReconstructionFeature:
             0.0,
             100.0,
             "RSI oscillator value on a 0-100 scale; suffix is lookback period, not indicator value",
+        )
+    if rendered in {CLOSE_SMA_20_DISTANCE_FRAC, CLOSE_EMA_20_DISTANCE_FRAC}:
+        reference = "SMA-20" if rendered == CLOSE_SMA_20_DISTANCE_FRAC else "EMA-20"
+        return ReconstructionFeature(
+            rendered,
+            ReconstructionUnit.SIGNED_PRICE_DISTANCE_FRACTION,
+            -0.25,
+            0.25,
+            f"completed close divided by {reference} minus 1; +0.01 means close is 1% above {reference}",
+        )
+    if rendered == ATR_14_FRACTION:
+        return ReconstructionFeature(
+            rendered,
+            ReconstructionUnit.NONNEGATIVE_PRICE_FRACTION,
+            0.0,
+            0.25,
+            "ATR-14 divided by completed close; 0.01 means ATR is 1% of price",
         )
     raise ValueError(
         f"feature {rendered!r} is not safe for model-authored scalar reconstruction; "
