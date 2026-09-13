@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from .reconstruction_feature_contract import validate_reconstruction_spec
 from .source_intake import EvidenceClass, StrategyProposal, deduplicate_proposals
 from .strategy_estate import StrategyEstateUpdate, load_strategy_estate
 from .strategy_estate_builder import EstatePopulationResult, EstatePopulationRow, StrategyEstateBuilder
@@ -206,6 +207,24 @@ def _symbols_for(proposal: StrategyProposal, allowed_symbols: tuple[str, ...]) -
     return candidates[:MAX_PROFILE_SYMBOLS], candidates[MAX_PROFILE_SYMBOLS:]
 
 
+def _semantically_admissible_proposals(estate_path: str | Path) -> set[str]:
+    """Only valid typed reconstructions may suppress a fresh campaign plan.
+
+    Legacy reconstructions remain immutable evidence, but a raw price-indicator
+    threshold or other model-facing unit violation cannot poison scheduling by
+    making its proposal look permanently complete.
+    """
+
+    valid: set[str] = set()
+    for row in load_strategy_estate(estate_path):
+        try:
+            validate_reconstruction_spec(row.candidate_spec)
+        except ValueError:
+            continue
+        valid.add(row.proposal_fingerprint)
+    return valid
+
+
 def plan_reconstruction_campaign(
     proposals: Iterable[StrategyProposal],
     *,
@@ -214,11 +233,11 @@ def plan_reconstruction_campaign(
 ) -> ReconstructionCampaign:
     incoming = tuple(proposals)
     deduped = deduplicate_proposals(incoming)
-    existing = {row.proposal_fingerprint for row in load_strategy_estate(estate_path)} if estate_path is not None else set()
+    existing = _semantically_admissible_proposals(estate_path) if estate_path is not None else set()
     plans: list[ReconstructionPlan] = []
     for proposal in deduped:
         if proposal.fingerprint in existing:
-            plans.append(ReconstructionPlan(proposal, PlanStatus.ALREADY_REPRESENTED, None, (), reason="proposal_already_in_estate"))
+            plans.append(ReconstructionPlan(proposal, PlanStatus.ALREADY_REPRESENTED, None, (), reason="proposal_already_in_semantically_admissible_estate"))
             continue
         if proposal.evidence_class is not EvidenceClass.STRATEGY_HYPOTHESIS:
             plans.append(ReconstructionPlan(proposal, PlanStatus.DEFERRED, None, (), reason="proposal_is_not_strategy_hypothesis"))
