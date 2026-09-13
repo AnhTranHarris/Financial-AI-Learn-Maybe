@@ -208,20 +208,30 @@ def _symbols_for(proposal: StrategyProposal, allowed_symbols: tuple[str, ...]) -
 
 
 def _semantically_admissible_proposals(estate_path: str | Path) -> set[str]:
-    """Only valid typed reconstructions may suppress a fresh campaign plan.
+    """Only invalid *typed* reconstructions may be reopened for fresh planning.
 
-    Legacy reconstructions remain immutable evidence, but a raw price-indicator
-    threshold or other model-facing unit violation cannot poison scheduling by
-    making its proposal look permanently complete.
+    Real Strategy Estate rows expose ``candidate_spec`` and are checked against
+    the reconstruction feature contract. Lightweight legacy/test rows may carry
+    only ``proposal_fingerprint``; those retain the historical "represented"
+    behavior instead of crashing the scheduler. This preserves compatibility
+    without allowing a real semantically-invalid reconstruction to poison future
+    campaign planning.
     """
 
     valid: set[str] = set()
     for row in load_strategy_estate(estate_path):
+        proposal_fingerprint = getattr(row, "proposal_fingerprint", None)
+        if not isinstance(proposal_fingerprint, str) or not proposal_fingerprint:
+            continue
+        candidate_spec = getattr(row, "candidate_spec", None)
+        if candidate_spec is None:
+            valid.add(proposal_fingerprint)
+            continue
         try:
-            validate_reconstruction_spec(row.candidate_spec)
+            validate_reconstruction_spec(candidate_spec)
         except ValueError:
             continue
-        valid.add(row.proposal_fingerprint)
+        valid.add(proposal_fingerprint)
     return valid
 
 
