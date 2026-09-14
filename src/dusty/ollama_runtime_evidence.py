@@ -89,6 +89,7 @@ class OllamaRuntimeEvidence:
     api_version: dict[str, object]
     api_ps: dict[str, object]
     cli_version: dict[str, object]
+    cli_ps: dict[str, object]
     tasklist: dict[str, object]
     server_log: dict[str, object]
     prior_diagnostic_fingerprint: str
@@ -102,6 +103,7 @@ class OllamaRuntimeEvidence:
             "api_version": self.api_version,
             "api_ps": self.api_ps,
             "cli_version": self.cli_version,
+            "cli_ps": self.cli_ps,
             "tasklist": self.tasklist,
             "server_log": self.server_log,
             "generation_invoked": False,
@@ -141,6 +143,7 @@ def collect_ollama_runtime_evidence(
     api_version = http_get(f"{root}/api/version", 15.0)
     api_ps = http_get(f"{root}/api/ps", 15.0)
     cli_version = run_command(["ollama", "--version"], 15.0)
+    cli_ps = run_command(["ollama", "ps"], 15.0)
     tasklist = run_command(["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV"], 15.0)
     local = os.environ.get("LOCALAPPDATA", "").strip()
     log_path = Path(local) / "Ollama" / "server.log" if local else Path("server.log")
@@ -152,6 +155,7 @@ def collect_ollama_runtime_evidence(
         api_version=api_version,
         api_ps=api_ps,
         cli_version=cli_version,
+        cli_ps=cli_ps,
         tasklist=tasklist,
         server_log=server_log,
         prior_diagnostic_fingerprint=str(prior.get("diagnostic_fingerprint", "")),
